@@ -3,14 +3,23 @@ from collections.abc import Callable
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.common.utils.enums import LlmMode, LlmTask
+from backend.services.agents.core.partial import emit_partial
 from backend.services.agents.core.prompt_budget import (
     CHAT_HISTORY_MSG_CHARS,
     CHAT_HISTORY_TURNS,
     SYNTH_MAX_OUTPUT_TOKENS,
     clip_text,
 )
-from backend.services.agents.core.markdown_tables import normalize_markdown_tables
-from backend.services.agents.core.turn_context import TurnContext, prefetch_turn_context
+from backend.services.agents.core.markdown_tables import (
+    answer_has_empty_table_shell,
+    gmail_rows_markdown_table,
+    normalize_markdown_tables,
+)
+from backend.services.agents.core.turn_context import (
+    TurnContext,
+    preflight_prompt_block,
+    prefetch_turn_context,
+)
 
 _CONVERSE_SYSTEM = (
     "You are MindOS assistant. Be brief and conversational. "
@@ -43,8 +52,7 @@ async def _synth_stream(
         prompt, task=LlmTask.SYNTH, max_output_tokens=SYNTH_MAX_OUTPUT_TOKENS
     ):
         parts.append(chunk)
-        if on_partial:
-            on_partial("".join(parts))
+        emit_partial(on_partial, "".join(parts), phase="answer")
     return "".join(parts).strip()
 
 
@@ -78,6 +86,15 @@ def _format_history(history: list[dict] | None) -> str:
         label = "User" if role == "user" else "Assistant"
         lines.append(f"{label}: {clip_text(content, CHAT_HISTORY_MSG_CHARS)}")
     return "\n".join(lines)
+
+
+def _ensure_table_rows(answer: str, ctx: TurnContext) -> str:
+    if not answer_has_empty_table_shell(answer) or not ctx.gmail_ctx:
+        return answer
+    built = gmail_rows_markdown_table(ctx.gmail_ctx)
+    if not built:
+        return answer
+    return f"{answer.rstrip()}\n\n{built}"
 
 
 def _fallback_answer(ctx: TurnContext) -> str:
@@ -146,26 +163,31 @@ async def run_chat(
                 answer = "Hello — what would you like to look up?"
         except Exception:
             answer = "Hello — what would you like to look up?"
-        answer = normalize_markdown_tables(answer)
+        answer = _ensure_table_rows(normalize_markdown_tables(answer), ctx)
         return {"message": message, "answer": answer, "sources": [], "mode": "converse"}
 
     system = (
-        "You are MindOS assistant. Answer only from Context; be precise and factual. "
-        "Always open with 1–2 sentences: what you found, how it maps to the question, and what is missing. "
+        "You are MindOS assistant. Answer from Context and Recent conversation. "
+        "Tone: professional and concise, like a capable executive assistant—never sound like a debug log. "
+        "Do not say ingested, indexed, context, or 'no additional data is missing' when you can answer. "
+        "Open with a direct answer in one short sentence; add a table or list when it helps. "
+        "Only mention missing mail or sync when you truly lack the facts. "
+        "Do not repeat Gmail sync counts the user already saw in thinking. "
         "Never reply with tables or lists only. "
-        "Use Markdown lists or tables after the summary when they help. "
-        "Put a blank line between paragraphs and before each heading, list, or table. "
-        "Lists: one `- item` or `1. item` per line; indent nested items with two leading spaces. "
-        "If data is missing, say what to sync—do not invent. "
-        "Complete every sentence; do not trail off. "
-        "Tables: GitHub-flavored Markdown — header row, `| --- | --- |` separator, one data row per line."
+        "Put a blank line before each heading, list, or table. "
+        "Lists: one `1. item` per line; indent nested items with two leading spaces. "
+        "Dates: use the human Sent/Date fields from Context (weekday, day, month, year, local time)—never raw ISO. "
+        "Tables: pipe markdown with header, `| --- |` separator, one data row per line; every table needs data rows. "
+        "For To/From cells use readable names or emails, not long MIME header blobs. "
+        "Complete every sentence; do not trail off."
     )
     if plan_style:
         system += (
             " Multi-part questions: handle each part in order—blank line, short lead-in, blank line, then table or list. "
             "Respect numeric limits (e.g. top 10). Use real Subject/Description cells from Context. "
+            "For recipient tables use the To: field from Context, not From:. "
             "Example shape:\n"
-            "Here are the latest matching messages from your indexed Gmail.\n\n"
+            "Here are the matching messages:\n\n"
             "| Subject | Description |\n| --- | --- |\n| Indeed Application: AI Developer | summary from mail |"
         )
     if not ctx.has_context:
@@ -175,6 +197,9 @@ async def run_chat(
         parts.append(f"User: {message}")
     else:
         parts = [system, f"Context:\n{ctx.context_text}"]
+        pre = preflight_prompt_block(ctx.preflight_actions)
+        if pre:
+            parts.append(pre)
         if hist_text:
             parts.append(f"Recent conversation:\n{hist_text}")
         parts.append(f"User: {message}")
@@ -198,7 +223,7 @@ async def run_chat(
 
     return {
         "message": message,
-        "answer": normalize_markdown_tables(answer),
+        "answer": _ensure_table_rows(normalize_markdown_tables(answer), ctx),
         "sources": ctx.sources,
         "mode": mode,
         "filter_source": source,

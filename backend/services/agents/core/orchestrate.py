@@ -17,7 +17,7 @@ from backend.services.agents.core.sessions import (
     recent_messages,
 )
 from backend.services.agents.core.prompt_budget import CHAT_HISTORY_TURNS
-from backend.services.agents.core.turn_context import prefetch_turn_context
+from backend.services.agents.core.turn_context import maybe_refresh_mail_index, prefetch_turn_context
 from backend.services.graph.core.deep_agent import run_deep_agent
 
 
@@ -87,6 +87,17 @@ async def handle_turn(
 
     turn_context = await prefetch_turn_context(
         session, user, settings, body, source=source, intent=intent
+    )
+    turn_context = await maybe_refresh_mail_index(
+        session,
+        user,
+        settings,
+        body,
+        turn_context,
+        source=source,
+        intent=intent,
+        gateway=gateway,
+        on_partial=on_partial,
     )
 
     if intent in ("plan", "execute") and _mail_table_ask(body):

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import textwrap
 
 _BOLD = re.compile(r"\*\*([^*]+)\*\*")
 _ITALIC = re.compile(r"(?<!\*)\*([^*]+)\*(?!\*)")
@@ -50,7 +51,16 @@ def is_table_line(line: str) -> bool:
 
 def is_separator_line(line: str) -> bool:
     t = line.strip()
-    return bool(t) and "-" in t and re.match(r"^\|?[\s:|-]+\|?", t) is not None
+    if not t or not is_table_line(t):
+        return False
+    cells = split_cells(t)
+    if not cells:
+        return False
+    for cell in cells:
+        core = cell.strip().replace(":", "").strip()
+        if not core or not set(core) <= {"-"}:
+            return False
+    return True
 
 
 def split_cells(line: str) -> list[str]:
@@ -85,7 +95,9 @@ def ascii_table(rows: list[list[str]], width: int) -> list[str]:
     def _total() -> int:
         return sum(col_w) + 3 * ncol + 1
 
-    while _total() > width and max(col_w) > 1:
+    # shortcut: min 6 chars per column; wrap tall cells instead of truncating to 1 char
+    _MIN_COL = 6
+    while _total() > width and max(col_w) > _MIN_COL:
         c = max(range(ncol), key=lambda i: col_w[i])
         col_w[c] -= 1
 
@@ -95,12 +107,30 @@ def ascii_table(rows: list[list[str]], width: int) -> list[str]:
     def _row(cells: list[str]) -> str:
         parts = []
         for c in range(ncol):
-            txt = (cells[c] if c < len(cells) else "")[: col_w[c]].ljust(col_w[c])
-            parts.append(f" {txt} ")
+            txt = (cells[c] if c < len(cells) else "")
+            parts.append(f" {txt[: col_w[c]].ljust(col_w[c])} ")
         return "|" + "|".join(parts) + "|"
 
-    out = [_border(), _row(rows[0]), _border()]
+    def _row_blocks(cells: list[str]) -> list[str]:
+        wrapped: list[list[str]] = []
+        for c in range(ncol):
+            txt = (cells[c] if c < len(cells) else "")
+            w = col_w[c]
+            if len(txt) <= w:
+                wrapped.append([txt])
+            else:
+                wrapped.append(textwrap.wrap(txt, width=w) or [txt[:w]])
+        height = max(len(col) for col in wrapped)
+        block: list[str] = []
+        for i in range(height):
+            line_cells = [
+                wrapped[c][i] if i < len(wrapped[c]) else "" for c in range(ncol)
+            ]
+            block.append(_row(line_cells))
+        return block
+
+    out = [_border(), *_row_blocks(rows[0]), _border()]
     for row in rows[1:]:
-        out.append(_row(row))
+        out.extend(_row_blocks(row))
     out.append(_border())
     return out

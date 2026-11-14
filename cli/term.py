@@ -562,33 +562,49 @@ def _session_menu_draw(
     stdscr.keypad(True)
     normal_attr, sel_attr = _curses_harvest(stdscr)
     idx = 0
+    scroll = 0
+    data_off = 5
     while True:
         stdscr.erase()
         h, w = stdscr.getmaxyx()
-        table_w = min(max(52, w - 4), 88)
-        sess_rows = [
-            ((title or "Untitled")[:40], (meta or "")[:48])
-            for _sid, title, meta in sessions
-        ]
-        panel = tui_theme.session_table(sess_rows, width=table_w, selected=idx)
-        hint = tui_theme.footer_hint("Esc back · Enter open", width=len(panel[0]))
-        block_h = len(panel) + 1
-        y0 = max(0, (h - block_h) // 2)
-        x0 = max(0, (w - len(panel[0])) // 2)
-        base = 3
+        pad = 0
+        table_w = max(24, w)
+        sess_rows = [(title or "Untitled", meta or "") for _sid, title, meta in sessions]
+        visible = max(1, h - data_off - 2)
+        if idx < scroll:
+            scroll = idx
+        elif idx >= scroll + visible:
+            scroll = max(0, idx - visible + 1)
+        slice_rows = sess_rows[scroll : scroll + visible]
+        local_sel = idx - scroll if 0 <= idx - scroll < len(slice_rows) else None
+        panel = tui_theme.session_table(slice_rows, width=table_w, selected=local_sel)
+        line_w = len(panel[0]) if panel else table_w
+        hint = tui_theme.footer_hint(
+            f"Esc back · Enter open · {idx + 1}/{len(sessions)}",
+            width=line_w,
+        )
+        x0 = 0
         for i, line in enumerate(panel):
-            if y0 + i >= h - 1:
+            if i >= h - 1:
                 break
-            attr = sel_attr if base + 2 <= i < len(panel) - 1 and i - (base + 2) == idx else normal_attr
+            attr = normal_attr
             if i == 1:
                 attr = normal_attr | curses.A_BOLD
+            elif (
+                data_off <= i < len(panel) - 1
+                and local_sel is not None
+                and i == data_off + local_sel
+            ):
+                attr = sel_attr
+            draw = line[: w - x0] if x0 else line[:w]
             try:
-                stdscr.addstr(y0 + i, x0, line, attr)
+                stdscr.addstr(i, x0, draw, attr)
             except curses.error:
                 pass
-        if y0 + len(panel) < h:
+        if len(panel) < h:
+            foot = hint[: w - x0] if x0 else hint[:w]
             try:
-                stdscr.addstr(y0 + len(panel), x0, hint, normal_attr)
+                stdscr.addstr(min(len(panel), h - 1), x0, foot, normal_attr)
             except curses.error:
                 pass
         stdscr.refresh()
@@ -597,6 +613,10 @@ def _session_menu_draw(
             idx = (idx - 1) % len(sessions)
         elif key in (curses.KEY_DOWN, ord("j")):
             idx = (idx + 1) % len(sessions)
+        elif key in (curses.KEY_PPAGE,):
+            idx = max(0, idx - visible)
+        elif key in (curses.KEY_NPAGE,):
+            idx = min(len(sessions) - 1, idx + visible)
         elif key in (curses.KEY_ENTER, 10, 13, ord("\n")):
             return sessions[idx][0]
         elif key in (27, ord("b")):
@@ -740,6 +760,78 @@ def _markdown_line_style(line: str, *, in_sources: bool) -> str:
     return "body"
 
 
+def _split_plan_prefix(text: str) -> tuple[str, str]:
+    """Leading todo/plan block (lists/headings) vs final user-facing answer."""
+    lines = text.splitlines()
+    if not lines:
+        return "", text
+    plan: list[str] = []
+    i = 0
+    saw_body = False
+    while i < len(lines):
+        raw = lines[i]
+        if not raw.strip():
+            if plan and not saw_body:
+                i += 1
+                break
+            if saw_body:
+                break
+            i += 1
+            continue
+        style = _markdown_line_style(raw, in_sources=False)
+        if style in ("list", "heading", "meta") and not saw_body:
+            plan.append(raw)
+            i += 1
+            continue
+        saw_body = True
+        break
+    if not plan:
+        return "", text
+    rest = "\n".join(lines[i:]).lstrip("\n")
+    return "\n".join(plan).strip(), rest
+
+
+def _thinking_chat_lines(text: str, width: int) -> list[tuple[str, str]]:
+    from cli import md_render
+
+    width = max(20, width)
+    out: list[tuple[str, str]] = []
+    lines = text.splitlines()
+    i = 0
+    while i < len(lines):
+        raw = lines[i]
+        if not raw.strip():
+            out.append(("body", ""))
+            i += 1
+            continue
+        if md_render.is_table_line(raw):
+            block: list[str] = []
+            while i < len(lines) and lines[i].strip() and (
+                md_render.is_table_line(lines[i]) or md_render.is_separator_line(lines[i])
+            ):
+                block.append(lines[i])
+                i += 1
+            rows = md_render.parse_pipe_table(block)
+            if rows:
+                for ln in md_render.ascii_table(rows, width):
+                    out.append(("table", ln))
+                out.append(("body", ""))
+            else:
+                for ln in block:
+                    out.append(("body", md_render.strip_inline_md(ln)))
+            continue
+        plain = md_render.strip_inline_md(raw.strip())
+        style = _markdown_line_style(raw, in_sources=False)
+        if style == "list":
+            m = re.match(r"^(\s*)([-*]|\d+\.)\s+(.*)$", raw.rstrip())
+            if m:
+                plain = f"{m.group(1)}{m.group(2)} {md_render.strip_inline_md(m.group(3))}"
+        for ln in textwrap.wrap(plain, width=width, break_long_words=False) or [plain]:
+            out.append(("body", ln.rstrip()))
+        i += 1
+    return out or [("body", "(empty)")]
+
+
 def _markdown_chat_lines(text: str, width: int) -> list[tuple[str, str]]:
     from cli import md_render
 
@@ -824,15 +916,23 @@ _CHAT_INPUT_TIMEOUT_MS = 400
 _CHAT_STREAM_MIN_S = 0.055
 _VOICE_SPEAK_DOTS = (".", "..", "...")
 _VOICE_SPEAK_DOT_S = 0.75
-_CHAT_ROLE_NAME_W = max(len("you"), len("mindos"))
+_CHAT_ROLE_NAME_W = max(len("you"), len("mindos"), len("mindos [thinking]"))
 
 
-def _chat_role_prefix(role: str) -> str:
-    name = "you" if role == "you" else "mindos"
-    return f"{name:>{_CHAT_ROLE_NAME_W}} › "
+def _chat_role_prefix(role: str, *, wide: bool = True) -> str:
+    if role == "you":
+        name = "you"
+    elif role == "thinking":
+        name = "mindos [thinking]"
+    else:
+        name = "mindos"
+    if wide:
+        return f"{name:>{_CHAT_ROLE_NAME_W}} › "
+    return f"{name} › "
 
 
-_CHAT_ROLE_COL = len(_chat_role_prefix("mindos"))
+_CHAT_INPUT_PREFIX = _chat_role_prefix("you", wide=False)
+_CHAT_ROLE_COL = len(_chat_role_prefix("thinking"))
 
 
 def _chat_save_term():
@@ -1079,7 +1179,7 @@ def chat_input_lines(
     cursor: int,
     inner_w: int,
     *,
-    prefix: str = _chat_role_prefix("you"),
+    prefix: str = _CHAT_INPUT_PREFIX,
     show_cursor: bool = True,
 ) -> list[str]:
     """Wrap draft text and place the caret at `cursor` (supports newlines + soft wraps)."""
@@ -1155,10 +1255,14 @@ def _chat_conversation_loop(
     tab_norm = normal
     tab_sel = sel_attr
     voice_attr = sel_attr
+    try:
+        think_attr = asst_attr | c.A_DIM
+    except c.error:
+        pass
     if c.has_colors():
         try:
             asst_attr = _curses_bright_white(c, 3)
-            think_attr = _curses_bright_white(c, 5)
+            think_attr = asst_attr | c.A_DIM
         except c.error:
             pass
         try:
@@ -1305,6 +1409,12 @@ def _chat_conversation_loop(
                     pad = prefix if i == 0 else cont_pad
                     out.append((user_attr, f"{pad}{ln}"))
                 continue
+            if role == "thinking":
+                lines = _thinking_chat_lines(text, wrap_w)
+                for i, (_style, ln) in enumerate(lines):
+                    pad = prefix if i == 0 else cont_pad
+                    out.append((think_attr, f"{pad}{ln}"))
+                continue
             lines = _markdown_chat_lines(text, wrap_w)
             for i, (style, ln) in enumerate(lines):
                 pad = prefix if i == 0 else cont_pad
@@ -1329,12 +1439,14 @@ def _chat_conversation_loop(
         transcript_top = 5
         text_w = max(8, inner_w - 2)
         max_input_rows = max(1, box_bottom - transcript_top - 1)
-        input_lines = chat_input_lines(buf, cursor, text_w, show_cursor=False)
+        input_lines = chat_input_lines(
+            buf, cursor, text_w, show_cursor=False, prefix=_CHAT_INPUT_PREFIX
+        )
         if len(input_lines) > max_input_rows:
             drop = len(input_lines) - max_input_rows + 1
-            input_lines = [f"{' ' * _CHAT_ROLE_COL}… +{drop} line(s) above"] + input_lines[
-                -(max_input_rows - 1) :
-            ]
+            input_lines = [
+                f"{' ' * len(_CHAT_INPUT_PREFIX)}… +{drop} line(s) above"
+            ] + input_lines[-(max_input_rows - 1) :]
         input_start = box_bottom - len(input_lines)
         input_box_top = input_start - 1
         transcript_h = max(1, input_box_top - transcript_top)
@@ -1589,7 +1701,7 @@ def _chat_conversation_loop(
             except c.error:
                 pass
 
-        prefix = _chat_role_prefix("you")
+        prefix = _CHAT_INPUT_PREFIX
         input_lines = chat_input_lines(
             buf, cursor, text_w, prefix=prefix, show_cursor=show_cursor
         )
@@ -1597,7 +1709,9 @@ def _chat_conversation_loop(
         max_input_rows = max(1, box_bottom - transcript_top - 1)
         if len(input_lines) > max_input_rows:
             drop = len(input_lines) - max_input_rows + 1
-            input_lines = [f"{cont_pad}… +{drop} line(s) above"] + input_lines[-(max_input_rows - 1) :]
+            input_lines = [
+                f"{' ' * len(prefix)}… +{drop} line(s) above"
+            ] + input_lines[-(max_input_rows - 1) :]
 
         input_start = box_bottom - len(input_lines)
         input_box_top = input_start - 1
@@ -1650,15 +1764,29 @@ def _chat_conversation_loop(
         _render_sig = None
         _draw(show_cursor=False)
 
+        think_idx: int | None = None
         stream_idx: int | None = None
         last_paint = 0.0
         pending = ""
+        compose_after_think = False
 
-        def on_partial(text: str) -> None:
-            nonlocal thinking_line, stream_idx, last_paint, _render_sig, pending
-            thinking_line = None
+        def on_partial(text: str, phase: str = "answer") -> None:
+            nonlocal thinking_line, think_idx, stream_idx, last_paint, _render_sig, pending, compose_after_think
             pending = text
             now = time.monotonic()
+            if phase == "think":
+                compose_after_think = True
+                if think_idx is None:
+                    history.append(("thinking", text))
+                    think_idx = len(history) - 1
+                else:
+                    history[think_idx] = ("thinking", text)
+                _render_sig = None
+                follow_tail = True
+                _draw(show_cursor=False)
+                return
+            compose_after_think = False
+            thinking_line = None
             if stream_idx is None:
                 history.append(("assistant", text))
                 stream_idx = len(history) - 1
@@ -1690,16 +1818,23 @@ def _chat_conversation_loop(
                 stop.set()
 
         def _spin() -> None:
-            nonlocal thinking_line
+            nonlocal thinking_line, compose_after_think
             i = 0
             while not stop.is_set():
                 if thinking_line is not None:
-                    thinking_line = f"  {frames[i % len(frames)]} Thinking…"
+                    if compose_after_think:
+                        pfx = _chat_role_prefix("mindos")
+                        tail = " composing answer…"
+                    else:
+                        pfx = _chat_role_prefix("thinking")
+                        tail = " …"
+                    thinking_line = f"{pfx}{frames[i % len(frames)]}{tail}"
                     _draw(show_cursor=False)
                 i += 1
                 stop.wait(0.08)
 
-        thinking_line = f"  {frames[0]} Thinking…"
+        compose_after_think = False
+        thinking_line = f"{_chat_role_prefix('thinking')}{frames[0]} …"
         spinner = threading.Thread(target=_spin, daemon=True)
         spinner.start()
         _run_turn()
@@ -1709,6 +1844,16 @@ def _chat_conversation_loop(
             answer = f"error: {err[0]}"
         else:
             answer = answer_box[0] or "(empty)"
+
+        plan, rest = _split_plan_prefix(answer)
+        if plan:
+            merged = plan if think_idx is None else f"{history[think_idx][1]}\n\n{plan}".strip()
+            if think_idx is None:
+                history.append(("thinking", merged))
+                think_idx = len(history) - 1
+            else:
+                history[think_idx] = ("thinking", merged)
+            answer = rest if rest.strip() else answer
 
         if stream_idx is None:
             history.append(("assistant", answer))
