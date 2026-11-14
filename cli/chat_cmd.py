@@ -1,0 +1,185 @@
+from __future__ import annotations
+
+import uuid
+import warnings
+from datetime import datetime, timezone
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from cli import term
+from cli.async_util import run_async
+from cli.env import bootstrap_env
+from backend.common.config_loader import get_config
+from backend.common.config_loader.settings import get_settings
+from backend.common.database import lifecycle
+from backend.services.agents.core.orchestrate import handle_turn
+from backend.services.agents.core.sessions import get_session, list_sessions
+from backend.services.ingest.core.manual import ensure_default_user
+from backend.worker.bootstrap import bootstrap, worker_services
+
+
+def _rel_time(dt: datetime | None) -> str:
+    if dt is None:
+        return ""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    secs = max(0, int((datetime.now(timezone.utc) - dt).total_seconds()))
+    if secs < 60:
+        return "just now"
+    if secs < 3600:
+        return f"{secs // 60}m ago"
+    if secs < 86400:
+        return f"{secs // 3600}h ago"
+    return f"{secs // 86400}d ago"
+
+
+async def _turn(session: AsyncSession, message: str, gateway, session_id: uuid.UUID | None) -> dict:
+    settings = get_settings()
+    user = await ensure_default_user(session, settings)
+    return await handle_turn(
+        session,
+        user,
+        settings,
+        gateway,
+        message,
+        session_id=session_id,
+    )
+
+
+async def _answer_for(message: str, gateway, session_id: uuid.UUID | None) -> tuple[str, uuid.UUID]:
+    if lifecycle._session_factory is None:
+        raise RuntimeError("database not initialized — check DATABASE_URL and Postgres")
+    async with lifecycle._session_factory() as session:
+        out = await _turn(session, message, gateway, session_id)
+        await session.commit()
+    answer = (out.get("answer") or "").strip() or "(empty)"
+    sources = out.get("sources") or []
+    intent = out.get("intent")
+    if intent and intent != "converse":
+        answer = f"_[{intent}]_\n\n{answer}"
+    if sources and intent in ("plan", "execute"):
+        tail = ", ".join(
+            f"[{s.get('source') or '?'}] {(s.get('title') or s.get('artifact_id') or '')[:48]}"
+            for s in sources[:4]
+        )
+        if len(sources) > 4:
+            tail += f" (+{len(sources) - 4} more)"
+        answer = f"{answer}\n\n_sources: {tail}_"
+    return answer, uuid.UUID(out["session_id"])
+
+
+async def _history_rows() -> list[tuple[str, str, str]]:
+    """Return (session_id, title, meta) for the TUI history picker."""
+    if lifecycle._session_factory is None:
+        return [("__new__", "New chat", "")]
+    settings = get_settings()
+    async with lifecycle._session_factory() as session:
+        user = await ensure_default_user(session, settings)
+        rows = await list_sessions(session, user_id=user.id, limit=40)
+    values: list[tuple[str, str, str]] = [("__new__", "New chat", "fresh session")]
+    for r in rows:
+        when = _rel_time(r.get("updated_at"))
+        meta = f"{r['n_msgs']} msgs · {when}".strip(" ·")
+        values.append((str(r["id"]), (r["title"] or "Untitled")[:48], meta))
+    return values
+
+
+async def _load_session(session_id: uuid.UUID) -> tuple[list[tuple[str, str]], uuid.UUID] | None:
+    if lifecycle._session_factory is None:
+        return None
+    settings = get_settings()
+    async with lifecycle._session_factory() as session:
+        user = await ensure_default_user(session, settings)
+        chat = await get_session(session, session_id=session_id, user_id=user.id)
+        if chat is None:
+            return None
+        history = [
+            ("you" if m.role == "user" else "assistant", m.content)
+            for m in chat.messages
+            if m.role in ("user", "assistant")
+        ]
+        return history, chat.id
+
+
+def cmd_chat(*, session_id: uuid.UUID | None = None) -> int:
+    cfg = get_config()
+    if not cfg.is_enabled("agents"):
+        term.action_begin()
+        term.error("agents disabled in backend/config.json")
+        term.action_end()
+        return 1
+    if not cfg.is_enabled("retrieval"):
+        term.action_begin()
+        term.error("retrieval disabled in backend/config.json")
+        term.action_end()
+        return 1
+    bootstrap_env()
+    bootstrap()
+    services = worker_services()
+    gateway = services.llm if services else None
+
+    state: dict = {"session_id": session_id}
+    if session_id is not None:
+        loaded = run_async(_load_session(session_id))
+        initial_history = loaded[0] if loaded else []
+        if loaded:
+            state["session_id"] = loaded[1]
+    else:
+        initial_history = []
+
+    def turn(msg: str) -> str:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", SyntaxWarning)
+            ans, sid = run_async(_answer_for(msg, gateway, state["session_id"]))
+        state["session_id"] = sid
+        return ans
+
+    def list_history() -> list[tuple[str, str, str]]:
+        return run_async(_history_rows())
+
+    def load_history(sid: str) -> list[tuple[str, str]] | None:
+        if sid == "__new__":
+            state["session_id"] = None
+            return []
+        try:
+            uid = uuid.UUID(sid)
+        except ValueError:
+            return None
+        loaded = run_async(_load_session(uid))
+        if loaded is None:
+            return None
+        hist, chat_id = loaded
+        state["session_id"] = chat_id
+        return hist
+
+    if term.in_tui():
+        try:
+            term.chat_conversation(
+                turn,
+                initial_history=initial_history,
+                list_history=list_history,
+                load_history=load_history,
+            )
+        except Exception as exc:
+            term.action_begin()
+            term.error(f"chat ended: {exc}")
+            term.action_end()
+        return 0
+
+    # shortcut: non-TUI fallback — one line at a time, upgrade when headless needs history
+    while True:
+        message = term.prompt_line("ask › ")
+        if not message:
+            break
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", SyntaxWarning)
+                ans, sid = run_async(_answer_for(message, gateway, state["session_id"]))
+            state["session_id"] = sid
+            term.note_md(ans)
+        except KeyboardInterrupt:
+            break
+        except Exception as exc:
+            term.error(str(exc))
+            return 1
+    return 0

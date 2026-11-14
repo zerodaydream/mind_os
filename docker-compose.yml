@@ -1,0 +1,79 @@
+# MindOS local stack — see QUICKSTART.md
+name: mindos
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: mindos
+      POSTGRES_PASSWORD: mindos
+      POSTGRES_DB: mindos
+    ports:
+      - "5433:5432"  # host 5433 — avoids clash with a local Postgres on 5432
+    volumes:
+      - mindos_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mindos -d mindos"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    profiles: [lean, full]
+    build:
+      context: .
+      dockerfile: backend/infra/docker/Dockerfile.api
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://mindos:mindos@postgres:5432/mindos
+      MINDOS_VAULT_PATH: /data/vault
+    ports:
+      - "8000:8000"
+    volumes:
+      - mindos_vault:/data/vault
+      - ./backend/config.json:/app/backend/config.json:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  worker:
+    profiles: [lean, full]
+    build:
+      context: .
+      dockerfile: backend/infra/docker/Dockerfile.api
+    command: ["backend-worker"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://mindos:mindos@postgres:5432/mindos
+      MINDOS_VAULT_PATH: /data/vault
+    volumes:
+      - mindos_vault:/data/vault
+      - ./backend/config.json:/app/backend/config.json:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  langfuse:
+    profiles: [full]
+    image: langfuse/langfuse:2
+    environment:
+      DATABASE_URL: postgresql://mindos:mindos@postgres:5432/langfuse
+      NEXTAUTH_SECRET: change-me
+      SALT: change-me
+    ports:
+      - "3001:3000"
+    depends_on:
+      - postgres
+
+  ollama:
+    profiles: [optional-llm]
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_models:/root/.ollama
+
+volumes:
+  mindos_pg:
+  mindos_vault:
+  ollama_models:
