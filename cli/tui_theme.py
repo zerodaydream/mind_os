@@ -16,7 +16,7 @@ _G = {
     "ml": "+",
     "mr": "+",
     "x": "+",
-    "arr": ">",
+    "arr": "→",
 }
 
 
@@ -180,14 +180,52 @@ def session_table(
     *,
     width: int | None = None,
     selected: int | None = None,
+    title: str = "chat history",
 ) -> list[str]:
     return menu_panel(
-        "chat history",
+        title,
         rows,
         width=width,
         headers=("Session", "Meta"),
         selected=selected,
     )
+
+
+_BRAND_MIND = (
+    "███╗   ███╗██╗███╗   ██╗██████╗ ",
+    "████╗ ████║██║████╗  ██║██╔═══██╗",
+    "██╔████╔██║██║██╔██╗ ██║██║   ██║",
+    "██║╚██╔╝██║██║██║╚██╗██║██║   ██║",
+    "██║ ╚═╝ ██║██║██║ ╚████║██████ ╔╝",
+    "╚═╝     ╚═╝╚═╝╚═╝  ╚═══╝╚══════╝",
+)
+_BRAND_OS = (
+    " ██████╗  ███████╗",
+    "██╔═══██╗██╔════╝",
+    "██║   ██║███████╗",
+    "██║   ██║╚════██║",
+    "╚██████╔╝███████║",
+    " ╚═════╝ ╚══════╝",
+)
+
+
+def brand_mark_lines(*, max_w: int = 80) -> list[str]:
+    """Block figlet MIND + OS on one row each, side by side."""
+    cap = max(24, max_w)
+    gap = "  "
+    mind_w = max(len(m.rstrip()) for m in _BRAND_MIND)
+    out: list[str] = []
+    for mind, os in zip(_BRAND_MIND, _BRAND_OS, strict=True):
+        row = mind.rstrip().ljust(mind_w) + gap + os.strip()
+        out.append(row[:cap].rstrip())
+    return out
+
+
+def brand_block_x(width: int, lines: list[str]) -> int:
+    if not lines:
+        return 0
+    block_w = max(len(ln) for ln in lines)
+    return max(0, (width - block_w) // 2)
 
 
 def sink_command_rows(rows: list[tuple[str, str]]) -> list[str]:

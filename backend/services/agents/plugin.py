@@ -5,7 +5,7 @@ from typing import ClassVar
 from fastapi import APIRouter
 
 from backend.plugin import ServicePlugin
-from backend.services.agents.routes import chat, run
+from backend.services.agents.routes import chat, run, sessions
 
 
 class AgentsPlugin(ServicePlugin):
@@ -18,6 +18,7 @@ class AgentsPlugin(ServicePlugin):
         router = APIRouter()
         router.include_router(run.router)
         router.include_router(chat.router)
+        router.include_router(sessions.router)
         return router
 
 

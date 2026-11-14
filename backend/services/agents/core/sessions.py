@@ -93,6 +93,17 @@ async def append_message(
     return msg
 
 
+async def delete_session(
+    session: AsyncSession, *, session_id: uuid.UUID, user_id: uuid.UUID
+) -> bool:
+    chat = await get_session(session, session_id=session_id, user_id=user_id)
+    if chat is None:
+        return False
+    await session.delete(chat)
+    await session.flush()
+    return True
+
+
 async def recent_messages(
     session: AsyncSession, *, session_id: uuid.UUID, limit: int = 12
 ) -> list[dict]:

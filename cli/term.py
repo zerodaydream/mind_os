@@ -21,12 +21,10 @@ _tui_stdscr = None
 _persistent_tui = False
 
 _MENU_VALUES = [
+    ("chat", "Chat with your indexed context"),
     ("sync", "Sync filtered Gmail"),
     ("sync:process", "Sync Gmail + process outbox"),
     ("status", "Show DB · Gmail · artifact counts"),
-    ("schedule", "Print cron line for periodic sync"),
-    ("chat", "Chat with your indexed context"),
-    ("help", "Show command list (return to menu)"),
     ("exit", "Exit mindos"),
 ]
 
@@ -110,7 +108,6 @@ def _record(line: str) -> None:
 try:
     from rich.console import Console
     from rich.panel import Panel
-    from rich.table import Table
     from rich.text import Text
     from rich.theme import Theme
 
@@ -165,6 +162,33 @@ def _curses_harvest(stdscr) -> tuple:
         normal_attr = _curses_bright_white(curses, 2)
         sel_attr = curses.color_pair(1) | curses.A_BOLD
     return normal_attr, sel_attr
+
+
+def _curses_brand_attr() -> int:
+    import curses
+
+    if curses.has_colors():
+        curses.start_color()
+        try:
+            # system yellow
+            curses.init_pair(9, curses.COLOR_YELLOW, -1)
+            return curses.color_pair(9) | curses.A_BOLD
+        except curses.error:
+            pass
+    return curses.A_BOLD
+
+
+def _curses_success_attr() -> int:
+    import curses
+
+    if curses.has_colors():
+        curses.start_color()
+        try:
+            curses.init_pair(10, curses.COLOR_GREEN, -1)
+            return curses.color_pair(10) | curses.A_BOLD
+        except curses.error:
+            pass
+    return curses.A_BOLD
 
 
 def _split_sink(lines: list[str]) -> list[tuple[str, str]]:
@@ -440,40 +464,6 @@ def error(text: str) -> None:
     sys.stderr.write(f"{_C.red}error:{_C.reset} {text}\n")
 
 
-def command_table() -> None:
-    rows = [
-        ("sync", "Sync filtered Gmail (+ --process for worker)"),
-        ("sync --process", "Gmail sync then process outbox once"),
-        ("status", "DB, Gmail, config paths"),
-        ("schedule", "Print cron line"),
-        ("chat", "Ask Anything"),
-        ("help", "Show commands"),
-        ("exit", "Leave interactive mode"),
-    ]
-    if _sink is not None:
-        for line in tui_theme.sink_command_rows(rows):
-            _record(line)
-        return
-    if _RICH and _CONSOLE:
-        from rich.box import ROUNDED
-
-        table = Table(
-            show_header=True,
-            header_style="accent",
-            box=ROUNDED,
-            padding=(0, 1),
-            border_style="cyan",
-        )
-        table.add_column("Command", style="cyan")
-        table.add_column("Description", style="dim")
-        for cmd, desc in rows:
-            table.add_row(cmd, desc)
-        _CONSOLE.print(table)
-        return
-    for line in tui_theme.sink_command_rows(rows):
-        sys.stdout.write(f"{line}\n")
-
-
 def _menu_draw(
     stdscr,
     values: list[tuple[str, str]],
@@ -486,6 +476,7 @@ def _menu_draw(
     stdscr.keypad(True)
     normal_attr, sel_attr = _curses_harvest(stdscr)
     idx = 0
+    panel_scroll = 0
     esc = 27
     while True:
         stdscr.erase()
@@ -504,10 +495,31 @@ def _menu_draw(
             selected=idx,
             subtitle=subtitle,
         )
-        hint = tui_theme.footer_hint("↑↓ move · Enter run · Esc back", width=len(panel[0]))
-        block_h = len(panel) + 1
-        y0 = max(0, (h - block_h) // 2)
+        help_text = "↑↓ move · Enter run · Esc back"
+        foot_attr = normal_attr
+        try:
+            foot_attr = normal_attr | curses.A_DIM
+        except curses.error:
+            pass
+        brand = tui_theme.brand_mark_lines(max_w=w)
+        brand_h = len(brand) + (1 if brand else 0)
+        if brand_h + len(panel) + 1 > h:
+            brand = []
+            brand_h = 0
+        brand_attr = _curses_brand_attr()
+        block_h = brand_h + len(panel)
+        y0 = max(0, (h - 1 - block_h) // 2) if block_h + 1 <= h else 0
+        if brand:
+            bx = tui_theme.brand_block_x(w, brand)
+            for bi, ln in enumerate(brand):
+                try:
+                    stdscr.addstr(y0 + bi, bx, ln[: max(1, w - bx)], brand_attr)
+                except curses.error:
+                    pass
+            y0 += brand_h
         x0 = max(0, (w - len(panel[0])) // 2)
+        panel_top = y0
+        avail = max(1, h - 1 - panel_top)
 
         def _data_index(line_i: int) -> int | None:
             # panel: top, title, [sub], sep, head, mid, data..., bottom
@@ -516,9 +528,21 @@ def _menu_draw(
                 return None
             return line_i - (base + 2)
 
+        base = 3 + (1 if subtitle else 0)
+        sel_row = base + 2 + idx
+        if len(panel) > avail:
+            if sel_row < panel_scroll:
+                panel_scroll = sel_row
+            elif sel_row >= panel_scroll + avail:
+                panel_scroll = sel_row - avail + 1
+            panel_scroll = max(0, min(panel_scroll, len(panel) - avail))
+        else:
+            panel_scroll = 0
+
         for i, line in enumerate(panel):
-            if y0 + i >= h:
-                break
+            sy = panel_top + i - panel_scroll
+            if sy < panel_top or sy >= h - 1:
+                continue
             attr = normal_attr
             if i == 1 or (subtitle and i == 2):
                 attr = normal_attr | curses.A_BOLD
@@ -526,12 +550,13 @@ def _menu_draw(
             if di is not None and di == idx:
                 attr = sel_attr
             try:
-                stdscr.addstr(y0 + i, x0, line, attr)
+                stdscr.addstr(sy, x0, line, attr)
             except curses.error:
                 pass
-        if y0 + len(panel) < h:
+        if h > 0:
+            hx = max(0, (w - len(help_text)) // 2)
             try:
-                stdscr.addstr(y0 + len(panel), x0, hint, normal_attr)
+                stdscr.addstr(h - 1, hx, help_text[: max(1, w - hx)], foot_attr)
             except curses.error:
                 pass
         stdscr.refresh()
@@ -550,9 +575,109 @@ def _menu_draw(
             return None
 
 
+def _tui_flash(stdscr, message: str, *, wait_s: float = 2.0, attr: int | None = None) -> None:
+    import curses
+    import time
+
+    normal_attr, _ = _curses_harvest(stdscr)
+    draw_attr = normal_attr if attr is None else attr
+    stdscr.erase()
+    h, w = stdscr.getmaxyx()
+    text = message.strip()[: max(1, w - 2)]
+    try:
+        stdscr.addstr(max(0, h // 2), max(0, (w - len(text)) // 2), text, draw_attr)
+    except curses.error:
+        pass
+    stdscr.refresh()
+    time.sleep(wait_s)
+
+
+def _ascii_labeled_box(label: str) -> list[str]:
+    body = f" {label.strip()} "
+    bar = "-" * len(body)
+    return [f"+{bar}+", f"|{body}|", f"+{bar}+"]
+
+
+def _lr_yes_no_dialog(stdscr, *, prompt: str) -> bool | None:
+    """Yes (left) / Cancel (right). Enter confirms; Esc cancels."""
+    import curses
+
+    normal_attr, sel_attr = _curses_harvest(stdscr)
+    nav_attr = normal_attr
+    try:
+        nav_attr = normal_attr | curses.A_DIM
+    except curses.error:
+        pass
+    nav = "*use ← → to navigate*"
+    labels = ("Yes", "Cancel")
+    boxes = [_ascii_labeled_box(lab) for lab in labels]
+    choice = 0
+    while True:
+        stdscr.erase()
+        h, w = stdscr.getmaxyx()
+        wrap_w = max(12, w - 6)
+        prompt_lines = textwrap.wrap(prompt.strip(), width=wrap_w) or [""]
+        box_h = 3
+        gap = max(2, w // 16)
+        box_ws = [len(b[0]) for b in boxes]
+        row_w = box_ws[0] + gap + box_ws[1]
+        block_h = len(prompt_lines) + 1 + box_h
+        start_y = max(0, (h - block_h - 1) // 2)
+        for i, line in enumerate(prompt_lines):
+            x = max(0, (w - len(line)) // 2)
+            try:
+                stdscr.addstr(start_y + i, x, line[: max(1, w - x)], normal_attr)
+            except curses.error:
+                pass
+        btn_y = start_y + len(prompt_lines) + 1
+        btn_x = max(0, (w - row_w) // 2)
+        for bi, box in enumerate(boxes):
+            x = btn_x if bi == 0 else btn_x + box_ws[0] + gap
+            selected = bi == choice
+            for j, row in enumerate(box):
+                attr = normal_attr
+                if selected:
+                    attr = sel_attr | (curses.A_BOLD if j == 1 else 0)
+                try:
+                    stdscr.addstr(btn_y + j, x, row[: max(1, w - x)], attr)
+                except curses.error:
+                    pass
+        if h > 0:
+            try:
+                stdscr.addstr(h - 1, max(0, (w - len(nav)) // 2), nav[: max(1, w - 1)], nav_attr)
+            except curses.error:
+                pass
+        stdscr.refresh()
+        key = stdscr.getch()
+        enter_key = False
+        if key == 27:
+            kind = _read_esc_csi_action(stdscr, restore_ms=-1)
+            if kind == "enter":
+                enter_key = True
+            elif kind == "left":
+                choice = 0
+                continue
+            elif kind == "right":
+                choice = 1
+                continue
+            elif kind == "bare_esc":
+                return None
+            continue
+        if key in (curses.KEY_LEFT, ord("h")):
+            choice = 0
+        elif key in (curses.KEY_RIGHT, ord("l")):
+            choice = 1
+        elif key in (curses.KEY_ENTER, 10, 13, 343, ord("\n")) or enter_key:
+            return choice == 0
+        elif key in (27, ord("b")):
+            return None
+
+
 def _session_menu_draw(
     stdscr,
     sessions: list[tuple[str, str, str]],
+    *,
+    delete_session: Callable[[str], bool] | None = None,
 ) -> str | None:
     """Pick a chat session. sessions: (id, title, meta). Esc cancels (stays in chat)."""
     import curses
@@ -564,28 +689,78 @@ def _session_menu_draw(
     idx = 0
     scroll = 0
     data_off = 5
+
+    def _try_delete() -> None:
+        nonlocal idx
+        sid, title, _meta = sessions[idx]
+        if delete_session is None or sid == "__new__":
+            return
+        name = (title or "Untitled")[:48]
+        if _lr_yes_no_dialog(stdscr, prompt=f"Are you sure you want to delete [{name}]?") is not True:
+            return
+        if not delete_session(sid):
+            return
+        sessions.pop(idx)
+        _tui_flash(stdscr, "Deleted successfully", wait_s=2.0, attr=_curses_success_attr())
+        if not sessions:
+            return
+        idx = min(idx, len(sessions) - 1)
+
     while True:
+        if not sessions:
+            return None
         stdscr.erase()
         h, w = stdscr.getmaxyx()
-        pad = 0
+        x0 = 0
         table_w = max(24, w)
-        sess_rows = [(title or "Untitled", meta or "") for _sid, title, meta in sessions]
-        visible = max(1, h - data_off - 2)
+        saved_n = sum(1 for sid, _, _ in sessions if sid != "__new__")
+        n_w = max(1, len(str(saved_n))) if saved_n else 1
+        sess_rows: list[tuple[str, str]] = []
+        seq = 0
+        for sid, title, meta in sessions:
+            if sid == "__new__":
+                left = (title or "New chat")[:48]
+            else:
+                seq += 1
+                left = f"{seq:>{n_w}}. {(title or 'Untitled')[: max(8, 48 - n_w - 2)]}"
+            sess_rows.append((left, meta or ""))
+        brand = tui_theme.brand_mark_lines(max_w=w) if h >= 24 else []
+        brand_h = len(brand) + (1 if brand else 0)
+        brand_attr = _curses_brand_attr()
+        visible = max(1, h - brand_h - data_off - 2)
         if idx < scroll:
             scroll = idx
         elif idx >= scroll + visible:
             scroll = max(0, idx - visible + 1)
         slice_rows = sess_rows[scroll : scroll + visible]
         local_sel = idx - scroll if 0 <= idx - scroll < len(slice_rows) else None
-        panel = tui_theme.session_table(slice_rows, width=table_w, selected=local_sel)
-        line_w = len(panel[0]) if panel else table_w
-        hint = tui_theme.footer_hint(
-            f"Esc back · Enter open · {idx + 1}/{len(sessions)}",
-            width=line_w,
+        panel = tui_theme.session_table(
+            slice_rows,
+            width=table_w,
+            selected=local_sel,
+            title="Mind OS · saved chats",
         )
-        x0 = 0
+        panel_y0 = 0
+        if brand:
+            bx = tui_theme.brand_block_x(w, brand)
+            for bi, ln in enumerate(brand):
+                try:
+                    stdscr.addstr(bi, bx, ln[: max(1, w - bx)], brand_attr)
+                except curses.error:
+                    pass
+            panel_y0 = brand_h
+        del_hint = " · d delete" if delete_session else ""
+        help_text = (
+            f"Esc back · Enter open · ↑/↓ move{del_hint} · {idx + 1}/{len(sessions)}"
+        )
+        foot_attr = normal_attr
+        try:
+            foot_attr = normal_attr | curses.A_DIM
+        except curses.error:
+            pass
         for i, line in enumerate(panel):
-            if i >= h - 1:
+            y = panel_y0 + i
+            if y >= h - 1:
                 break
             attr = normal_attr
             if i == 1:
@@ -598,26 +773,45 @@ def _session_menu_draw(
                 attr = sel_attr
             draw = line[: w - x0] if x0 else line[:w]
             try:
-                stdscr.addstr(i, x0, draw, attr)
+                stdscr.addstr(y, x0, draw, attr)
             except curses.error:
                 pass
-        if len(panel) < h:
-            foot = hint[: w - x0] if x0 else hint[:w]
+        if h > 0:
+            hx = max(0, (w - len(help_text)) // 2)
             try:
-                stdscr.addstr(min(len(panel), h - 1), x0, foot, normal_attr)
+                stdscr.addstr(h - 1, hx, help_text[: max(1, w - hx)], foot_attr)
             except curses.error:
                 pass
         stdscr.refresh()
         key = stdscr.getch()
+        enter_key = False
+        if key == 27:
+            kind = _read_esc_csi_action(stdscr, restore_ms=-1)
+            if kind == "enter":
+                enter_key = True
+            elif kind == "up":
+                idx = max(0, idx - 1)
+                continue
+            elif kind == "down":
+                idx = min(len(sessions) - 1, idx + 1)
+                continue
+            elif kind == "bare_esc":
+                return None
+            else:
+                continue
         if key in (curses.KEY_UP, ord("k")):
-            idx = (idx - 1) % len(sessions)
+            idx = max(0, idx - 1)
         elif key in (curses.KEY_DOWN, ord("j")):
-            idx = (idx + 1) % len(sessions)
+            idx = min(len(sessions) - 1, idx + 1)
         elif key in (curses.KEY_PPAGE,):
             idx = max(0, idx - visible)
         elif key in (curses.KEY_NPAGE,):
             idx = min(len(sessions) - 1, idx + visible)
-        elif key in (curses.KEY_ENTER, 10, 13, ord("\n")):
+        elif key in (ord("d"), ord("D")):
+            _try_delete()
+            if not sessions:
+                return None
+        elif key in (curses.KEY_ENTER, 10, 13, 343, ord("\n")) or enter_key:
             return sessions[idx][0]
         elif key in (27, ord("b")):
             return None
@@ -1091,12 +1285,12 @@ def _read_esc_csi_body(stdscr) -> str:
 def _read_esc_csi_action(
     stdscr, *, restore_ms: int = _CHAT_INPUT_TIMEOUT_MS
 ) -> str:
-    """shift_enter | enter | up | down | left | right | ppage | npage | home | end | ignored."""
-    stdscr.timeout(50)
+    """shift_enter | enter | up | down | left | right | ppage | npage | home | end | bare_esc | ignored."""
+    stdscr.timeout(120)
     second = stdscr.getch()
     if second == -1:
         stdscr.timeout(restore_ms)
-        return "ignored"
+        return "bare_esc"
     if second != ord("["):
         stdscr.timeout(restore_ms)
         return "ignored"
@@ -1212,6 +1406,7 @@ def chat_conversation(
     initial_history: list[tuple[str, str]] | None = None,
     list_history: Callable[[], list] | None = None,
     load_history: Callable[[str], list[tuple[str, str]] | None] | None = None,
+    delete_history: Callable[[str], bool] | None = None,
 ) -> None:
     """Continuous assistant chat; top bar Back / History (←/→, Enter on empty input)."""
     import curses as c
@@ -1229,6 +1424,7 @@ def chat_conversation(
             initial_history=initial_history,
             list_history=list_history,
             load_history=load_history,
+            delete_history=delete_history,
         )
     finally:
         _chat_term_restore(saved_term)
@@ -1245,6 +1441,7 @@ def _chat_conversation_loop(
     initial_history: list[tuple[str, str]] | None,
     list_history: Callable[[], list] | None,
     load_history: Callable[[str], list[tuple[str, str]] | None],
+    delete_history: Callable[[str], bool] | None = None,
 ) -> None:
     import curses as c
 
@@ -1471,7 +1668,7 @@ def _chat_conversation_loop(
                 scroll = max_sc
 
     def _editing_draft() -> bool:
-        return input_focus and bool(buf)
+        return input_focus and bool(buf.strip())
 
     def _apply_nav(action: str) -> None:
         nonlocal scroll, cursor, top_tab, follow_tail
@@ -1588,60 +1785,65 @@ def _chat_conversation_loop(
                 follow_tail = True
                 scroll = max_sc
 
-    def _pick_history() -> None:
+    def _open_history_tab() -> None:
+        """Empty Enter on History tab: open session picker."""
         nonlocal history, scroll, thinking_line, follow_tail, _render_sig
-        if list_history is None or load_history is None:
-            thinking_line = "  (history unavailable)"
-            _draw(show_cursor=False)
-            return
         try:
-            rows = list_history()
-        except Exception as exc:
-            msg = str(exc).split("\n", 1)[0][:120]
-            if "chat_sessions" in msg and ("exist" in msg.lower() or "undefined" in msg.lower()):
-                msg = "chat_sessions missing — run: uv run alembic upgrade head"
-            thinking_line = f"  history error: {msg}"
-            _draw(show_cursor=False)
-            return
-        # rows: (id, title, meta) — tolerate old (id, label) pairs
-        sessions: list[tuple[str, str, str]] = []
-        for row in rows:
-            if len(row) >= 3:
-                sessions.append((row[0], row[1], row[2]))
-            elif len(row) == 2:
-                sessions.append((row[0], row[1], ""))
-        if not sessions:
-            thinking_line = "  (no saved sessions yet)"
-            _draw(show_cursor=False)
-            return
-        stdscr.timeout(-1)
-        try:
-            picked = _session_menu_draw(stdscr, sessions)
-        except Exception as exc:
-            thinking_line = f"  history error: {exc}"
-            picked = None
-        try:
-            c.flushinp()
-        except c.error:
-            pass
-        stdscr.timeout(_CHAT_INPUT_TIMEOUT_MS)
-        if picked is None:
+            if list_history is None or load_history is None:
+                thinking_line = "  (history unavailable)"
+                return
+            try:
+                rows = list_history()
+            except Exception as exc:
+                msg = str(exc).split("\n", 1)[0][:120]
+                if "chat_sessions" in msg and (
+                    "exist" in msg.lower() or "undefined" in msg.lower()
+                ):
+                    msg = "chat_sessions missing — run: uv run alembic upgrade head"
+                thinking_line = f"  history error: {msg}"
+                return
+            sessions: list[tuple[str, str, str]] = []
+            for row in rows:
+                if len(row) >= 3:
+                    sessions.append((row[0], row[1], row[2]))
+                elif len(row) == 2:
+                    sessions.append((row[0], row[1], ""))
+            if not sessions:
+                thinking_line = "  (no saved sessions yet)"
+                return
+            stdscr.timeout(-1)
+            try:
+                picked = _session_menu_draw(
+                    stdscr, sessions, delete_session=delete_history
+                )
+            except Exception as exc:
+                thinking_line = f"  history error: {exc}"
+                picked = None
+            try:
+                c.flushinp()
+            except c.error:
+                pass
+            stdscr.timeout(_CHAT_INPUT_TIMEOUT_MS)
+            if picked is None:
+                thinking_line = None
+                return
+            try:
+                loaded = load_history(picked)
+            except Exception as exc:
+                thinking_line = f"  load error: {exc}"
+                return
+            if loaded is None:
+                thinking_line = "  (session not found)"
+                return
+            history = list(loaded)
             thinking_line = None
-            return
-        try:
-            loaded = load_history(picked)
-        except Exception as exc:
-            thinking_line = f"  load error: {exc}"
-            _draw(show_cursor=False)
-            return
-        if loaded is None:
-            thinking_line = "  (session not found)"
-            _draw(show_cursor=False)
-            return
-        history = list(loaded)
-        thinking_line = None
-        follow_tail = True
-        _render_sig = None
+            follow_tail = True
+            _render_sig = None
+        finally:
+            _draw(show_cursor=input_focus and bool(buf.strip()))
+
+    def _pick_history() -> None:
+        _open_history_tab()
 
     def _draw(*, show_cursor: bool = False) -> None:
         nonlocal scroll, follow_tail
@@ -1676,8 +1878,12 @@ def _chat_conversation_loop(
                 pass
             tab_x += len(segment) + tab_gap
         hint_attr = tab_norm
-        hint1 = " Tab → Switch  |  ←/→ top bar when not typing  |  Enter to send"
-        hint2 = " Tab compose/browse  |  Ctrl+G voice"
+        hint1 = (
+            " Tab → Back/History  |  ←/→ tabs  |  Enter send (History · Enter = saved chats)"
+            if top_tab == 1
+            else " Tab → Back/History  |  ←/→ tabs  |  Enter send (Back · Enter = leave)"
+        )
+        hint2 = " Tab again while typing → browse  |  h = history  |  Ctrl+G voice"
         try:
             stdscr.addstr(1, pad, tui_theme.rule(inner_w)[:inner_w], normal)
             stdscr.addstr(2, pad, hint1[:inner_w], hint_attr)
@@ -1904,17 +2110,29 @@ def _chat_conversation_loop(
                 _voice_start()
             continue
         if key == 9:
-            input_focus = not input_focus
-            if not input_focus:
-                follow_tail = False
-            _draw(show_cursor=input_focus and bool(buf))
+            if _editing_draft():
+                input_focus = not input_focus
+                if not input_focus:
+                    follow_tail = False
+            else:
+                top_tab = (top_tab + 1) % len(_TOP_TABS)
+            _draw(show_cursor=input_focus and bool(buf.strip()))
             continue
         if key == 27:
             kind = _read_esc_csi_action(stdscr)
-            if kind == "shift_enter" and input_focus and buf:
+            if kind == "shift_enter" and input_focus and buf.strip():
                 _insert_newline()
-            elif kind == "enter" and input_focus and buf:
-                _submit_turn()
+            elif kind == "enter":
+                if input_focus and buf.strip():
+                    _submit_turn()
+                elif top_tab == 0:
+                    stdscr.timeout(-1)
+                    return
+                elif top_tab == 1:
+                    _open_history_tab()
+            elif kind == "bare_esc":
+                stdscr.timeout(-1)
+                return
             elif kind in ("up", "down", "ppage", "npage") and not _editing_draft():
                 _burst_transcript_scroll(
                     kind, restore_ms=-1 if not blink_idle else _CHAT_INPUT_TIMEOUT_MS
@@ -1957,16 +2175,21 @@ def _chat_conversation_loop(
                 continue
             _insert_newline()
             continue
-        if key in (c.KEY_ENTER, 10, 13, 343):
-            if input_focus and buf:
+        if key in (c.KEY_ENTER, 10, 13, 343, ord("\n")):
+            if input_focus and buf.strip():
                 _submit_turn()
                 continue
             if top_tab == 0:
                 stdscr.timeout(-1)
                 return
             if top_tab == 1:
-                _pick_history()
+                _open_history_tab()
+                continue
             _draw(show_cursor=input_focus)
+            continue
+        if key in (ord("h"), ord("H")) and not _editing_draft():
+            top_tab = 1
+            _open_history_tab()
             continue
         if not input_focus:
             if 32 <= key <= 126 and len(buf) < 4000:

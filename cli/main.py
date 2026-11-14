@@ -12,7 +12,6 @@ from cli.async_util import run_async
 from cli.env import bootstrap_env
 from cli.chat_cmd import cmd_chat
 from cli.repl import run_repl
-from cli.schedule_cmd import cmd_schedule
 from cli.status import cmd_status
 from cli.sync_cmd import run_sync
 from backend.common.config_loader.settings import get_settings
@@ -30,17 +29,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="After sync, drain the outbox once (embeddings / commitments)",
     )
-    p.add_argument(
-        "--schedule",
-        action="store_true",
-        help="Print a cron line for periodic --sync",
-    )
     sub = p.add_subparsers(dest="command")
     sync_p = sub.add_parser("sync", help="Same as --sync")
     sync_p.add_argument("--gmail", action="store_true")
     sync_p.add_argument("--process", action="store_true")
     sub.add_parser("status", help="Show connection and artifact counts")
-    sub.add_parser("schedule", help="Print cron for periodic sync")
     chat_p = sub.add_parser("chat", help="Interactive chat over local context")
     chat_p.add_argument("--session", type=str, default=None, help="Resume a chat session UUID")
     return p
@@ -50,8 +43,6 @@ def main() -> None:
     bootstrap_env()
     get_settings.cache_clear()
     args = build_parser().parse_args()
-    if args.schedule or getattr(args, "command", None) == "schedule":
-        raise SystemExit(cmd_schedule())
     if getattr(args, "command", None) == "status":
         raise SystemExit(cmd_status())
     if getattr(args, "command", None) == "chat":

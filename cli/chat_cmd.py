@@ -14,7 +14,7 @@ from backend.common.config_loader import get_config
 from backend.common.config_loader.settings import get_settings
 from backend.common.database import lifecycle
 from backend.services.agents.core.orchestrate import handle_turn
-from backend.services.agents.core.sessions import get_session, list_sessions
+from backend.services.agents.core.sessions import delete_session, get_session, list_sessions
 from backend.services.ingest.core.manual import ensure_default_user
 from backend.worker.bootstrap import bootstrap, worker_services
 
@@ -96,6 +96,18 @@ async def _history_rows() -> list[tuple[str, str, str]]:
         meta = f"{r['n_msgs']} msgs · {when}".strip(" ·")
         values.append((str(r["id"]), (r["title"] or "Untitled")[:48], meta))
     return values
+
+
+async def _remove_session(session_id: uuid.UUID) -> bool:
+    if lifecycle._session_factory is None:
+        return False
+    settings = get_settings()
+    async with lifecycle._session_factory() as session:
+        user = await ensure_default_user(session, settings)
+        ok = await delete_session(session, session_id=session_id, user_id=user.id)
+        if ok:
+            await session.commit()
+        return ok
 
 
 async def _load_session(session_id: uuid.UUID) -> tuple[list[tuple[str, str]], uuid.UUID] | None:
@@ -183,6 +195,18 @@ def cmd_chat(*, session_id: uuid.UUID | None = None) -> int:
         state["session_id"] = chat_id
         return hist
 
+    def delete_history(sid: str) -> bool:
+        if sid == "__new__":
+            return False
+        try:
+            uid = uuid.UUID(sid)
+        except ValueError:
+            return False
+        ok = run_async(_remove_session(uid))
+        if ok and state.get("session_id") == uid:
+            state["session_id"] = None
+        return ok
+
     if term.in_tui():
         try:
             term.chat_conversation(
@@ -190,6 +214,7 @@ def cmd_chat(*, session_id: uuid.UUID | None = None) -> int:
                 initial_history=initial_history,
                 list_history=list_history,
                 load_history=load_history,
+                delete_history=delete_history,
             )
         except Exception as exc:
             term.action_begin()
