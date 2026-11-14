@@ -7,12 +7,45 @@ from backend.services.agents.core.prompt_budget import (
     SYNTH_MAX_OUTPUT_TOKENS,
     clip_text,
 )
+from backend.services.agents.core.markdown_tables import normalize_markdown_tables
 from backend.services.agents.core.turn_context import TurnContext, prefetch_turn_context
 
 _CONVERSE_SYSTEM = (
     "You are MindOS assistant. Be brief and conversational. "
     "Do not mention email, commitments, or indexed data unless the user asks."
 )
+
+
+def _looks_cut_off(text: str) -> bool:
+    t = text.rstrip()
+    if len(t) < 24:
+        return False
+    if t[-1] in ".!?\n":
+        return False
+    if t.endswith("```") or t.endswith("|"):
+        return False
+    tail = t.split()[-1].lower() if t.split() else ""
+    if tail in {"to", "the", "a", "an", "and", "or", "for", "with", "in", "on", "of", "is", "are"}:
+        return True
+    return t[-1].isalnum()
+
+
+async def _finish_synth_answer(gateway, answer: str) -> str:
+    if not _looks_cut_off(answer):
+        return answer
+    try:
+        res = await gateway.complete(
+            "Continue the assistant reply below. Output only the remainder; do not repeat.\n\n"
+            f"{answer[-800:]}",
+            task=LlmTask.SYNTH,
+            max_output_tokens=512,
+        )
+        extra = (res.text or "").strip()
+        if extra:
+            return f"{answer.rstrip()} {extra}".strip()
+    except Exception:
+        pass
+    return answer
 
 
 def _format_history(history: list[dict] | None) -> str:
@@ -95,18 +128,19 @@ async def run_chat(
             answer = (res.text or "").strip() or "Hello — what would you like to look up?"
         except Exception:
             answer = "Hello — what would you like to look up?"
+        answer = normalize_markdown_tables(answer)
         return {"message": message, "answer": answer, "sources": [], "mode": "converse"}
 
     system = (
         "You are MindOS assistant. Answer only from Context; be precise and factual. "
         "Use Markdown lists or tables when asked. If data is missing, say what to sync—do not invent. "
-        "Complete every sentence; do not trail off."
+        "Complete every sentence; do not trail off. "
+        "Tables: GitHub-flavored Markdown — header row, `| --- | --- |` separator, one data row per line."
     )
     if plan_style:
         system += (
-            " This is a multi-step research turn: use the Context to answer fully. "
-            "When the user asks for a table, output a Markdown table (Subject | From | Summary) "
-            "using only rows supported by the Context; cap at the requested count (e.g. top 10)."
+            " Use real Subject/Description cells from Context. Example:\n"
+            "| Subject | Description |\n| --- | --- |\n| Indeed Application: AI Developer | summary from mail |"
         )
     if not ctx.has_context:
         parts = [_CONVERSE_SYSTEM]
@@ -130,7 +164,7 @@ async def run_chat(
             res = await gateway.complete(
                 prompt, task=LlmTask.SYNTH, max_output_tokens=SYNTH_MAX_OUTPUT_TOKENS
             )
-            answer = (res.text or "").strip()
+            answer = await _finish_synth_answer(gateway, (res.text or "").strip())
             if not answer:
                 mode = "retrieval_only"
                 answer = _fallback_answer(ctx)
@@ -140,7 +174,7 @@ async def run_chat(
 
     return {
         "message": message,
-        "answer": answer,
+        "answer": normalize_markdown_tables(answer),
         "sources": ctx.sources,
         "mode": mode,
         "filter_source": source,

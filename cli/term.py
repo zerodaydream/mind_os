@@ -713,22 +713,80 @@ def _repl_plain(subtitle: str, handler) -> int:
     return 0
 
 
-def _markdown_plain_lines(text: str, width: int) -> list[str]:
+def _markdown_line_style(line: str, *, in_sources: bool) -> str:
+    s = line.strip()
+    if not s:
+        return "body"
+    if s == "sources:":
+        return "sources"
+    if in_sources and re.match(r"^\s*\d+\.", line):
+        return "source_item"
+    if s.startswith("…") or s.startswith("..."):
+        return "source_item"
+    if re.match(r"^_{1,2}.+_{1,2}$", s):
+        return "meta"
+    if re.match(r"^#{1,6}\s", s):
+        return "heading"
+    if s.count("|") >= 2:
+        return "table"
+    if re.match(r"^[-:|+\s]{3,}$", s.replace("|", "").strip("-: |+")) or re.fullmatch(
+        r"[-\s]{3,}", s
+    ):
+        return "rule"
+    if re.match(r"^[-*]\s", s) or re.match(r"^\d+\.\s", s):
+        return "list"
+    if re.match(r"^[A-Z][^:\n]{2,40}:$", s):
+        return "heading"
+    return "body"
+
+
+def _markdown_chat_lines(text: str, width: int) -> list[tuple[str, str]]:
+    from cli import md_render
+
     width = max(20, width)
-    if _RICH:
-        try:
-            from io import StringIO
-
-            from rich.markdown import Markdown
-
-            buf = StringIO()
-            Console(file=buf, width=width, highlight=False).print(Markdown(text))
-            raw = re.sub(r"\x1b\[[0-9;]*m", "", buf.getvalue())
-            lines = [ln.rstrip() for ln in raw.splitlines()]
-            return [ln for ln in lines if ln.strip()] or ["(empty)"]
-        except Exception:
-            pass
-    return textwrap.wrap(text, width=width) or ["(empty)"]
+    out: list[tuple[str, str]] = []
+    in_sources = False
+    lines = text.splitlines()
+    i = 0
+    while i < len(lines):
+        raw = lines[i]
+        if md_render.is_table_line(raw):
+            block: list[str] = []
+            while i < len(lines) and lines[i].strip() and (
+                md_render.is_table_line(lines[i]) or md_render.is_separator_line(lines[i])
+            ):
+                block.append(lines[i])
+                i += 1
+            rows = md_render.parse_pipe_table(block)
+            if rows:
+                for ln in md_render.ascii_table(rows, width):
+                    out.append(("table", ln))
+            else:
+                for ln in block:
+                    out.append(("table", ln.rstrip()))
+            continue
+        style = _markdown_line_style(raw, in_sources=in_sources)
+        if style == "sources":
+            in_sources = True
+        elif style in ("heading", "meta") and raw.strip():
+            in_sources = False
+        text = md_render.display_for_tui(raw, style)
+        if not text:
+            i += 1
+            continue
+        if len(text) <= width:
+            wrapped = [text]
+        else:
+            wrapped = textwrap.wrap(
+                text,
+                width=width,
+                break_long_words=False,
+                break_on_hyphens=False,
+            ) or [text]
+        for ln in wrapped:
+            out.append((style, ln.rstrip()))
+        i += 1
+    return out or [("body", "(empty)")]
 
 
 def _chat_think_turn(fn: Callable[[], str], on_tick: Callable[[int], None]) -> str:
@@ -1099,6 +1157,24 @@ def _chat_conversation_loop(
             except c.error:
                 pass
 
+    md_heading = asst_attr | c.A_BOLD
+    md_table = asst_attr | c.A_DIM
+    md_rule = asst_attr | c.A_DIM
+    md_sources = asst_attr | c.A_BOLD
+    md_source_item = asst_attr | c.A_DIM
+    md_meta = tab_norm
+    md_list = asst_attr
+    md_attr = {
+        "body": asst_attr,
+        "heading": md_heading,
+        "table": md_table,
+        "rule": md_rule,
+        "list": md_list,
+        "sources": md_sources,
+        "source_item": md_source_item,
+        "meta": md_meta,
+    }
+
     _TOP_TABS = ("Back", "History")
     history: list[tuple[str, str]] = list(initial_history or [])
     scroll = 0
@@ -1203,11 +1279,17 @@ def _chat_conversation_loop(
     def _flat_history(inner_w: int) -> list[tuple[int, str]]:
         out: list[tuple[int, str]] = []
         for role, text in history:
-            attr = user_attr if role == "you" else asst_attr
             prefix = "you › " if role == "you" else "mindos › "
-            body = _markdown_plain_lines(text, max(20, inner_w - len(prefix) - 2))
-            out.append((attr, f"{prefix}{body[0]}"))
-            out.extend((attr, f"  {ln}") for ln in body[1:])
+            wrap_w = max(20, inner_w - len(prefix) - 2)
+            if role == "you":
+                for i, ln in enumerate(textwrap.wrap(text, width=wrap_w) or ["(empty)"]):
+                    pad = prefix if i == 0 else "  "
+                    out.append((user_attr, f"{pad}{ln}"))
+                continue
+            lines = _markdown_chat_lines(text, wrap_w)
+            for i, (style, ln) in enumerate(lines):
+                pad = prefix if i == 0 else "  "
+                out.append((md_attr.get(style, asst_attr), f"{pad}{ln}"))
         return out
 
     def _rendered_transcript(inner_w: int) -> list[tuple[int, str]]:
@@ -1532,6 +1614,8 @@ def _chat_conversation_loop(
 
     def _submit_turn() -> None:
         nonlocal buf, cursor, scroll, thinking_line, follow_tail, _render_sig
+        if _voice_busy():
+            _voice_stop()
         msg = buf.rstrip()
         if not msg:
             return

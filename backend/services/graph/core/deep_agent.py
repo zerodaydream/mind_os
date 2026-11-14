@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.common.database.models import Commitment
 from backend.common.utils.enums import LlmMode
+from backend.services.agents.core.markdown_tables import normalize_markdown_tables
 from backend.services.agents.core.prompt_budget import DEEP_USER_CONTEXT_MAX, clip_text
 from backend.services.retrieval.core.hybrid import hybrid_search_artifacts
 
@@ -158,7 +159,7 @@ async def run_deep_agent(
             "intent": intent,
         }
 
-    answer = _extract_answer(result)
+    answer = normalize_markdown_tables(_extract_answer(result) or "")
     sources = turn_context.sources if turn_context else []
     return {
         "answer": answer or "(empty agent reply)",
@@ -184,4 +185,4 @@ def _extract_answer(result) -> str:
                 text = "".join(parts).strip()
                 if text:
                     return text
-    return str(result)[:4000]
+    return clip_text(str(result), 12_000, min_keep=4000)

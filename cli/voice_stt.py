@@ -95,6 +95,8 @@ def start_listen(on_partial: Callable[[str], None]) -> None:
 
 
 def stop_listen() -> None:
+    global _ON_PARTIAL
+    _ON_PARTIAL = None
     mic = _MIC
     if mic is not None:
         mic.stop()

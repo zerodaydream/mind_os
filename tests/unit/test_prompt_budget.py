@@ -15,6 +15,13 @@ def test_clip_text_prefers_sentence_boundary():
     assert out.rstrip("…").endswith(".")
 
 
+def test_chat_history_budget_room():
+    from backend.services.agents.core.prompt_budget import CHAT_HISTORY_MSG_CHARS, SYNTH_MAX_OUTPUT_TOKENS
+
+    assert CHAT_HISTORY_MSG_CHARS >= 1_600
+    assert SYNTH_MAX_OUTPUT_TOKENS >= 2_048
+
+
 def test_clip_text_word_boundary_fallback():
     text = "abcdefghijklmnop" * 20
     out = clip_text(text, 80)

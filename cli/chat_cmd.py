@@ -58,13 +58,14 @@ async def _answer_for(message: str, gateway, session_id: uuid.UUID | None) -> tu
     if intent and intent != "converse":
         answer = f"_[{intent}]_\n\n{answer}"
     if sources and intent in ("plan", "execute"):
-        tail = ", ".join(
-            f"[{s.get('source') or '?'}] {(s.get('title') or s.get('artifact_id') or '')[:48]}"
-            for s in sources[:4]
-        )
-        if len(sources) > 4:
-            tail += f" (+{len(sources) - 4} more)"
-        answer = f"{answer}\n\n_sources: {tail}_"
+        lines = [
+            f"  {i}. [{s.get('source') or '?'}] "
+            f"{s.get('title') or s.get('artifact_id') or ''}"
+            for i, s in enumerate(sources[:15], 1)
+        ]
+        if len(sources) > 15:
+            lines.append(f"  … +{len(sources) - 15} more")
+        answer = f"{answer}\n\nsources:\n" + "\n".join(lines)
     return answer, uuid.UUID(out["session_id"])
 
 
