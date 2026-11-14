@@ -23,7 +23,10 @@ from backend.services.agents.core.turn_context import (
 
 _CONVERSE_SYSTEM = (
     "You are MindOS assistant. Be brief and conversational. "
-    "Do not mention email, commitments, or indexed data unless the user asks."
+    "Do not mention email, commitments, or indexed data unless the user asks. "
+    "You cannot create calendar events or send invites—never say you did; "
+    "tell the user to describe the event in one message (title, time, timezone) "
+    "or use /do for actions."
 )
 
 
@@ -145,7 +148,7 @@ async def run_chat(
     )
 
     hist_text = _format_history(history)
-    if not ctx.has_context and not hist_text:
+    if not ctx.has_context and not hist_text and not plan_style:
         if gateway is None or gateway.mode == LlmMode.DEGRADED:
             return {
                 "message": message,
@@ -191,7 +194,8 @@ async def run_chat(
             "| Subject | Description |\n| --- | --- |\n| Indeed Application: AI Developer | summary from mail |"
         )
     if not ctx.has_context:
-        parts = [_CONVERSE_SYSTEM]
+        base = system if plan_style else _CONVERSE_SYSTEM
+        parts = [base]
         if hist_text:
             parts.append(f"Recent conversation:\n{hist_text}")
         parts.append(f"User: {message}")

@@ -97,11 +97,30 @@ def strip_override(message: str) -> tuple[Intent | None, str]:
     return None, raw
 
 
+def _calendar_execute(lower: str) -> bool:
+    if "calendar" in lower:
+        return True
+    if re.search(r"\bschedule\b", lower) and re.search(
+        r"\b(at\s+\d|:\d|pm|am|tomorrow|today|schedule\s+it)\b", lower
+    ):
+        return True
+    has_sched = any(
+        w in lower for w in ("event", "meeting", "appointment", "reminder")
+    )
+    if not has_sched:
+        return False
+    return bool(
+        re.search(r"\b(create|schedule|add|book|set up|set-up)\b", lower)
+    )
+
+
 def classify(message: str) -> tuple[Intent, str]:
     override, body = strip_override(message)
     if override is not None:
         return override, body
     lower = body.lower()
+    if _calendar_execute(lower):
+        return "execute", body
     if any(p in lower for p in _EXECUTE):
         return "execute", body
     if any(p in lower for p in _PLAN):

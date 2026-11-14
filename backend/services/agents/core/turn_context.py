@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -72,6 +73,32 @@ def converse_wants_context(message: str) -> bool:
     return len(lower) > 60
 
 
+_COMMITMENT_WORDS = (
+    "commit",
+    "todo",
+    "task",
+    "promise",
+    "deadline",
+    "follow-up",
+    "follow up",
+    "followup",
+    "owe",
+    "owing",
+)
+
+
+def wants_commitment_context(message: str) -> bool:
+    lower = message.lower()
+    return any(w in lower for w in _COMMITMENT_WORDS)
+
+
+def _mail_recipient_needle(message: str) -> str | None:
+    m = re.search(r"\bsent\s+(?:\w+\s+)*to\s+([a-z0-9][a-z0-9 .@'-]{1,72})", message.lower())
+    if not m:
+        return None
+    return m.group(1).strip().rstrip("?.!")
+
+
 def wants_mail_context(message: str, source: str | None) -> bool:
     if source == "gmail":
         return True
@@ -128,10 +155,33 @@ async def _open_commitment_summaries(session: AsyncSession, user_id) -> list[str
     return [s for (s,) in rows.all() if s]
 
 
-async def _ingested_gmail(session: AsyncSession, user_id, *, limit: int = PREFETCH_GMAIL_ROWS) -> list[dict]:
+async def _ingested_gmail(
+    session: AsyncSession,
+    user_id,
+    *,
+    limit: int = PREFETCH_GMAIL_ROWS,
+    artifact_ids: list[str] | None = None,
+    to_needle: str | None = None,
+    sent_only: bool = False,
+) -> list[dict]:
+    clauses = ["a.user_id = :uid", "a.source = 'gmail'"]
+    params: dict = {"uid": user_id, "lim": limit}
+    if artifact_ids:
+        clauses.append("a.id = ANY(CAST(:ids AS uuid[]))")
+        params["ids"] = artifact_ids
+    if sent_only:
+        clauses.append("a.metadata->>'direction' = 'sent'")
+    if to_needle:
+        needle = to_needle.strip()
+        params["to_pat"] = f"%{needle}%"
+        clauses.append(
+            "(COALESCE(a.metadata->>'to', '') ILIKE :to_pat "
+            "OR COALESCE(a.title, '') ILIKE :to_pat)"
+        )
+    where = " AND ".join(clauses)
     rows = await session.execute(
         text(
-            """
+            f"""
             SELECT a.id, a.title, a.metadata->>'from' AS from_addr,
                    a.metadata->>'to' AS to_addr,
                    a.metadata->>'direction' AS direction,
@@ -145,12 +195,12 @@ async def _ingested_gmail(session: AsyncSession, user_id, *, limit: int = PREFET
                      LIMIT 1
                    ) AS preview
             FROM artifacts a
-            WHERE a.user_id = :uid AND a.source = 'gmail'
+            WHERE {where}
             ORDER BY COALESCE(a.occurred_at, a.created_at) DESC
             LIMIT :lim
             """
         ),
-        {"uid": user_id, "lim": limit},
+        params,
     )
     return [
         {
@@ -187,9 +237,6 @@ def format_context_text(
     if memories:
         ctx_lines.append("Approved memories:")
         ctx_lines.extend(f"- {s}" for s in memories)
-    if commitments:
-        ctx_lines.append("Open commitments:")
-        ctx_lines.extend(f"- {s}" for s in commitments)
     if gmail_ctx:
         ctx_lines.append(f"Gmail messages ({len(gmail_ctx)}, newest first):")
         for g in gmail_ctx:
@@ -208,6 +255,9 @@ def format_context_text(
                 ctx_lines.append(f"{header}\n  {prev}")
             else:
                 ctx_lines.append(header)
+    if commitments:
+        ctx_lines.append("Open commitments:")
+        ctx_lines.extend(f"- {s}" for s in commitments)
     if results:
         ctx_lines.append("Search hits:")
         ctx_lines.extend(
@@ -239,9 +289,29 @@ async def prefetch_turn_context(
         source=source,
     )
     results = list(hybrid_hits)
-    commitments = await _open_commitment_summaries(session, user.id)
+    commitments = (
+        await _open_commitment_summaries(session, user.id)
+        if wants_commitment_context(message)
+        else []
+    )
     memories = await _approved_memories(session, user.id)
-    gmail_ctx = await _ingested_gmail(session, user.id) if wants_mail else []
+    recipient = _mail_recipient_needle(message) if wants_mail else None
+    gmail_ids = [
+        h["artifact_id"] for h in results if (h.get("source") or "").lower() == "gmail"
+    ]
+    if wants_mail:
+        if recipient:
+            gmail_ctx = await _ingested_gmail(
+                session, user.id, to_needle=recipient, sent_only=True, limit=40
+            )
+        elif gmail_ids:
+            gmail_ctx = await _ingested_gmail(session, user.id, artifact_ids=gmail_ids)
+        elif results:
+            gmail_ctx = []
+        else:
+            gmail_ctx = await _ingested_gmail(session, user.id)
+    else:
+        gmail_ctx = []
 
     if not results and gmail_ctx:
         results = [

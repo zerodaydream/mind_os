@@ -1,4 +1,4 @@
-.PHONY: install sync sync-agents test lint up down migrate teardown
+.PHONY: install sync sync-agents tool-agents test lint up down migrate teardown
 
 UV := $(shell command -v uv 2>/dev/null)
 ifeq ($(UV),)
@@ -12,6 +12,9 @@ sync:
 
 sync-agents:
 	$(UV) sync --group dev --extra agents
+
+tool-agents: sync-agents
+	$(UV) tool install -e ".[agents]" --force
 
 test:
 	$(UV) run pytest -q

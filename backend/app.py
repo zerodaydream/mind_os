@@ -32,6 +32,7 @@ async def meta(request: Request, cfg: Settings = Depends(app_settings)) -> dict:
         "llm_provider": cfg.mindos_default_provider,
         "llm_extract_model": cfg.mindos_extract_model,
         "llm_synth_model": cfg.mindos_synth_model,
+        "langsmith_tracing": cfg.langsmith_tracing,
         "services_enabled": services.enabled,
     }
 

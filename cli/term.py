@@ -1032,7 +1032,7 @@ def _markdown_chat_lines(text: str, width: int) -> list[tuple[str, str]]:
     width = max(20, width)
     out: list[tuple[str, str]] = []
     in_sources = False
-    lines = text.splitlines()
+    lines = md_render.prepare_chat_text(text).splitlines()
     i = 0
     while i < len(lines):
         raw = lines[i]
@@ -1065,13 +1065,14 @@ def _markdown_chat_lines(text: str, width: int) -> list[tuple[str, str]]:
         if not text:
             i += 1
             continue
+        break_long = "http" in text or "tinyurl.com" in text
         if len(text) <= width:
             wrapped = [text]
         else:
             wrapped = textwrap.wrap(
                 text,
                 width=width,
-                break_long_words=False,
+                break_long_words=break_long,
                 break_on_hyphens=False,
             ) or [text]
         for ln in wrapped:
@@ -1883,7 +1884,7 @@ def _chat_conversation_loop(
             if top_tab == 1
             else " Tab → Back/History  |  ←/→ tabs  |  Enter send (Back · Enter = leave)"
         )
-        hint2 = " Tab again while typing → browse  |  h = history  |  Ctrl+G voice"
+        hint2 = " Tab again while typing → browse  |  h = history (when not typing)  |  Ctrl+G voice"
         try:
             stdscr.addstr(1, pad, tui_theme.rule(inner_w)[:inner_w], normal)
             stdscr.addstr(2, pad, hint1[:inner_w], hint_attr)
@@ -2187,7 +2188,7 @@ def _chat_conversation_loop(
                 continue
             _draw(show_cursor=input_focus)
             continue
-        if key in (ord("h"), ord("H")) and not _editing_draft():
+        if key in (ord("h"), ord("H")) and not input_focus:
             top_tab = 1
             _open_history_tab()
             continue

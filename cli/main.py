@@ -14,7 +14,7 @@ from cli.chat_cmd import cmd_chat
 from cli.repl import run_repl
 from cli.status import cmd_status
 from cli.sync_cmd import run_sync
-from backend.common.config_loader.settings import get_settings
+from backend.common.config_loader.settings import reload_settings
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -41,7 +41,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     bootstrap_env()
-    get_settings.cache_clear()
+    reload_settings()
     args = build_parser().parse_args()
     if getattr(args, "command", None) == "status":
         raise SystemExit(cmd_status())

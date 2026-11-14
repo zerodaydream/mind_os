@@ -10,12 +10,51 @@ _ITALIC = re.compile(r"(?<!\*)\*([^*]+)\*(?!\*)")
 _HEADING = re.compile(r"^#{1,6}\s+(.+)$")
 _NOTE = re.compile(r"^\*\((.+)\)\*\s*$")
 _LIST = re.compile(r"^(\s*)([-*]|\d+\.)\s+(.*)$")
+_MD_LINK = re.compile(r"\[([^\]]*)\]\((https?://[^)]+)\)")
+_BARE_URL = re.compile(r"https?://[^\s\]\)]+")
 
 
 def strip_inline_md(text: str) -> str:
     text = _BOLD.sub(r"\1", text)
     text = _ITALIC.sub(r"\1", text)
     return text.strip()
+
+
+def _display_url(url: str, *, max_len: int = 64) -> str:
+    url = url.strip()
+    if len(url) <= max_len:
+        return url
+    return f"{url[: max_len - 1]}…"
+
+
+def prepare_chat_line(line: str) -> str:
+    """Markdown links and long URLs for narrow terminal columns."""
+
+    def _link_sub(match: re.Match[str]) -> str:
+        label, url = match.group(1).strip(), match.group(2).strip()
+        short = _display_url(url)
+        if not label or label == url:
+            return short
+        return f"{strip_inline_md(label)}: {short}"
+
+    line = _MD_LINK.sub(_link_sub, line)
+    return line
+
+
+def prepare_chat_text(text: str) -> str:
+    out: list[str] = []
+    prev_url = ""
+    for raw in text.splitlines():
+        line = prepare_chat_line(raw)
+        bare = _BARE_URL.findall(line)
+        if len(bare) == 1 and bare[0] == prev_url and line.strip() == prev_url:
+            continue
+        if bare:
+            prev_url = bare[-1]
+        else:
+            prev_url = ""
+        out.append(line)
+    return "\n".join(out)
 
 
 def display_for_tui(line: str, style: str) -> str:
