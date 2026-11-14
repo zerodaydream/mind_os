@@ -11,6 +11,12 @@ def test_table_and_heading():
     assert _markdown_line_style("## Roles", in_sources=False) == "heading"
 
 
+def test_blank_lines_preserved():
+    text = "para one\n\npara two"
+    lines = _markdown_chat_lines(text, width=60)
+    assert any(ln == "" for _, ln in lines)
+
+
 def test_long_source_line_wraps_not_truncates():
     long = "  1. [gmail] " + ("Indeed Application: AI Engineer – " * 6)
     lines = _markdown_chat_lines(long, width=60)

@@ -1,6 +1,11 @@
 from cli.md_render import ascii_table, display_for_tui, parse_pipe_table
 
 
+def test_list_keeps_indent_and_marker():
+    assert display_for_tui("  - nested item", "list") == "  - nested item"
+    assert display_for_tui("1. first", "list") == "1. first"
+
+
 def test_heading_and_note_stripped():
     assert display_for_tui("### Top Gmail Messages", "heading") == "Top Gmail Messages"
     assert (

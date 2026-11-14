@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Callable
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -40,6 +41,7 @@ async def _synth_plan(
     source,
     history,
     turn_context,
+    on_partial: Callable[[str], None] | None = None,
 ) -> tuple[dict, str]:
     out = await run_chat(
         session,
@@ -51,6 +53,7 @@ async def _synth_plan(
         history=history,
         turn_context=turn_context,
         plan_style=True,
+        on_partial=on_partial,
     )
     return out, "plan_synth"
 
@@ -64,6 +67,7 @@ async def handle_turn(
     *,
     session_id: uuid.UUID | None = None,
     source: str | None = None,
+    on_partial: Callable[[str], None] | None = None,
 ) -> dict:
     intent, body = classify(message)
     if needs_llm_refine(body, intent):
@@ -89,6 +93,7 @@ async def handle_turn(
         out, mode = await _synth_plan(
             session, user, settings, gateway, body,
             source=source, history=history, turn_context=turn_context,
+            on_partial=on_partial,
         )
         answer = out.get("answer") or ""
         sources = out.get("sources") or turn_context.sources
@@ -108,6 +113,7 @@ async def handle_turn(
             out, mode = await _synth_plan(
                 session, user, settings, gateway, body,
                 source=source, history=history, turn_context=turn_context,
+                on_partial=on_partial,
             )
             answer = out.get("answer") or ""
             if answer:
@@ -119,6 +125,7 @@ async def handle_turn(
                 out, mode = await _synth_plan(
                     session, user, settings, gateway, body,
                     source=source, history=history, turn_context=turn_context,
+                    on_partial=on_partial,
                 )
             answer = out.get("answer") or ""
             sources = out.get("sources") or turn_context.sources
@@ -132,6 +139,7 @@ async def handle_turn(
             source=source,
             history=history,
             turn_context=turn_context,
+            on_partial=on_partial,
         )
         answer = out.get("answer") or ""
         mode = out.get("mode") or "synth"

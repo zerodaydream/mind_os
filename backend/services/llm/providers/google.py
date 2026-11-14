@@ -1,7 +1,41 @@
 import asyncio
+from collections.abc import AsyncIterator
 
 from backend.common.ssl_env import fix_ssl_cert_env
 from backend.services.llm.core.types import CompletionResult
+
+
+async def stream_google(
+    prompt: str,
+    *,
+    model: str,
+    api_key: str,
+    max_output_tokens: int,
+) -> AsyncIterator[str]:
+    if not api_key.strip():
+        raise ValueError("GOOGLE_API_KEY is required for live Google provider")
+
+    from google import genai
+
+    fix_ssl_cert_env()
+    client = genai.Client(api_key=api_key)
+    try:
+        stream = await client.aio.models.generate_content_stream(
+            model=model,
+            contents=prompt,
+            config={"max_output_tokens": max_output_tokens},
+        )
+        async for chunk in stream:
+            piece = getattr(chunk, "text", None) or ""
+            if piece:
+                yield piece
+    except Exception as exc:
+        raise ValueError(f"Google generate_content_stream failed for model={model!r}: {exc}") from exc
+    finally:
+        try:
+            await client.aio.aclose()
+        except Exception:
+            pass
 
 
 async def complete_google(

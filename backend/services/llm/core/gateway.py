@@ -1,8 +1,10 @@
+from collections.abc import AsyncIterator
+
 from backend.common.utils.enums import LlmMode, LlmTask
 from backend.common.utils.exceptions import BudgetExceededError, LlmDisabledError
 from backend.common.config_loader.settings import Settings
 from backend.services.llm.core.budget import BudgetGuard
-from backend.services.llm.providers.google import complete_google
+from backend.services.llm.providers.google import stream_google
 from backend.services.llm.providers.mock import MockProvider
 from backend.services.llm.core.types import CompletionResult
 
@@ -32,6 +34,46 @@ class ProviderGateway:
             return self._settings.mindos_extract_model
         return self._settings.mindos_synth_model
 
+    def _prepare(self, prompt: str, *, task: LlmTask, model: str | None, max_output_tokens: int):
+        prompt = prompt[:_MAX_INPUT_CHARS]
+        max_output_tokens = min(max_output_tokens, _MAX_OUTPUT_TOKENS)
+        resolved_model = self.model_for(task, model)
+        return prompt, resolved_model, max_output_tokens
+
+    async def stream(
+        self,
+        prompt: str,
+        *,
+        task: LlmTask = LlmTask.SYNTH,
+        model: str | None = None,
+        max_output_tokens: int = 1024,
+    ) -> AsyncIterator[str]:
+        prompt, resolved_model, max_output_tokens = self._prepare(
+            prompt, task=task, model=model, max_output_tokens=max_output_tokens
+        )
+        if self._mode == LlmMode.MOCK:
+            async for part in self._mock.stream(
+                prompt, model=resolved_model, max_output_tokens=max_output_tokens
+            ):
+                yield part
+            return
+        if self._mode == LlmMode.DEGRADED:
+            raise LlmDisabledError("LLM calls disabled in degraded mode")
+        if not self._budget.allow_request():
+            raise BudgetExceededError("Daily or monthly LLM budget exceeded")
+
+        provider = self._settings.mindos_default_provider.lower()
+        if provider == "google":
+            async for part in stream_google(
+                prompt,
+                model=resolved_model,
+                api_key=self._settings.google_api_key,
+                max_output_tokens=max_output_tokens,
+            ):
+                yield part
+            return
+        raise NotImplementedError(f"Live provider {provider!r} is not configured")
+
     async def complete(
         self,
         prompt: str,
@@ -40,28 +82,28 @@ class ProviderGateway:
         model: str | None = None,
         max_output_tokens: int = 1024,
     ) -> CompletionResult:
-        prompt = prompt[:_MAX_INPUT_CHARS]
-        max_output_tokens = min(max_output_tokens, _MAX_OUTPUT_TOKENS)
-        resolved_model = self.model_for(task, model)
-
+        prompt, resolved_model, max_output_tokens = self._prepare(
+            prompt, task=task, model=model, max_output_tokens=max_output_tokens
+        )
+        parts: list[str] = []
+        async for chunk in self.stream(
+            prompt, task=task, model=resolved_model, max_output_tokens=max_output_tokens
+        ):
+            parts.append(chunk)
+        text = "".join(parts).strip()
         if self._mode == LlmMode.MOCK:
-            return await self._mock.complete(
-                prompt, model=resolved_model, max_output_tokens=max_output_tokens
-            )
-        if self._mode == LlmMode.DEGRADED:
+            provider = "mock"
+        elif self._mode == LlmMode.DEGRADED:
             raise LlmDisabledError("LLM calls disabled in degraded mode")
-        if not self._budget.allow_request():
-            raise BudgetExceededError("Daily or monthly LLM budget exceeded")
-
-        provider = self._settings.mindos_default_provider.lower()
-        if provider == "google":
-            return await complete_google(
-                prompt,
-                model=resolved_model,
-                api_key=self._settings.google_api_key,
-                max_output_tokens=max_output_tokens,
-            )
-        raise NotImplementedError(f"Live provider {provider!r} is not configured")
+        else:
+            provider = self._settings.mindos_default_provider.lower()
+        return CompletionResult(
+            text=text,
+            provider=provider,
+            model=resolved_model,
+            input_tokens=min(len(prompt) // 4, 8000),
+            output_tokens=max(1, len(text) // 4),
+        )
 
 
 def build_llm_gateway(settings: Settings) -> ProviderGateway:

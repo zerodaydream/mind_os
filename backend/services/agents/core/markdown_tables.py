@@ -65,7 +65,10 @@ def normalize_markdown_tables(text: str) -> str:
             if cells and not _placeholder_row(cells):
                 rows.append(cells)
         if len(rows) >= 1:
+            if out and out[-1].strip():
+                out.append("")
             out.extend(_format_table(rows))
+            out.append("")
         else:
             out.extend(block)
     return "\n".join(out)

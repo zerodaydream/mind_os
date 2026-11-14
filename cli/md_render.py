@@ -8,6 +8,7 @@ _BOLD = re.compile(r"\*\*([^*]+)\*\*")
 _ITALIC = re.compile(r"(?<!\*)\*([^*]+)\*(?!\*)")
 _HEADING = re.compile(r"^#{1,6}\s+(.+)$")
 _NOTE = re.compile(r"^\*\((.+)\)\*\s*$")
+_LIST = re.compile(r"^(\s*)([-*]|\d+\.)\s+(.*)$")
 
 
 def strip_inline_md(text: str) -> str:
@@ -18,9 +19,19 @@ def strip_inline_md(text: str) -> str:
 
 def display_for_tui(line: str, style: str) -> str:
     """Strip markdown syntax; curses shows style via attributes, not glyphs."""
-    s = line.strip()
-    if not s:
+    raw = line.rstrip()
+    if not raw.strip():
         return ""
+    if style == "list":
+        m = _LIST.match(raw)
+        if m:
+            return f"{m.group(1)}{m.group(2)} {strip_inline_md(m.group(3))}"
+    if style == "source_item":
+        body = raw.strip()
+        if re.match(r"^\d+\.", body):
+            return f"  {strip_inline_md(body)}"
+        return f"  {strip_inline_md(body)}"
+    s = raw.strip()
     if style == "heading":
         m = _HEADING.match(s)
         if m:

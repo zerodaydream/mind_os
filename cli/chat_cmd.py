@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import uuid
 import warnings
+from collections.abc import Callable
 from datetime import datetime, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from cli import term
+from cli import term, voice_stt
 from cli.async_util import run_async
 from cli.env import bootstrap_env
 from backend.common.config_loader import get_config
@@ -33,7 +34,14 @@ def _rel_time(dt: datetime | None) -> str:
     return f"{secs // 86400}d ago"
 
 
-async def _turn(session: AsyncSession, message: str, gateway, session_id: uuid.UUID | None) -> dict:
+async def _turn(
+    session: AsyncSession,
+    message: str,
+    gateway,
+    session_id: uuid.UUID | None,
+    *,
+    on_partial: Callable[[str], None] | None = None,
+) -> dict:
     settings = get_settings()
     user = await ensure_default_user(session, settings)
     return await handle_turn(
@@ -43,20 +51,25 @@ async def _turn(session: AsyncSession, message: str, gateway, session_id: uuid.U
         gateway,
         message,
         session_id=session_id,
+        on_partial=on_partial,
     )
 
 
-async def _answer_for(message: str, gateway, session_id: uuid.UUID | None) -> tuple[str, uuid.UUID]:
+async def _answer_for(
+    message: str,
+    gateway,
+    session_id: uuid.UUID | None,
+    *,
+    on_partial: Callable[[str], None] | None = None,
+) -> tuple[str, uuid.UUID]:
     if lifecycle._session_factory is None:
         raise RuntimeError("database not initialized — check DATABASE_URL and Postgres")
     async with lifecycle._session_factory() as session:
-        out = await _turn(session, message, gateway, session_id)
+        out = await _turn(session, message, gateway, session_id, on_partial=on_partial)
         await session.commit()
     answer = (out.get("answer") or "").strip() or "(empty)"
     sources = out.get("sources") or []
     intent = out.get("intent")
-    if intent and intent != "converse":
-        answer = f"_[{intent}]_\n\n{answer}"
     if sources and intent in ("plan", "execute"):
         lines = [
             f"  {i}. [{s.get('source') or '?'}] "
@@ -102,6 +115,27 @@ async def _load_session(session_id: uuid.UUID) -> tuple[list[tuple[str, str]], u
         return history, chat.id
 
 
+def _bootstrap_chat(session_id: uuid.UUID | None) -> tuple[dict, object | None, list[tuple[str, str]]]:
+    bootstrap_env()
+    bootstrap()
+    services = worker_services()
+    gateway = services.llm if services else None
+    state: dict = {"session_id": session_id}
+    if session_id is not None:
+        loaded = run_async(_load_session(session_id))
+        initial_history = loaded[0] if loaded else []
+        if loaded:
+            state["session_id"] = loaded[1]
+    else:
+        initial_history = []
+    if term.in_tui() and voice_stt.stt_status()[0]:
+        try:
+            voice_stt.warm()
+        except Exception:
+            pass
+    return state, gateway, initial_history
+
+
 def cmd_chat(*, session_id: uuid.UUID | None = None) -> int:
     cfg = get_config()
     if not cfg.is_enabled("agents"):
@@ -114,24 +148,20 @@ def cmd_chat(*, session_id: uuid.UUID | None = None) -> int:
         term.error("retrieval disabled in backend/config.json")
         term.action_end()
         return 1
-    bootstrap_env()
-    bootstrap()
-    services = worker_services()
-    gateway = services.llm if services else None
-
-    state: dict = {"session_id": session_id}
-    if session_id is not None:
-        loaded = run_async(_load_session(session_id))
-        initial_history = loaded[0] if loaded else []
-        if loaded:
-            state["session_id"] = loaded[1]
+    if term.in_tui():
+        state, gateway, initial_history = term.tui_busy(
+            lambda: _bootstrap_chat(session_id),
+            label="Loading chat",
+        )
     else:
-        initial_history = []
+        state, gateway, initial_history = _bootstrap_chat(session_id)
 
-    def turn(msg: str) -> str:
+    def turn(msg: str, on_partial: Callable[[str], None] | None = None) -> str:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", SyntaxWarning)
-            ans, sid = run_async(_answer_for(msg, gateway, state["session_id"]))
+            ans, sid = run_async(
+                _answer_for(msg, gateway, state["session_id"], on_partial=on_partial)
+            )
         state["session_id"] = sid
         return ans
 

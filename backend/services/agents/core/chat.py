@@ -1,3 +1,5 @@
+from collections.abc import Callable
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.common.utils.enums import LlmMode, LlmTask
@@ -28,6 +30,22 @@ def _looks_cut_off(text: str) -> bool:
     if tail in {"to", "the", "a", "an", "and", "or", "for", "with", "in", "on", "of", "is", "are"}:
         return True
     return t[-1].isalnum()
+
+
+async def _synth_stream(
+    gateway,
+    prompt: str,
+    *,
+    on_partial: Callable[[str], None] | None = None,
+) -> str:
+    parts: list[str] = []
+    async for chunk in gateway.stream(
+        prompt, task=LlmTask.SYNTH, max_output_tokens=SYNTH_MAX_OUTPUT_TOKENS
+    ):
+        parts.append(chunk)
+        if on_partial:
+            on_partial("".join(parts))
+    return "".join(parts).strip()
 
 
 async def _finish_synth_answer(gateway, answer: str) -> str:
@@ -102,6 +120,7 @@ async def run_chat(
     history: list[dict] | None = None,
     turn_context: TurnContext | None = None,
     plan_style: bool = False,
+    on_partial: Callable[[str], None] | None = None,
 ) -> dict:
     message = message.strip()
     ctx = turn_context or await prefetch_turn_context(
@@ -122,10 +141,9 @@ async def run_chat(
             }
         prompt = f"{_CONVERSE_SYSTEM}\n\nUser: {message}"
         try:
-            res = await gateway.complete(
-                prompt, task=LlmTask.SYNTH, max_output_tokens=SYNTH_MAX_OUTPUT_TOKENS
-            )
-            answer = (res.text or "").strip() or "Hello — what would you like to look up?"
+            answer = await _synth_stream(gateway, prompt, on_partial=on_partial)
+            if not answer:
+                answer = "Hello — what would you like to look up?"
         except Exception:
             answer = "Hello — what would you like to look up?"
         answer = normalize_markdown_tables(answer)
@@ -133,13 +151,21 @@ async def run_chat(
 
     system = (
         "You are MindOS assistant. Answer only from Context; be precise and factual. "
-        "Use Markdown lists or tables when asked. If data is missing, say what to sync—do not invent. "
+        "Always open with 1–2 sentences: what you found, how it maps to the question, and what is missing. "
+        "Never reply with tables or lists only. "
+        "Use Markdown lists or tables after the summary when they help. "
+        "Put a blank line between paragraphs and before each heading, list, or table. "
+        "Lists: one `- item` or `1. item` per line; indent nested items with two leading spaces. "
+        "If data is missing, say what to sync—do not invent. "
         "Complete every sentence; do not trail off. "
         "Tables: GitHub-flavored Markdown — header row, `| --- | --- |` separator, one data row per line."
     )
     if plan_style:
         system += (
-            " Use real Subject/Description cells from Context. Example:\n"
+            " Multi-part questions: handle each part in order—blank line, short lead-in, blank line, then table or list. "
+            "Respect numeric limits (e.g. top 10). Use real Subject/Description cells from Context. "
+            "Example shape:\n"
+            "Here are the latest matching messages from your indexed Gmail.\n\n"
             "| Subject | Description |\n| --- | --- |\n| Indeed Application: AI Developer | summary from mail |"
         )
     if not ctx.has_context:
@@ -161,10 +187,8 @@ async def run_chat(
         answer = _fallback_answer(ctx)
     else:
         try:
-            res = await gateway.complete(
-                prompt, task=LlmTask.SYNTH, max_output_tokens=SYNTH_MAX_OUTPUT_TOKENS
-            )
-            answer = await _finish_synth_answer(gateway, (res.text or "").strip())
+            answer = await _synth_stream(gateway, prompt, on_partial=on_partial)
+            answer = await _finish_synth_answer(gateway, answer)
             if not answer:
                 mode = "retrieval_only"
                 answer = _fallback_answer(ctx)

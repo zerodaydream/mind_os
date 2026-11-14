@@ -750,6 +750,10 @@ def _markdown_chat_lines(text: str, width: int) -> list[tuple[str, str]]:
     i = 0
     while i < len(lines):
         raw = lines[i]
+        if not raw.strip():
+            out.append(("body", ""))
+            i += 1
+            continue
         if md_render.is_table_line(raw):
             block: list[str] = []
             while i < len(lines) and lines[i].strip() and (
@@ -761,6 +765,7 @@ def _markdown_chat_lines(text: str, width: int) -> list[tuple[str, str]]:
             if rows:
                 for ln in md_render.ascii_table(rows, width):
                     out.append(("table", ln))
+                out.append(("body", ""))
             else:
                 for ln in block:
                     out.append(("table", ln.rstrip()))
@@ -816,6 +821,18 @@ def _chat_think_turn(fn: Callable[[], str], on_tick: Callable[[int], None]) -> s
 
 
 _CHAT_INPUT_TIMEOUT_MS = 400
+_CHAT_STREAM_MIN_S = 0.055
+_VOICE_SPEAK_DOTS = (".", "..", "...")
+_VOICE_SPEAK_DOT_S = 0.75
+_CHAT_ROLE_NAME_W = max(len("you"), len("mindos"))
+
+
+def _chat_role_prefix(role: str) -> str:
+    name = "you" if role == "you" else "mindos"
+    return f"{name:>{_CHAT_ROLE_NAME_W}} › "
+
+
+_CHAT_ROLE_COL = len(_chat_role_prefix("mindos"))
 
 
 def _chat_save_term():
@@ -1062,7 +1079,7 @@ def chat_input_lines(
     cursor: int,
     inner_w: int,
     *,
-    prefix: str = "you › ",
+    prefix: str = _chat_role_prefix("you"),
     show_cursor: bool = True,
 ) -> list[str]:
     """Wrap draft text and place the caret at `cursor` (supports newlines + soft wraps)."""
@@ -1122,7 +1139,7 @@ def chat_conversation(
 
 
 def _chat_conversation_loop(
-    turn: Callable[[str], str],
+    turn: Callable[..., str],
     *,
     stdscr,
     initial_history: list[tuple[str, str]] | None,
@@ -1137,12 +1154,18 @@ def _chat_conversation_loop(
     think_attr = user_attr
     tab_norm = normal
     tab_sel = sel_attr
+    voice_attr = sel_attr
     if c.has_colors():
         try:
             asst_attr = _curses_bright_white(c, 3)
             think_attr = _curses_bright_white(c, 5)
         except c.error:
             pass
+        try:
+            c.init_pair(8, c.COLOR_RED, -1)
+            voice_attr = c.color_pair(8) | c.A_BOLD
+        except c.error:
+            voice_attr = c.A_BOLD
         try:
             # 256-color harvest orange (xterm 208); muted grey for inactive tab
             c.init_pair(6, 208, -1)
@@ -1187,11 +1210,6 @@ def _chat_conversation_loop(
     frames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
     _render_sig: tuple[int, int, str | None] | None = None
     _rendered_lines: list[tuple[int, str]] = []
-    if voice_stt.stt_status()[0]:
-        try:
-            voice_stt.warm()
-        except Exception:
-            pass
 
     voice_preview_q: SimpleQueue[str] = SimpleQueue()
     voice_listening = False
@@ -1279,16 +1297,17 @@ def _chat_conversation_loop(
     def _flat_history(inner_w: int) -> list[tuple[int, str]]:
         out: list[tuple[int, str]] = []
         for role, text in history:
-            prefix = "you › " if role == "you" else "mindos › "
+            prefix = _chat_role_prefix(role)
             wrap_w = max(20, inner_w - len(prefix) - 2)
+            cont_pad = " " * len(prefix)
             if role == "you":
                 for i, ln in enumerate(textwrap.wrap(text, width=wrap_w) or ["(empty)"]):
-                    pad = prefix if i == 0 else "  "
+                    pad = prefix if i == 0 else cont_pad
                     out.append((user_attr, f"{pad}{ln}"))
                 continue
             lines = _markdown_chat_lines(text, wrap_w)
             for i, (style, ln) in enumerate(lines):
-                pad = prefix if i == 0 else "  "
+                pad = prefix if i == 0 else cont_pad
                 out.append((md_attr.get(style, asst_attr), f"{pad}{ln}"))
         return out
 
@@ -1313,7 +1332,7 @@ def _chat_conversation_loop(
         input_lines = chat_input_lines(buf, cursor, text_w, show_cursor=False)
         if len(input_lines) > max_input_rows:
             drop = len(input_lines) - max_input_rows + 1
-            input_lines = [f"{' ' * len('you › ')}… +{drop} line(s) above"] + input_lines[
+            input_lines = [f"{' ' * _CHAT_ROLE_COL}… +{drop} line(s) above"] + input_lines[
                 -(max_input_rows - 1) :
             ]
         input_start = box_bottom - len(input_lines)
@@ -1555,17 +1574,22 @@ def _chat_conversation_loop(
         except c.error:
             pass
         if _voice_busy():
-            elapsed = int(time.monotonic() - voice_started_at)
-            mm, ss = elapsed // 60, elapsed % 60
-            hint = f"● speak up! {mm}:{ss:02d}" if elapsed >= 1 else "● speak up!"
-            hx = max(pad, w - pad - len(hint))
+            dot_i = int(time.monotonic() / _VOICE_SPEAK_DOT_S) % len(_VOICE_SPEAK_DOTS)
+            speak_label = "● Speak"
+            dot_w = 3
+            hx = max(pad, w - pad - len(speak_label) - dot_w)
             try:
-                stdscr.addstr(3, hx, hint[: max(0, w - hx - pad)], think_attr)
+                stdscr.addstr(3, hx, speak_label, voice_attr)
+                stdscr.addstr(
+                    3,
+                    hx + len(speak_label),
+                    _VOICE_SPEAK_DOTS[dot_i].ljust(dot_w),
+                    voice_attr,
+                )
             except c.error:
                 pass
 
-        prefix = "you › "
-        cont_pad = " " * len(prefix)
+        prefix = _chat_role_prefix("you")
         input_lines = chat_input_lines(
             buf, cursor, text_w, prefix=prefix, show_cursor=show_cursor
         )
@@ -1626,17 +1650,73 @@ def _chat_conversation_loop(
         _render_sig = None
         _draw(show_cursor=False)
 
-        def _tick(i: int) -> None:
-            nonlocal thinking_line
-            thinking_line = f"  {frames[i % len(frames)]} Thinking…"
+        stream_idx: int | None = None
+        last_paint = 0.0
+        pending = ""
+
+        def on_partial(text: str) -> None:
+            nonlocal thinking_line, stream_idx, last_paint, _render_sig, pending
+            thinking_line = None
+            pending = text
+            now = time.monotonic()
+            if stream_idx is None:
+                history.append(("assistant", text))
+                stream_idx = len(history) - 1
+                last_paint = now
+                _render_sig = None
+                follow_tail = True
+                _draw(show_cursor=False)
+                return
+            if now - last_paint < _CHAT_STREAM_MIN_S:
+                return
+            last_paint = now
+            history[stream_idx] = ("assistant", text)
+            _render_sig = None
+            follow_tail = True
             _draw(show_cursor=False)
 
+        stop = threading.Event()
+        err: list[BaseException | None] = [None]
+        answer_box: list[str | None] = [None]
+
+        def _run_turn() -> None:
+            try:
+                answer_box[0] = turn(msg, on_partial)
+            except TypeError:
+                answer_box[0] = turn(msg)
+            except BaseException as exc:
+                err[0] = exc
+            finally:
+                stop.set()
+
+        def _spin() -> None:
+            nonlocal thinking_line
+            i = 0
+            while not stop.is_set():
+                if thinking_line is not None:
+                    thinking_line = f"  {frames[i % len(frames)]} Thinking…"
+                    _draw(show_cursor=False)
+                i += 1
+                stop.wait(0.08)
+
         thinking_line = f"  {frames[0]} Thinking…"
-        answer = _chat_think_turn(lambda: turn(msg), _tick)
+        spinner = threading.Thread(target=_spin, daemon=True)
+        spinner.start()
+        _run_turn()
+        spinner.join(timeout=0.3)
         thinking_line = None
-        history.append(("assistant", answer))
+        if err[0] is not None:
+            answer = f"error: {err[0]}"
+        else:
+            answer = answer_box[0] or "(empty)"
+
+        if stream_idx is None:
+            history.append(("assistant", answer))
+        else:
+            history[stream_idx] = ("assistant", answer)
         follow_tail = True
         _render_sig = None
+        _draw(show_cursor=False)
 
     def _insert_newline() -> None:
         nonlocal buf, cursor
@@ -1654,9 +1734,12 @@ def _chat_conversation_loop(
     while True:
         blink_idle = follow_tail and not buf and thinking_line is None and input_focus
         voice_waiting = _voice_busy()
-        stdscr.timeout(
-            _CHAT_INPUT_TIMEOUT_MS if (blink_idle or voice_waiting) else -1
-        )
+        if voice_waiting:
+            stdscr.timeout(120)
+        elif blink_idle:
+            stdscr.timeout(_CHAT_INPUT_TIMEOUT_MS)
+        else:
+            stdscr.timeout(-1)
         show_caret = input_focus and (bool(buf) or (blink_idle and blink))
         _draw(show_cursor=show_caret)
         key = stdscr.getch()

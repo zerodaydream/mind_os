@@ -15,6 +15,17 @@ async def test_mock_complete(mock_gateway) -> None:
 
 
 @pytest.mark.asyncio
+async def test_mock_stream_yields_chunks(mock_gateway) -> None:
+    parts: list[str] = []
+    prompt = "hello " * 20
+    async for chunk in mock_gateway.stream(prompt, task=LlmTask.SYNTH):
+        parts.append(chunk)
+    text = "".join(parts)
+    assert "hello" in text
+    assert len(parts) > 1
+
+
+@pytest.mark.asyncio
 async def test_degraded_blocks() -> None:
     gw = build_llm_gateway(Settings(mindos_llm_mode=LlmMode.DEGRADED))
     with pytest.raises(LlmDisabledError):
