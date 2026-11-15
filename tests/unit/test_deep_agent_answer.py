@@ -20,6 +20,21 @@ def test_surface_tool_outputs_adds_calendar_link() -> None:
     assert "Created calendar event" not in answer
 
 
+def test_surface_tool_outputs_ignores_list_dump() -> None:
+    list_tool = "\n".join(
+        f"- Event{i} @ now (id=x) Link: https://www.google.com/calendar/event?eid=e{i}"
+        for i in range(5)
+    )
+    body = "Please confirm deleting Event0 and Event1."
+    result = {
+        "messages": [
+            {"type": "tool", "content": list_tool},
+            {"type": "ai", "content": body},
+        ]
+    }
+    assert _surface_tool_outputs(body, result) == body
+
+
 def test_surface_tool_outputs_skips_duplicate_link() -> None:
     url = "https://www.google.com/calendar/event?eid=abc123"
     tool = f"Created calendar event: Test 102. Link: {url}"

@@ -98,7 +98,11 @@ def strip_override(message: str) -> tuple[Intent | None, str]:
 
 
 def _calendar_execute(lower: str) -> bool:
-    if "calendar" in lower:
+    if "calendar" in lower or "calender" in lower:
+        return True
+    if re.search(r"\b(delete|cancel|remove)\b", lower) and any(
+        w in lower for w in ("calendar", "calender", "meeting", "event", "appointment")
+    ):
         return True
     if re.search(r"\bschedule\b", lower) and re.search(
         r"\b(at\s+\d|:\d|pm|am|tomorrow|today|schedule\s+it)\b", lower

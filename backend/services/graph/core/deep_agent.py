@@ -33,7 +33,20 @@ from backend.services.agents.core.markdown_tables import normalize_markdown_tabl
 from backend.services.agents.core.partial import emit_partial
 from backend.services.agents.core.prompt_budget import DEEP_USER_CONTEXT_MAX, clip_text
 from backend.services.agents.core.turn_context import preflight_prompt_block
-from backend.services.integrations.core.calendar_events import create_calendar_event
+from backend.services.integrations.core.calendar_events import (
+    format_when_label,
+    create_calendar_event,
+    delete_calendar_event,
+    delete_calendar_events,
+    split_event_ids,
+    format_calendar_list,
+    format_event_lines,
+    google_calendar_connected,
+    list_calendar_events,
+    list_calendars,
+    query_free_busy,
+    update_calendar_event,
+)
 from backend.services.integrations.core.gmail_sync import sync_gmail_inbox
 from backend.services.retrieval.core.hybrid import hybrid_search_artifacts
 from backend.worker.consumer import drain_outbox
@@ -66,6 +79,10 @@ def _guess_tz(message: str) -> str:
     lower = message.lower()
     if "asia/kolkata" in lower or "ist" in lower or "india" in lower:
         return "Asia/Kolkata"
+    tzinfo = datetime.now().astimezone().tzinfo
+    key = getattr(tzinfo, "key", None)
+    if key:
+        return key
     return "UTC"
 
 
@@ -79,6 +96,33 @@ def _clock_block(message: str) -> str:
         f"Clock (use for today/tomorrow): {now:%Y-%m-%d %A %H:%M} ({tz}). "
         f"start_iso must use this calendar date for relative words."
     )
+
+
+_GOOGLE_OAUTH_HINT = "http://127.0.0.1:8000/v1/integrations/google/start"
+
+
+def _message_mentions_calendar(message: str) -> bool:
+    lower = message.lower()
+    return any(
+        w in lower
+        for w in (
+            "calendar",
+            "event",
+            "meeting",
+            "schedule",
+            "free busy",
+            "free-busy",
+            "rename",
+            "reschedule",
+            "delete",
+            "cancel",
+        )
+    )
+
+
+def _event_start_from_api(event: dict) -> str:
+    start = event.get("start") or {}
+    return start.get("dateTime") or start.get("date") or ""
 
 
 def _fs_root() -> Path:
@@ -173,6 +217,18 @@ def _build_tools(session: AsyncSession, user, settings):
         items = [s for (s,) in rows.all() if s]
         return "\n".join(f"- {s}" for s in items) if items else "No open commitments."
 
+    def _event_line(event: dict, title: str, start_iso: str) -> str:
+        summary = event.get("summary") or title
+        start = format_when_label(_event_start_from_api(event) or start_iso)
+        link = event.get("htmlLink") or ""
+        eid = event.get("id") or ""
+        base = f"{summary} @ {start}"
+        if eid:
+            base += f" (id={eid})"
+        if link:
+            base += f" Link: {link}"
+        return base
+
     async def mindos_calendar_create_event(
         title: str,
         start_iso: str,
@@ -181,17 +237,16 @@ def _build_tools(session: AsyncSession, user, settings):
         location: str = "",
         time_zone: str = "UTC",
         calendar_id: str = "primary",
+        all_day: bool = False,
+        recurrence: str = "",
+        attendees: str = "",
+        reminders_minutes: int = -1,
     ) -> str:
-        """Create a Google Calendar event for the connected user.
-
-        Required: title, start_iso (e.g. 2026-11-20T15:00 or with offset).
-        If end_iso is empty, duration defaults to 30 minutes.
-        time_zone applies when start_iso has no offset (IANA name, e.g. Asia/Kolkata).
-        Call when title and start time are known from the user or recent conversation.
-        Use the user's IANA timezone when given. Default duration 30 minutes.
-        """
+        """Create a calendar event. all_day + YYYY-MM-DD for all-day. recurrence: RRULE or FREQ=DAILY.
+        attendees: comma emails (sends invite). reminders_minutes: popup minutes before (-1 = default)."""
         if not get_config().is_enabled("integrations"):
             return "Calendar disabled (integrations off in config.json)."
+        remind = None if int(reminders_minutes) < 0 else int(reminders_minutes)
         try:
             event = await create_calendar_event(
                 session,
@@ -204,19 +259,162 @@ def _build_tools(session: AsyncSession, user, settings):
                 location=location,
                 calendar_id=calendar_id,
                 time_zone=time_zone,
+                all_day=all_day,
+                recurrence=recurrence,
+                attendees=attendees,
+                reminders_minutes=remind,
             )
             await session.commit()
         except ValueError as exc:
             return f"Calendar create failed: {exc}"
         except Exception as exc:
             return f"Calendar create error: {exc}"
-        summary = event.get("summary") or title
-        start = (event.get("start") or {}).get("dateTime") or start_iso
-        link = event.get("htmlLink") or ""
-        base = f"Created calendar event: {summary} at {start}."
-        if not link:
-            return base
-        return f"{base} Link: {link}"
+        return f"Created calendar event: {_event_line(event, title, start_iso)}"
+
+    async def mindos_calendar_list_upcoming(
+        calendar_id: str = "primary",
+        time_min_iso: str = "",
+        time_max_iso: str = "",
+        query: str = "",
+        max_results: int = 15,
+    ) -> str:
+        """List upcoming events (default: from now). Optional text query filter."""
+        if not get_config().is_enabled("integrations"):
+            return "Calendar disabled (integrations off in config.json)."
+        try:
+            items = await list_calendar_events(
+                session,
+                user=user,
+                settings=settings,
+                calendar_id=calendar_id,
+                time_min_iso=time_min_iso,
+                time_max_iso=time_max_iso,
+                query=query,
+                max_results=max_results,
+            )
+        except ValueError as exc:
+            return f"Calendar list failed: {exc}"
+        except Exception as exc:
+            return f"Calendar list error: {exc}"
+        return format_event_lines(items, limit=max_results)
+
+    async def mindos_calendar_update_event(
+        event_id: str,
+        calendar_id: str = "primary",
+        title: str = "",
+        start_iso: str = "",
+        end_iso: str = "",
+        description: str = "",
+        location: str = "",
+        time_zone: str = "UTC",
+        all_day: bool = False,
+        recurrence: str = "",
+        attendees: str = "",
+        reminders_minutes: int = -1,
+    ) -> str:
+        """Patch event by id from list/create output. Pass only fields to change."""
+        if not get_config().is_enabled("integrations"):
+            return "Calendar disabled (integrations off in config.json)."
+        remind = None if int(reminders_minutes) < 0 else int(reminders_minutes)
+        try:
+            event = await update_calendar_event(
+                session,
+                user=user,
+                settings=settings,
+                event_id=event_id,
+                calendar_id=calendar_id,
+                title=title,
+                start_iso=start_iso,
+                end_iso=end_iso,
+                description=description,
+                location=location,
+                time_zone=time_zone,
+                all_day=all_day,
+                recurrence=recurrence,
+                attendees=attendees,
+                reminders_minutes=remind,
+            )
+            await session.commit()
+        except ValueError as exc:
+            return f"Calendar update failed: {exc}"
+        except Exception as exc:
+            return f"Calendar update error: {exc}"
+        return f"Updated calendar event: {_event_line(event, title, start_iso)}"
+
+    async def mindos_calendar_delete_event(
+        event_id: str,
+        calendar_id: str = "primary",
+        confirmed: bool = False,
+    ) -> str:
+        """Delete event(s) by id. event_id may be comma-separated. confirmed=True required if more than one id."""
+        if not get_config().is_enabled("integrations"):
+            return "Calendar disabled (integrations off in config.json)."
+        ids = split_event_ids(event_id)
+        if len(ids) > 1 and not confirmed:
+            preview = ", ".join(ids[:8])
+            extra = f" (+{len(ids) - 8} more)" if len(ids) > 8 else ""
+            return (
+                f"Bulk delete ({len(ids)} events): {preview}{extra}. "
+                "Ask the user to confirm, then call again with confirmed=True."
+            )
+        try:
+            if len(ids) == 1:
+                await delete_calendar_event(
+                    session,
+                    user=user,
+                    settings=settings,
+                    event_id=ids[0],
+                    calendar_id=calendar_id,
+                )
+                await session.commit()
+                return f"Deleted calendar event id={ids[0]}"
+            n = await delete_calendar_events(
+                session,
+                user=user,
+                settings=settings,
+                event_ids=ids,
+                calendar_id=calendar_id,
+            )
+            await session.commit()
+        except ValueError as exc:
+            return f"Calendar delete failed: {exc}"
+        except Exception as exc:
+            return f"Calendar delete error: {exc}"
+        return f"Deleted {n} calendar event(s)."
+
+    async def mindos_calendar_list_calendars() -> str:
+        """List writable Google calendars (ids for create/list/free-busy)."""
+        if not get_config().is_enabled("integrations"):
+            return "Calendar disabled (integrations off in config.json)."
+        try:
+            items = await list_calendars(session, user=user, settings=settings)
+        except ValueError as exc:
+            return f"Calendar list failed: {exc}"
+        except Exception as exc:
+            return f"Calendar list error: {exc}"
+        return format_calendar_list(items)
+
+    async def mindos_calendar_free_busy(
+        time_min_iso: str,
+        time_max_iso: str,
+        calendar_ids: str = "primary",
+    ) -> str:
+        """Free/busy blocks. calendar_ids comma-separated."""
+        if not get_config().is_enabled("integrations"):
+            return "Calendar disabled (integrations off in config.json)."
+        try:
+            return await query_free_busy(
+                session,
+                user=user,
+                settings=settings,
+                time_min_iso=time_min_iso,
+                time_max_iso=time_max_iso,
+                calendar_ids=calendar_ids,
+            )
+        except ValueError as exc:
+            return f"Free/busy failed: {exc}"
+        except Exception as exc:
+            return f"Free/busy error: {exc}"
 
     return [
         trace_tool(mindos_search),
@@ -224,6 +422,11 @@ def _build_tools(session: AsyncSession, user, settings):
         trace_tool(mindos_process_outbox),
         trace_tool(mindos_commitments),
         trace_tool(mindos_calendar_create_event),
+        trace_tool(mindos_calendar_list_upcoming),
+        trace_tool(mindos_calendar_update_event),
+        trace_tool(mindos_calendar_delete_event),
+        trace_tool(mindos_calendar_list_calendars),
+        trace_tool(mindos_calendar_free_busy),
     ]
 
 
@@ -277,13 +480,16 @@ async def run_deep_agent(
             "If Steps already taken were completed before you started, summarize them in your opening. "
             "Tables/lists only from retrieved data. Be concise; finish every sentence. "
             "Use write_todos for multi-step work. Stay in workspace root. "
-            "Calendar: once title and start time are known (including from the thread), "
-            "call mindos_calendar_create_event—do not pretend it was created. "
-            "Two or more events in one request: write_todos listing each, then one "
-            "mindos_calendar_create_event per todo; list every link in the reply. "
-            "Ask at most one missing detail; then call the tool. "
-            "If Google is not connected, point to /v1/integrations/google/start. "
-            "Always repeat each tool Link once (plain text, no markdown link syntax)."
+            "Calendar tools: list_upcoming, free_busy, list_calendars, create, update, delete. "
+            "Use list before reschedule; delete/update need event id from list/create. "
+            "Create: mindos_calendar_create_event (all_day, recurrence, attendees, reminders). "
+            "Multi-create: write_todos then one create per todo; list every link. "
+            f"If Google is not connected, say only: Open {_GOOGLE_OAUTH_HINT}. "
+            "Never invent other OAuth or GitHub URLs. "
+            "For list/update/delete: call the calendar tools; do not guess event data. "
+            "Bulk delete (2+ ids): first call delete without confirmed, ask user, then confirmed=True. "
+            "Calendar Link: only after create/update (once, plain text)—not for list dumps or deleted events. "
+            "Use the human times from calendar tools in replies—never raw ISO."
         ),
     }
     if intent == "execute":
@@ -324,6 +530,17 @@ async def run_deep_agent(
             user_content += f"\n\nRecent conversation:\n{hist_block}"
         user_content += f"\n\nUser task:\n{message}"
     user_content = f"{_clock_block(message)}\n\n{user_content}"
+    if _message_mentions_calendar(message) and not await google_calendar_connected(session, user):
+        return {
+            "answer": (
+                "Google Calendar is not connected for this MindOS user. "
+                f"Open {_GOOGLE_OAUTH_HINT} (API must be running), then retry."
+            ),
+            "mode": "deep_agent",
+            "intent": intent,
+            "sources": turn_context.sources if turn_context else [],
+        }
+
     invoke = {"messages": [{"role": "user", "content": user_content}]}
     try:
         if tracing_active():
@@ -588,6 +805,21 @@ def _tool_texts(result) -> list[str]:
     return out
 
 
+def _surfaceable_urls(text: str) -> list[str]:
+    """Only create/update (or single-link) tools—not list-upcoming dumps."""
+    urls = _TOOL_URL.findall(text)
+    if not urls:
+        return []
+    head = text.lstrip()
+    if head.startswith("Created calendar event") or head.startswith(
+        "Updated calendar event"
+    ):
+        return [urls[0]]
+    if len(urls) == 1:
+        return urls
+    return []
+
+
 def _surface_tool_outputs(answer: str, result) -> str:
     """Append tool URLs only when the model reply omitted them (matches by eid too)."""
     tool_texts = _tool_texts(result)
@@ -595,7 +827,7 @@ def _surface_tool_outputs(answer: str, result) -> str:
         return answer
     extras: list[str] = []
     for text in tool_texts:
-        for url in _TOOL_URL.findall(text):
+        for url in _surfaceable_urls(text):
             if _url_already_in_answer(url, answer) or any(
                 _url_already_in_answer(url, u) for u in extras
             ):

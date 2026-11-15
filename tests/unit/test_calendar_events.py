@@ -3,7 +3,9 @@ import pytest
 from backend.services.integrations.core.calendar_events import (
     build_event_body,
     build_event_window,
+    format_when_label,
     missing_calendar_fields,
+    split_event_ids,
 )
 
 
@@ -32,3 +34,32 @@ def test_build_event_window_rejects_end_before_start() -> None:
 def test_build_event_body_raises_on_missing() -> None:
     with pytest.raises(ValueError, match="missing: title"):
         build_event_body(title="", start_iso="2026-01-01T10:00", time_zone="UTC")
+
+
+def test_build_event_all_day() -> None:
+    body = build_event_body(title="Off", start_iso="2026-06-01", all_day=True, time_zone="UTC")
+    assert body["start"] == {"date": "2026-06-01"}
+    assert body["end"] == {"date": "2026-06-02"}
+
+
+def test_format_when_label() -> None:
+    assert format_when_label("2026-11-16T13:00:00+05:30") == "Mon 16 Nov 2026, 1:00 PM"
+    assert format_when_label("2026-06-01") == "Mon 01 Jun 2026"
+
+
+def test_split_event_ids() -> None:
+    assert split_event_ids("a,b; c") == ["a", "b", "c"]
+
+
+def test_build_event_recurrence_attendees() -> None:
+    body = build_event_body(
+        title="Standup",
+        start_iso="2026-06-01T09:00:00",
+        time_zone="UTC",
+        recurrence="FREQ=WEEKLY;BYDAY=MO",
+        attendees="a@example.com, b@example.com",
+        reminders_minutes=10,
+    )
+    assert body["recurrence"] == ["RRULE:FREQ=WEEKLY;BYDAY=MO"]
+    assert len(body["attendees"]) == 2
+    assert body["reminders"]["overrides"][0]["minutes"] == 10

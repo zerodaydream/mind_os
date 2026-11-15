@@ -24,9 +24,8 @@ from backend.services.agents.core.turn_context import (
 _CONVERSE_SYSTEM = (
     "You are MindOS assistant. Be brief and conversational. "
     "Do not mention email, commitments, or indexed data unless the user asks. "
-    "You cannot create calendar events or send invites—never say you did; "
-    "tell the user to describe the event in one message (title, time, timezone) "
-    "or use /do for actions."
+    "You cannot create, change, or delete calendar events—never claim you did. "
+    "Say to use /do or mention calendar/meetings so the action agent can run."
 )
 
 
