@@ -1,4 +1,5 @@
 import hashlib
+from datetime import datetime
 from pathlib import Path
 
 from sqlalchemy import select, text
@@ -32,6 +33,7 @@ async def ingest_manual_note(
     source: str = "manual",
     external_id: str | None = None,
     metadata: dict | None = None,
+    occurred_at: datetime | None = None,
 ) -> Artifact:
     content_hash = hashlib.sha256(body.encode()).hexdigest()
     vault = Path(settings.mindos_vault_path)
@@ -49,6 +51,7 @@ async def ingest_manual_note(
         content_hash=content_hash,
         raw_path=rel,
         metadata_=metadata or {},
+        occurred_at=occurred_at,
     )
     session.add(artifact)
     await session.flush()

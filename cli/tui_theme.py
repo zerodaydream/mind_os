@@ -16,7 +16,7 @@ _G = {
     "ml": "+",
     "mr": "+",
     "x": "+",
-    "arr": ">",
+    "arr": "→",
 }
 
 
@@ -63,8 +63,9 @@ def footer_hint(text: str, *, width: int) -> str:
     return f"+{body}{' ' * pad}+"
 
 
-def _clamp_width(width: int) -> int:
-    return max(32, min(width, term_width()))
+def _clamp_width(width: int, *, hard_cap: int | None = None) -> int:
+    cap = hard_cap if hard_cap is not None else term_width()
+    return max(24, min(width, cap))
 
 
 def _center(text: str, width: int) -> str:
@@ -86,15 +87,11 @@ def _col_widths(
     width: int,
 ) -> tuple[int, int, int]:
     """left_w, right_w, inner body between side bars."""
-    mark = 1
-    left_w = max(len(headers[0]), max((len(a) for a, _ in rows), default=0)) + mark
-    right_w = max(len(headers[1]), max((len(b) for _, b in rows), default=0))
-    row_w = left_w + right_w + 9
-    total = _clamp_width(max(width, row_w))
-    if row_w > total:
-        right_w = max(8, total - left_w - 9)
-        if left_w + right_w + 9 > total:
-            left_w = max(6, total - right_w - 9)
+    total = _clamp_width(width, hard_cap=width)
+    pair = max(12, total - 9)
+    right_need = max(len(headers[1]), max((len(b) for _, b in rows), default=0))
+    right_w = max(10, min(right_need, max(10, pair // 3)))
+    left_w = max(6, pair - right_w)
     body = left_w + right_w + 7
     return left_w, right_w, body
 
@@ -145,7 +142,7 @@ def menu_panel(
     selected: int | None = None,
     subtitle: str = "",
 ) -> list[str]:
-    w = _clamp_width(width or term_width() - 4)
+    w = _clamp_width(width or term_width() - 4, hard_cap=width)
     left_w, right_w, body = _col_widths(rows, headers, w)
     g = _G
     span_l, span_r = left_w + 3, right_w + 3
@@ -173,7 +170,7 @@ def two_col_table(
     headers: tuple[str, str] = ("Command", "Description"),
     selected: int | None = None,
 ) -> list[str]:
-    w = _clamp_width(width or term_width() - 4)
+    w = _clamp_width(width or term_width() - 4, hard_cap=width)
     lines, _ = _table_core(rows, width=w, headers=headers, selected=selected)
     return lines
 
@@ -183,14 +180,52 @@ def session_table(
     *,
     width: int | None = None,
     selected: int | None = None,
+    title: str = "chat history",
 ) -> list[str]:
     return menu_panel(
-        "chat history",
+        title,
         rows,
         width=width,
         headers=("Session", "Meta"),
         selected=selected,
     )
+
+
+_BRAND_MIND = (
+    "███╗   ███╗██╗███╗   ██╗██████╗ ",
+    "████╗ ████║██║████╗  ██║██╔═══██╗",
+    "██╔████╔██║██║██╔██╗ ██║██║   ██║",
+    "██║╚██╔╝██║██║██║╚██╗██║██║   ██║",
+    "██║ ╚═╝ ██║██║██║ ╚████║██████ ╔╝",
+    "╚═╝     ╚═╝╚═╝╚═╝  ╚═══╝╚══════╝",
+)
+_BRAND_OS = (
+    " ██████╗  ███████╗",
+    "██╔═══██╗██╔════╝",
+    "██║   ██║███████╗",
+    "██║   ██║╚════██║",
+    "╚██████╔╝███████║",
+    " ╚═════╝ ╚══════╝",
+)
+
+
+def brand_mark_lines(*, max_w: int = 80) -> list[str]:
+    """Block figlet MIND + OS on one row each, side by side."""
+    cap = max(24, max_w)
+    gap = "  "
+    mind_w = max(len(m.rstrip()) for m in _BRAND_MIND)
+    out: list[str] = []
+    for mind, os in zip(_BRAND_MIND, _BRAND_OS, strict=True):
+        row = mind.rstrip().ljust(mind_w) + gap + os.strip()
+        out.append(row[:cap].rstrip())
+    return out
+
+
+def brand_block_x(width: int, lines: list[str]) -> int:
+    if not lines:
+        return 0
+    block_w = max(len(ln) for ln in lines)
+    return max(0, (width - block_w) // 2)
 
 
 def sink_command_rows(rows: list[tuple[str, str]]) -> list[str]:

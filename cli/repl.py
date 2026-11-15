@@ -4,7 +4,6 @@ from cli import term
 from cli.async_util import start_repl_loop, stop_repl_loop
 from cli.chat_cmd import cmd_chat
 from cli.env import bootstrap_env
-from cli.schedule_cmd import cmd_schedule
 from cli.async_util import run_async
 from cli.status import cmd_status
 from cli.sync_cmd import run_sync
@@ -15,15 +14,8 @@ def _run_choice(choice: str) -> bool:
     if choice == "exit":
         term.note("bye")
         return False
-    if choice == "help":
-        term.command_table()
-        term.note("Pick another action from the menu.")
-        return True
     if choice == "status":
         term.tui_busy(cmd_status, label="Loading status")
-        return True
-    if choice == "schedule":
-        cmd_schedule()
         return True
     if choice == "chat":
         cmd_chat()

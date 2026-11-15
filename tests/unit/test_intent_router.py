@@ -42,3 +42,20 @@ def test_plan_numbered_steps() -> None:
     msg = "1. Find gmail threads\n2. Show as table"
     intent, _ = classify(msg)
     assert intent == "plan"
+
+
+def test_calendar_create_routes_execute() -> None:
+    intent, _ = classify(
+        "Create a 30min test event tomorrow at 4pm IST titled MindOS test."
+    )
+    assert intent == "execute"
+
+
+def test_schedule_at_time_routes_execute() -> None:
+    intent, _ = classify("call it 'Test 101' AND SCHEDULE IT AT 2PM")
+    assert intent == "execute"
+
+
+def test_delete_meetings_calender_typo_execute() -> None:
+    msg = "delete the first 2 upcoming meetings in my calender"
+    assert classify(msg)[0] == "execute"

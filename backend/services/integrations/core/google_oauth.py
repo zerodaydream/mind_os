@@ -8,7 +8,15 @@ import urllib.parse
 import httpx
 
 GMAIL_READONLY = "https://www.googleapis.com/auth/gmail.readonly"
-SCOPES = [GMAIL_READONLY]
+CALENDAR_EVENTS = "https://www.googleapis.com/auth/calendar.events"
+SCOPES = [GMAIL_READONLY, CALENDAR_EVENTS]
+
+
+def scopes_from_token_response(raw: dict) -> list[str]:
+    scope = raw.get("scope")
+    if isinstance(scope, str) and scope.strip():
+        return scope.split()
+    return list(SCOPES)
 
 
 def auth_url(settings, *, state: str) -> str:
@@ -17,6 +25,7 @@ def auth_url(settings, *, state: str) -> str:
         "redirect_uri": settings.google_oauth_redirect_uri,
         "response_type": "code",
         "scope": " ".join(SCOPES),
+        "include_granted_scopes": "true",
         "access_type": "offline",
         "prompt": "consent",
         "state": state,

@@ -63,5 +63,5 @@ async def run_sync(*, gmail_only: bool, process: bool) -> int:
         n = await drain_outbox()
         term.step("Artifacts", f"processed {n} event(s)", ok=True)
 
-    term.note("schedule · status · help — or run bare `mindos` for interactive mode")
+    term.note("status · chat — or run bare `mindos` for interactive mode")
     return exit_code

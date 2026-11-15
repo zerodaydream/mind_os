@@ -22,6 +22,9 @@ cp backend/config.json.example backend/config.json
 | `MINDOS_LLM_MODE=mock` | Tests / deterministic responses |
 | `MINDOS_LLM_MODE=live` | Paid APIs — requires real `MINDOS_SECRET_KEY` |
 | `DATABASE_URL` | Async Postgres URL (`postgresql+asyncpg://…`) |
+| `LANGSMITH_TRACING=true` | Send traces to [LangSmith](https://smith.langchain.com) (needs `LANGSMITH_API_KEY`) |
+| `LANGSMITH_AGENT_ID` + `LANGSMITH_AGENT_ENVIRONMENT` | **Agent-based workspace** (new Cloud UI): create agent in LangSmith (+ Agent → Observability), then set e.g. `mind-os` / `local`. **Do not** set `LANGSMITH_PROJECT` at the same time. |
+| `LANGSMITH_PROJECT` | **Legacy project-based** workspace only (self-hosted / old UI) |
 
 No API keys required for ingest/search/rules once those features land; today: health + tests work without keys.
 
@@ -48,7 +51,7 @@ mindos chat
 
 Or from the repo root: `.venv/bin/mindos chat` or `make sync-agents && uv run mindos chat`.
 
-A bare `mindos` on PATH from an old/global install will **not** see `deepagents`.
+`uv sync --extra agents` only updates the repo `.venv`. If you use `mindos` from `uv tool install`, run `make tool-agents` (or `uv tool install -e ".[agents]" --force`) so the tool env gets deepagents too.
 
 Gmail OAuth: open `http://127.0.0.1:8000/v1/integrations/google/start` once (API must be running).
 

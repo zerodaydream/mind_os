@@ -13,7 +13,16 @@ def _is_table_line(line: str) -> bool:
 
 def _is_separator_line(line: str) -> bool:
     t = line.strip()
-    return bool(t) and "-" in t and re.match(r"^\|?[\s:|-]+\|?", t) is not None
+    if not t or not _is_table_line(t):
+        return False
+    cells = _split_cells(t)
+    if not cells:
+        return False
+    for cell in cells:
+        core = cell.strip().replace(":", "").strip()
+        if not core or not set(core) <= {"-"}:
+            return False
+    return True
 
 
 def _split_cells(line: str) -> list[str]:
@@ -40,6 +49,49 @@ def _format_table(rows: list[list[str]]) -> list[str]:
     for row in rows[1:]:
         lines.append("| " + " | ".join(row) + " |")
     return lines
+
+
+def table_has_body_rows(text: str) -> bool:
+    """True when a markdown table includes at least one non-header row."""
+    past_sep = False
+    for ln in text.splitlines():
+        if not _is_table_line(ln):
+            continue
+        if _is_separator_line(ln):
+            past_sep = True
+            continue
+        if past_sep:
+            cells = _split_cells(ln)
+            if cells and not _placeholder_row(cells):
+                return True
+    return False
+
+
+def answer_has_empty_table_shell(text: str) -> bool:
+    if not any(_is_table_line(ln) for ln in text.splitlines()):
+        return False
+    return not table_has_body_rows(text)
+
+
+def gmail_rows_markdown_table(rows: list[dict], *, limit: int = 10) -> str:
+    from backend.services.agents.core.mail_display import format_mail_display_when
+
+    data = [
+        ["Subject", "Direction", "Sent", "To", "From"],
+    ]
+    for g in rows[:limit]:
+        data.append(
+            [
+                (g.get("title") or "(no subject)")[:100],
+                (g.get("direction") or "?")[:12],
+                format_mail_display_when(g.get("mail_at")),
+                ((g.get("to_addr") or "?")[:80]),
+                ((g.get("from_addr") or "?")[:80]),
+            ]
+        )
+    if len(data) < 2:
+        return ""
+    return "\n".join(_format_table(data))
 
 
 def normalize_markdown_tables(text: str) -> str:

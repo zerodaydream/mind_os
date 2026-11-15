@@ -44,13 +44,21 @@ class Settings(BaseSettings):
         validation_alias="GOOGLE_OAUTH_REDIRECT_URI",
     )
     mindos_ui_origin: str = Field(
-        default="http://localhost:5173",
+        default="",
         validation_alias="MINDOS_UI_ORIGIN",
     )
     gmail_sync_interval_sec: float = Field(default=0.0, validation_alias="GMAIL_SYNC_INTERVAL_SEC")
     mindos_sync_interval_days: float = Field(default=2.0, validation_alias="MINDOS_SYNC_INTERVAL_DAYS")
     gmail_sync_query: str = Field(default="", validation_alias="GMAIL_SYNC_QUERY")
     gmail_sync_max_messages: int = Field(default=200, validation_alias="GMAIL_SYNC_MAX_MESSAGES")
+    langsmith_tracing: bool = Field(default=False, validation_alias="LANGSMITH_TRACING")
+    langsmith_api_key: str = Field(default="", validation_alias="LANGSMITH_API_KEY")
+    langsmith_project: str = Field(default="", validation_alias="LANGSMITH_PROJECT")
+    langsmith_agent_id: str = Field(default="", validation_alias="LANGSMITH_AGENT_ID")
+    langsmith_agent_environment: str = Field(
+        default="", validation_alias="LANGSMITH_AGENT_ENVIRONMENT"
+    )
+    langsmith_endpoint: str = Field(default="", validation_alias="LANGSMITH_ENDPOINT")
 
     @model_validator(mode="after")
     def _reject_weak_secret_in_live_mode(self) -> "Settings":
@@ -64,4 +72,16 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    from backend.common.langsmith_setup import configure_langsmith
+
+    settings = Settings()
+    configure_langsmith(settings)
+    return settings
+
+
+def reload_settings() -> Settings:
+    from backend.common.langsmith_setup import reset_langsmith_config
+
+    get_settings.cache_clear()
+    reset_langsmith_config()
+    return get_settings()

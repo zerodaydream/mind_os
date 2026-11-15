@@ -1,5 +1,6 @@
 from collections.abc import AsyncIterator
 
+from backend.common.langsmith_setup import tracing_active, turn_trace_id, unique_run_name
 from backend.common.utils.enums import LlmMode, LlmTask
 from backend.common.utils.exceptions import BudgetExceededError, LlmDisabledError
 from backend.common.config_loader.settings import Settings
@@ -40,6 +41,21 @@ class ProviderGateway:
         resolved_model = self.model_for(task, model)
         return prompt, resolved_model, max_output_tokens
 
+    async def _iter_live_chunks(
+        self, prompt: str, resolved_model: str, max_output_tokens: int
+    ) -> AsyncIterator[str]:
+        provider = self._settings.mindos_default_provider.lower()
+        if provider == "google":
+            async for part in stream_google(
+                prompt,
+                model=resolved_model,
+                api_key=self._settings.google_api_key,
+                max_output_tokens=max_output_tokens,
+            ):
+                yield part
+            return
+        raise NotImplementedError(f"Live provider {provider!r} is not configured")
+
     async def stream(
         self,
         prompt: str,
@@ -62,17 +78,34 @@ class ProviderGateway:
         if not self._budget.allow_request():
             raise BudgetExceededError("Daily or monthly LLM budget exceeded")
 
-        provider = self._settings.mindos_default_provider.lower()
-        if provider == "google":
-            async for part in stream_google(
-                prompt,
-                model=resolved_model,
-                api_key=self._settings.google_api_key,
-                max_output_tokens=max_output_tokens,
-            ):
+        parts: list[str] = []
+        ls_cm = None
+        ls_run = None
+        if tracing_active():
+            from langsmith.run_helpers import trace
+
+            ls_cm = trace(
+                name=unique_run_name("mindos_llm_stream"),
+                run_type="llm",
+                inputs={
+                    "prompt": prompt[:4000],
+                    "model": resolved_model,
+                    "task": task.value,
+                    "max_output_tokens": max_output_tokens,
+                    "turn_trace_id": turn_trace_id(),
+                },
+            )
+            ls_run = ls_cm.__enter__()
+        try:
+            async for part in self._iter_live_chunks(prompt, resolved_model, max_output_tokens):
+                parts.append(part)
                 yield part
-            return
-        raise NotImplementedError(f"Live provider {provider!r} is not configured")
+        finally:
+            if ls_run is not None:
+                text = "".join(parts)
+                ls_run.end(outputs={"text": text[:8000], "chars": len(text)})
+            if ls_cm is not None:
+                ls_cm.__exit__(None, None, None)
 
     async def complete(
         self,

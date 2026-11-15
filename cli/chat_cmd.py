@@ -11,10 +11,11 @@ from cli import term, voice_stt
 from cli.async_util import run_async
 from cli.env import bootstrap_env
 from backend.common.config_loader import get_config
-from backend.common.config_loader.settings import get_settings
+from backend.common.config_loader.settings import get_settings, reload_settings
+from backend.common.langsmith_setup import flush_traces
 from backend.common.database import lifecycle
 from backend.services.agents.core.orchestrate import handle_turn
-from backend.services.agents.core.sessions import get_session, list_sessions
+from backend.services.agents.core.sessions import delete_session, get_session, list_sessions
 from backend.services.ingest.core.manual import ensure_default_user
 from backend.worker.bootstrap import bootstrap, worker_services
 
@@ -64,9 +65,12 @@ async def _answer_for(
 ) -> tuple[str, uuid.UUID]:
     if lifecycle._session_factory is None:
         raise RuntimeError("database not initialized — check DATABASE_URL and Postgres")
-    async with lifecycle._session_factory() as session:
-        out = await _turn(session, message, gateway, session_id, on_partial=on_partial)
-        await session.commit()
+    try:
+        async with lifecycle._session_factory() as session:
+            out = await _turn(session, message, gateway, session_id, on_partial=on_partial)
+            await session.commit()
+    finally:
+        flush_traces()
     answer = (out.get("answer") or "").strip() or "(empty)"
     sources = out.get("sources") or []
     intent = out.get("intent")
@@ -98,6 +102,18 @@ async def _history_rows() -> list[tuple[str, str, str]]:
     return values
 
 
+async def _remove_session(session_id: uuid.UUID) -> bool:
+    if lifecycle._session_factory is None:
+        return False
+    settings = get_settings()
+    async with lifecycle._session_factory() as session:
+        user = await ensure_default_user(session, settings)
+        ok = await delete_session(session, session_id=session_id, user_id=user.id)
+        if ok:
+            await session.commit()
+        return ok
+
+
 async def _load_session(session_id: uuid.UUID) -> tuple[list[tuple[str, str]], uuid.UUID] | None:
     if lifecycle._session_factory is None:
         return None
@@ -117,6 +133,16 @@ async def _load_session(session_id: uuid.UUID) -> tuple[list[tuple[str, str]], u
 
 def _bootstrap_chat(session_id: uuid.UUID | None) -> tuple[dict, object | None, list[tuple[str, str]]]:
     bootstrap_env()
+    settings = reload_settings()
+    if settings.langsmith_tracing:
+        try:
+            import langsmith  # noqa: F401
+        except ImportError:
+            raise RuntimeError(
+                "LANGSMITH_TRACING=true but langsmith is not installed in this Python. "
+                "From the repo root run: uv run mindos chat  (or: .venv/bin/mindos chat). "
+                "Do not use a global `mindos` on PATH unless you reinstall it from this repo."
+            )
     bootstrap()
     services = worker_services()
     gateway = services.llm if services else None
@@ -183,6 +209,18 @@ def cmd_chat(*, session_id: uuid.UUID | None = None) -> int:
         state["session_id"] = chat_id
         return hist
 
+    def delete_history(sid: str) -> bool:
+        if sid == "__new__":
+            return False
+        try:
+            uid = uuid.UUID(sid)
+        except ValueError:
+            return False
+        ok = run_async(_remove_session(uid))
+        if ok and state.get("session_id") == uid:
+            state["session_id"] = None
+        return ok
+
     if term.in_tui():
         try:
             term.chat_conversation(
@@ -190,6 +228,7 @@ def cmd_chat(*, session_id: uuid.UUID | None = None) -> int:
                 initial_history=initial_history,
                 list_history=list_history,
                 load_history=load_history,
+                delete_history=delete_history,
             )
         except Exception as exc:
             term.action_begin()

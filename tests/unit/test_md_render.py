@@ -25,3 +25,18 @@ def test_ascii_table_fits_width():
     assert lines[0].startswith("+")
     assert "R1" in "\n".join(lines)
     assert max(len(ln) for ln in lines) <= 40
+
+
+def test_ascii_table_wraps_long_cells() -> None:
+    rows = [
+        ["To", "Subject"],
+        [
+            "krishna priya <kpriya1004@gmail.com>, a.subramanyam <Asm.yam@gmail.com>",
+            "Chin Prop Final 13 Nov 26 & Old docs",
+        ],
+    ]
+    lines = ascii_table(rows, width=72)
+    joined = "\n".join(lines)
+    assert "kpriya1004" in joined
+    assert "Chin Prop" in joined
+    assert "Asm.yam" in joined
