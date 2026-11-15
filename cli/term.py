@@ -138,6 +138,38 @@ class _C:
     yellow = "\033[33m"
 
 
+def _curses_addstr_todo_active(
+    stdscr,
+    y: int,
+    x: int,
+    line: str,
+    width: int,
+    base_attr: int,
+    icon_attr: int,
+    *,
+    icon: str = "→",
+) -> None:
+    import curses
+
+    text = line[: max(0, width)]
+    idx = text.find(icon)
+    if idx < 0:
+        try:
+            stdscr.addstr(y, x, text, base_attr)
+        except curses.error:
+            pass
+        return
+    try:
+        if idx:
+            stdscr.addstr(y, x, text[:idx], base_attr)
+        stdscr.addstr(y, x + idx, icon, icon_attr)
+        rest = text[idx + len(icon) :]
+        if rest:
+            stdscr.addstr(y, x + idx + len(icon), rest, base_attr)
+    except curses.error:
+        pass
+
+
 def _curses_bright_white(curses_mod, pair_id: int) -> int:
     try:
         curses_mod.init_pair(pair_id, 231, -1)  # xterm bright white
@@ -1016,12 +1048,14 @@ def _thinking_chat_lines(text: str, width: int) -> list[tuple[str, str]]:
             continue
         plain = md_render.strip_inline_md(raw.strip())
         style = _markdown_line_style(raw, in_sources=False)
+        if plain.startswith("→ "):
+            style = "todo_active"
         if style == "list":
             m = re.match(r"^(\s*)([-*]|\d+\.)\s+(.*)$", raw.rstrip())
             if m:
                 plain = f"{m.group(1)}{m.group(2)} {md_render.strip_inline_md(m.group(3))}"
         for ln in textwrap.wrap(plain, width=width, break_long_words=False) or [plain]:
-            out.append(("body", ln.rstrip()))
+            out.append((style, ln.rstrip()))
         i += 1
     return out or [("body", "(empty)")]
 
@@ -1450,17 +1484,20 @@ def _chat_conversation_loop(
     user_attr = sel_attr
     asst_attr = normal
     think_attr = user_attr
+    think_icon_attr = user_attr
     tab_norm = normal
     tab_sel = sel_attr
     voice_attr = sel_attr
     try:
         think_attr = asst_attr | c.A_DIM
+        think_icon_attr = asst_attr | c.A_BOLD
     except c.error:
         pass
     if c.has_colors():
         try:
             asst_attr = _curses_bright_white(c, 3)
             think_attr = asst_attr | c.A_DIM
+            think_icon_attr = asst_attr
         except c.error:
             pass
         try:
@@ -1511,7 +1548,7 @@ def _chat_conversation_loop(
     thinking_line: str | None = None
     frames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
     _render_sig: tuple[int, int, str | None] | None = None
-    _rendered_lines: list[tuple[int, str]] = []
+    _rendered_lines: list[tuple[int, str] | tuple[int, str, int]] = []
 
     voice_preview_q: SimpleQueue[str] = SimpleQueue()
     voice_listening = False
@@ -1596,8 +1633,8 @@ def _chat_conversation_loop(
             _voice_drain_preview()
             _draw(show_cursor=True)
 
-    def _flat_history(inner_w: int) -> list[tuple[int, str]]:
-        out: list[tuple[int, str]] = []
+    def _flat_history(inner_w: int) -> list[tuple[int, str] | tuple[int, str, int]]:
+        out: list[tuple[int, str] | tuple[int, str, int]] = []
         for role, text in history:
             prefix = _chat_role_prefix(role)
             wrap_w = max(20, inner_w - len(prefix) - 2)
@@ -1609,9 +1646,12 @@ def _chat_conversation_loop(
                 continue
             if role == "thinking":
                 lines = _thinking_chat_lines(text, wrap_w)
-                for i, (_style, ln) in enumerate(lines):
+                for i, (style, ln) in enumerate(lines):
                     pad = prefix if i == 0 else cont_pad
-                    out.append((think_attr, f"{pad}{ln}"))
+                    row: tuple[int, str] | tuple[int, str, int] = (think_attr, f"{pad}{ln}")
+                    if style == "todo_active" and ln.startswith("→"):
+                        row = (think_attr, f"{pad}{ln}", think_icon_attr)
+                    out.append(row)
                 continue
             lines = _markdown_chat_lines(text, wrap_w)
             for i, (style, ln) in enumerate(lines):
@@ -1619,7 +1659,9 @@ def _chat_conversation_loop(
                 out.append((md_attr.get(style, asst_attr), f"{pad}{ln}"))
         return out
 
-    def _rendered_transcript(inner_w: int) -> list[tuple[int, str]]:
+    def _rendered_transcript(
+        inner_w: int,
+    ) -> list[tuple[int, str] | tuple[int, str, int]]:
         nonlocal _render_sig, _rendered_lines
         think = thinking_line or ""
         sig = (len(history), inner_w, think)
@@ -1931,11 +1973,24 @@ def _chat_conversation_loop(
             ri = scroll + i
             if ri >= len(rendered):
                 break
-            attr, ln = rendered[ri]
-            try:
-                stdscr.addstr(transcript_top + i, pad, ln[:inner_w], attr)
-            except c.error:
-                pass
+            row = rendered[ri]
+            if len(row) == 3:
+                attr, ln, icon_attr = row
+                _curses_addstr_todo_active(
+                    stdscr,
+                    transcript_top + i,
+                    pad,
+                    ln,
+                    inner_w,
+                    attr,
+                    icon_attr,
+                )
+            else:
+                attr, ln = row
+                try:
+                    stdscr.addstr(transcript_top + i, pad, ln[:inner_w], attr)
+                except c.error:
+                    pass
 
         in_attr = asst_attr
         try:

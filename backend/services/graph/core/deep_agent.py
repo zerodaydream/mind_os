@@ -34,7 +34,6 @@ from backend.services.agents.core.partial import emit_partial
 from backend.services.agents.core.prompt_budget import DEEP_USER_CONTEXT_MAX, clip_text
 from backend.services.agents.core.turn_context import preflight_prompt_block
 from backend.services.integrations.core.calendar_events import create_calendar_event
-from backend.services.integrations.core.url_shorten import shorten_url
 from backend.services.integrations.core.gmail_sync import sync_gmail_inbox
 from backend.services.retrieval.core.hybrid import hybrid_search_artifacts
 from backend.worker.consumer import drain_outbox
@@ -217,8 +216,7 @@ def _build_tools(session: AsyncSession, user, settings):
         base = f"Created calendar event: {summary} at {start}."
         if not link:
             return base
-        short = await shorten_url(link)
-        return f"{base} Link: {short}"
+        return f"{base} Link: {link}"
 
     return [
         trace_tool(mindos_search),
@@ -470,13 +468,75 @@ def _emit_todo_think(msgs, on_partial, *, last_sig: list[str]) -> None:
     emit_partial(on_partial, text, phase="think")
 
 
-async def _ainvoke_streaming(agent, invoke, config, *, on_partial) -> dict:
+def _is_ai_stream_chunk(msg) -> bool:
+    if _is_tool_message(msg):
+        return False
+    if getattr(msg, "tool_calls", None) or getattr(msg, "tool_call_chunks", None):
+        return False
+    name = type(msg).__name__
+    if "Human" in name:
+        return False
+    return "AI" in name
+
+
+def _maybe_reset_answer_stream(msgs, buf: list[str]) -> None:
+    if not msgs:
+        return
+    last = msgs[-1]
+    if _is_tool_message(last) or getattr(last, "tool_calls", None):
+        buf.clear()
+
+
+async def _ainvoke_values_only(agent, invoke, config, *, on_partial) -> dict:
     last_sig: list[str] = [""]
     result: dict | None = None
     async for state in agent.astream(invoke, config=config, stream_mode="values"):
         if isinstance(state, dict):
             result = state
             _emit_todo_think(state.get("messages"), on_partial, last_sig=last_sig)
+    if result is not None:
+        return result
+    return await agent.ainvoke(invoke, config=config)
+
+
+async def _ainvoke_streaming(agent, invoke, config, *, on_partial) -> dict:
+    last_sig: list[str] = [""]
+    answer_buf: list[str] = []
+    result: dict | None = None
+    try:
+        async for part in agent.astream(
+            invoke,
+            config=config,
+            stream_mode=["messages", "values"],
+            version="v2",
+        ):
+            if not isinstance(part, dict):
+                continue
+            kind = part.get("type")
+            if kind == "values":
+                data = part.get("data")
+                if isinstance(data, dict):
+                    result = data
+                    _maybe_reset_answer_stream(data.get("messages"), answer_buf)
+                    _emit_todo_think(data.get("messages"), on_partial, last_sig=last_sig)
+                continue
+            if kind != "messages":
+                continue
+            payload = part.get("data")
+            if not payload:
+                continue
+            msg = payload[0] if isinstance(payload, (list, tuple)) else payload
+            if not _is_ai_stream_chunk(msg):
+                continue
+            piece = _message_text(msg)
+            if not piece:
+                continue
+            answer_buf.append(piece)
+            text = "".join(answer_buf).strip()
+            if text:
+                emit_partial(on_partial, text, phase="answer")
+    except Exception:
+        return await _ainvoke_values_only(agent, invoke, config, on_partial=on_partial)
     if result is not None:
         return result
     return await agent.ainvoke(invoke, config=config)
