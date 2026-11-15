@@ -8,7 +8,11 @@ from collections.abc import Callable
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.services.agents.core.converse.chat import run_chat
-from backend.services.agents.core.routing.router import classify, needs_url_agent
+from backend.services.agents.core.routing.router import (
+    classify,
+    needs_url_agent,
+    url_from_thread,
+)
 from backend.services.agents.core.routing.router_llm import (
     _looks_like_thread_continuation,
     compact_thread_task,
@@ -144,6 +148,9 @@ async def _handle_turn_body(
     intent, body = classify(message)
     if intent == "converse" and needs_url_agent(body, prior_history):
         intent = "plan"
+        source_url = url_from_thread(body, prior_history)
+        if source_url and source_url not in body:
+            body = f"{body.strip()}\n\nSource URL: {source_url}"
     if should_route_deep_for_oauth(body, prior_history):
         intent = "execute"
     if intent == "converse" and pending_calendar_slot_reply(body, prior_history):

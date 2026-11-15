@@ -88,6 +88,47 @@ _ACTION_SIGNALS = (
 
 _HTTP_URL = re.compile(r"https?://\S+", re.I)
 
+_URL_DOC_FOLLOWUP = (
+    "sheet",
+    "tab",
+    "row",
+    "rows",
+    "column",
+    "cell",
+    "excel",
+    "spreadsheet",
+    "worksheet",
+    "paycheck",
+    "income",
+    "expense",
+    "balance",
+    "this doc",
+    "this sheet",
+    "this link",
+    "that sheet",
+    "the sheet",
+    "the tab",
+    "from the",
+    "in the",
+    "on the",
+    "read",
+    "list",
+    "show",
+)
+
+
+def url_from_thread(message: str, history: list[dict] | None) -> str | None:
+    m = _HTTP_URL.search(message or "")
+    if m:
+        return m.group(0).rstrip(").,]")
+    if not history:
+        return None
+    thread = "\n".join((entry.get("content") or "") for entry in history[-10:])
+    m = _HTTP_URL.search(thread)
+    if not m:
+        return None
+    return m.group(0).rstrip(").,]")
+
 
 def needs_url_agent(message: str, history: list[dict] | None = None) -> bool:
     """Links/PDFs need the deep agent (mindos_summarize_url), not converse synth."""
@@ -107,14 +148,20 @@ def needs_url_agent(message: str, history: list[dict] | None = None) -> bool:
                 "this page",
                 "tell me about",
                 "what does",
+                "what is",
                 "explain",
+                "what was",
+                "what were",
+                "give me",
             )
         )
     if not history:
         return False
     thread = "\n".join((m.get("content") or "") for m in history[-8:])
-    if "arxiv.org" not in thread.lower() and not _HTTP_URL.search(thread):
+    if not _HTTP_URL.search(thread):
         return False
+    if any(w in lower for w in _URL_DOC_FOLLOWUP):
+        return True
     return any(
         w in lower
         for w in (

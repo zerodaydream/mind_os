@@ -13,6 +13,7 @@ from backend.services.agents.core.render.partial import emit_partial
 from backend.services.agents.core.render.prompt_budget import clip_text
 from backend.services.integrations.mcp.registry import (
     _read_raw_config,
+    _silence_stdio_server_banner,
     mcp_adapters_available,
     parse_mcp_servers,
 )
@@ -57,7 +58,13 @@ def _fetch_spec_connection() -> dict | None:
     return None
 
 
+_FETCH_TOOL = None
+
+
 async def _load_fetch_tool():
+    global _FETCH_TOOL
+    if _FETCH_TOOL is not None:
+        return _FETCH_TOOL
     if not mcp_adapters_available():
         return None
     conn = _fetch_spec_connection()
@@ -73,9 +80,11 @@ async def _load_fetch_tool():
         handle_tool_errors=True,
         tool_interceptors=mcp_langsmith_interceptors(),
     )
-    tools = await client.get_tools()
+    with _silence_stdio_server_banner():
+        tools = await client.get_tools()
     for tool in tools:
         if "fetch_url" in (tool.name or ""):
+            _FETCH_TOOL = tool
             return tool
     return None
 
@@ -92,7 +101,8 @@ async def _fetch_via_mcp(url: str, *, on_ping: PartialFn | None) -> str:
         page += 1
         if page > 1:
             emit_partial(on_ping, f"Reading more of the document (part {page})…", phase="think")
-        payload = await tool.ainvoke({"url": url, "start_index": start})
+        with _silence_stdio_server_banner():
+            payload = await tool.ainvoke({"url": url, "start_index": start})
         chunk, nxt = _parse_fetch_payload(payload)
         if chunk:
             parts.append(chunk)
@@ -193,11 +203,12 @@ async def summarize_public_url(
     emit_partial(on_ping, "Summarizing the full document…", phase="think")
     focus_line = f"\nFocus: {focus.strip()}" if (focus or "").strip() else ""
     prompt = (
-        "Summarize the entire document below in clear prose for the user. "
+        "Answer from the document below in clear prose for the user. "
+        "When the user asks about a sheet/tab/row, extract those details from the source text. "
         "Start with the exact title and all author names when the source lists them. "
         "Cover all major sections; do not stop at the opening only. "
         "Use only facts from the source text."
-        f"{focus_line}\n\n---\n{doc}\n---\n\nSummary:"
+        f"{focus_line}\n\n---\n{doc}\n---\n\nAnswer:"
     )
     prompt = clip_text(prompt, 120_000, min_keep=8_000)
     try:
