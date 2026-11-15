@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Prefer repo .venv (cli extra) from any directory when this dir is on PATH.
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+if [[ ! -f "$ROOT/pyproject.toml" ]]; then
+  echo "mindos: repo root not found ($ROOT)" >&2
+  exit 1
+fi
+cd "$ROOT"
+exec uv run mindos "$@"

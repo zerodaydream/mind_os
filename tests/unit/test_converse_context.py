@@ -1,4 +1,4 @@
-from backend.services.agents.core.turn_context import (
+from backend.services.agents.core.turn.turn_context import (
     _mail_recipient_needle,
     converse_wants_context,
     wants_commitment_context,

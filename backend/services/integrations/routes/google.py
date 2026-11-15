@@ -11,13 +11,13 @@ from backend.common.api.deps import app_settings, db_session
 from backend.common.config_loader.settings import Settings
 from backend.common.database.models import IntegrationAccount
 from backend.services.ingest.core.manual import ensure_default_user
-from backend.services.integrations.core.gmail_sync import (
+from backend.services.integrations.core.gmail.sync import (
     _sync_interval_sec,
     enqueue_gmail_sync,
     schedule_gmail_sync,
     sync_gmail_inbox,
 )
-from backend.services.integrations.core.google_oauth import (
+from backend.services.integrations.core.google.oauth import (
     SCOPES,
     auth_url,
     exchange_code,
@@ -25,8 +25,11 @@ from backend.services.integrations.core.google_oauth import (
     scopes_from_token_response,
     verify_state,
 )
-from backend.services.integrations.core.oauth_popup import oauth_done_page, oauth_popup_close_response
-from backend.services.integrations.core.token_store import encrypt_tokens
+from backend.services.integrations.core.google.oauth_popup import (
+    oauth_done_page,
+    oauth_popup_close_response,
+)
+from backend.services.integrations.core.google.token_store import encrypt_tokens
 
 router = APIRouter(tags=["integrations"])
 

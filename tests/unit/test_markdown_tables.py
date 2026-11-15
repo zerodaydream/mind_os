@@ -1,4 +1,4 @@
-from backend.services.agents.core.markdown_tables import (
+from backend.services.agents.core.render.markdown_tables import (
     answer_has_empty_table_shell,
     gmail_rows_markdown_table,
 )

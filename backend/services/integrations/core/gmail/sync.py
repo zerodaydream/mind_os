@@ -10,11 +10,11 @@ from backend.common.config_loader.settings import Settings
 from backend.common.database.models import Artifact, ArtifactChunk, IntegrationAccount, OutboxEvent
 from backend.common.database.outbox import enqueue
 from backend.services.ingest.core.manual import ingest_manual_note
-from backend.services.integrations.core.google_oauth import (
+from backend.services.integrations.core.google.oauth import (
     access_token_expired,
     refresh_access_token,
 )
-from backend.services.integrations.core.token_store import decrypt_tokens, encrypt_tokens
+from backend.services.integrations.core.google.token_store import decrypt_tokens, encrypt_tokens
 
 # shortcut: static keywords, tune via GMAIL_SYNC_QUERY in .env for your hiring stack
 DEFAULT_GMAIL_SYNC_QUERY = (

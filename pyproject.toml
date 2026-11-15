@@ -28,6 +28,8 @@ agents = [
     "deepagents>=0.3.0",
     "langchain>=0.3.0",
     "langchain-google-genai>=2.0.0",
+    "langchain-mcp-adapters>=0.3.2",
+    "mcp>=1.30.0",
 ]
 embed = ["sentence-transformers>=3.0.0"]
 llm = [
@@ -36,6 +38,16 @@ llm = [
     "google-genai>=1.0.0",
 ]
 voice = ["moonshine-voice>=0.1.6"]
+# Terminal UX: deep agent + mic STT (use for repo .venv and `uv tool install -e ".[cli]"`).
+cli = [
+    "langgraph>=0.2.0",
+    "deepagents>=0.3.0",
+    "langchain>=0.3.0",
+    "langchain-google-genai>=2.0.0",
+    "langchain-mcp-adapters>=0.3.2",
+    "mcp>=1.30.0",
+    "moonshine-voice>=0.1.6",
+]
 
 
 [project.scripts]

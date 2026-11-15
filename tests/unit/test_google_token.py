@@ -1,6 +1,6 @@
 import time
 
-from backend.services.integrations.core.google_oauth import access_token_expired, normalize_token_response
+from backend.services.integrations.core.google.oauth import access_token_expired, normalize_token_response
 
 
 def test_expiry_from_expires_in() -> None:

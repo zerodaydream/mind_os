@@ -86,6 +86,50 @@ _ACTION_SIGNALS = (
     "sync",
 )
 
+_HTTP_URL = re.compile(r"https?://\S+", re.I)
+
+
+def needs_url_agent(message: str, history: list[dict] | None = None) -> bool:
+    """Links/PDFs need the deep agent (mindos_summarize_url), not converse synth."""
+    lower = message.lower()
+    if _HTTP_URL.search(message):
+        return any(
+            w in lower
+            for w in (
+                "summarize",
+                "summary",
+                "summerize",
+                "pdf",
+                "read",
+                "fetch",
+                "this link",
+                "this url",
+                "this page",
+                "tell me about",
+                "what does",
+                "explain",
+            )
+        )
+    if not history:
+        return False
+    thread = "\n".join((m.get("content") or "") for m in history[-8:])
+    if "arxiv.org" not in thread.lower() and not _HTTP_URL.search(thread):
+        return False
+    return any(
+        w in lower
+        for w in (
+            "author",
+            "researcher",
+            "who wrote",
+            "who worked",
+            "title",
+            "paper",
+            "abstract",
+            "summarize",
+            "summary",
+        )
+    )
+
 
 def strip_override(message: str) -> tuple[Intent | None, str]:
     raw = message.strip()
@@ -123,6 +167,8 @@ def classify(message: str) -> tuple[Intent, str]:
     if override is not None:
         return override, body
     lower = body.lower()
+    if needs_url_agent(body):
+        return "plan", body
     if _calendar_execute(lower):
         return "execute", body
     if any(p in lower for p in _EXECUTE):

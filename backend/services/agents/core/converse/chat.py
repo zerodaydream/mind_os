@@ -3,19 +3,19 @@ from collections.abc import Callable
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.common.utils.enums import LlmMode, LlmTask
-from backend.services.agents.core.partial import emit_partial
-from backend.services.agents.core.prompt_budget import (
+from backend.services.agents.core.render.partial import emit_partial
+from backend.services.agents.core.render.prompt_budget import (
     CHAT_HISTORY_MSG_CHARS,
     CHAT_HISTORY_TURNS,
     SYNTH_MAX_OUTPUT_TOKENS,
     clip_text,
 )
-from backend.services.agents.core.markdown_tables import (
+from backend.services.agents.core.render.markdown_tables import (
     answer_has_empty_table_shell,
     gmail_rows_markdown_table,
     normalize_markdown_tables,
 )
-from backend.services.agents.core.turn_context import (
+from backend.services.agents.core.turn.turn_context import (
     TurnContext,
     preflight_prompt_block,
     prefetch_turn_context,
@@ -25,7 +25,9 @@ _CONVERSE_SYSTEM = (
     "You are MindOS assistant. Be brief and conversational. "
     "Do not mention email, commitments, or indexed data unless the user asks. "
     "You cannot create, change, or delete calendar events—never claim you did. "
-    "Say to use /do or mention calendar/meetings so the action agent can run."
+    "Say to use /do or mention calendar/meetings so the action agent can run. "
+    "Never guess titles, authors, or contents of a URL or PDF—tell the user to ask to "
+    "summarize the link so MindOS can fetch it."
 )
 
 

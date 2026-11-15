@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.common.config_loader.settings import Settings
 from backend.common.database.models import IntegrationAccount
-from backend.services.integrations.core.gmail_sync import ensure_google_access_token
+from backend.services.integrations.core.gmail.sync import ensure_google_access_token
 
 DEFAULT_DURATION_MIN = 30
 _API = "https://www.googleapis.com/calendar/v3"
@@ -146,7 +146,12 @@ def build_event_body(
     return body
 
 
-async def google_calendar_connected(session: AsyncSession, user) -> bool:
+def calendar_scope_granted(scopes: Sequence[str] | None) -> bool:
+    return any("calendar" in s for s in (scopes or []))
+
+
+async def google_calendar_auth_status(session: AsyncSession, user) -> str:
+    """ok | disconnected | missing_scope"""
     result = await session.execute(
         select(IntegrationAccount).where(
             IntegrationAccount.user_id == user.id,
@@ -154,7 +159,16 @@ async def google_calendar_connected(session: AsyncSession, user) -> bool:
             IntegrationAccount.status == "active",
         )
     )
-    return result.scalar_one_or_none() is not None
+    account = result.scalar_one_or_none()
+    if account is None:
+        return "disconnected"
+    if not calendar_scope_granted(list(account.scopes or [])):
+        return "missing_scope"
+    return "ok"
+
+
+async def google_calendar_connected(session: AsyncSession, user) -> bool:
+    return await google_calendar_auth_status(session, user) == "ok"
 
 
 async def _google_calendar_token(session: AsyncSession, user, settings: Settings) -> str:
@@ -222,7 +236,23 @@ async def _calendar_request(
     return resp.json()
 
 
-def format_when_label(raw: str) -> str:
+_TZ_ABBREV: dict[str, str] = {
+    "Asia/Kolkata": "IST",
+    "UTC": "UTC",
+    "Etc/UTC": "UTC",
+}
+
+
+def tz_display_abbrev(iana: str) -> str:
+    key = (iana or "").strip()
+    if not key:
+        return ""
+    if key in _TZ_ABBREV:
+        return _TZ_ABBREV[key]
+    return key.split("/")[-1].replace("_", " ")
+
+
+def format_when_label(raw: str, time_zone: str = "") -> str:
     """Human-readable start for list/create replies (not raw API ISO)."""
     if not raw or raw == "?":
         return raw or "?"
@@ -235,7 +265,11 @@ def format_when_label(raw: str) -> str:
     try:
         dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
         hour = dt.strftime("%I").lstrip("0") or "12"
-        return f"{dt.strftime('%a %d %b %Y')}, {hour}:{dt.strftime('%M %p')}"
+        when = f"{dt.strftime('%a %d %b %Y')}, {hour}:{dt.strftime('%M %p')}"
+        abbr = tz_display_abbrev(time_zone)
+        if abbr:
+            when += f" {abbr}"
+        return when
     except ValueError:
         return s
 
@@ -243,7 +277,8 @@ def format_when_label(raw: str) -> str:
 def _event_start_label(ev: dict) -> str:
     start = ev.get("start") or {}
     raw = start.get("dateTime") or start.get("date") or "?"
-    return format_when_label(raw) if raw != "?" else "?"
+    tz = str(start.get("timeZone") or "")
+    return format_when_label(raw, tz) if raw != "?" else "?"
 
 
 def format_event_lines(events: list[dict], *, limit: int = 20) -> str:

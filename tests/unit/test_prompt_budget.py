@@ -1,6 +1,6 @@
 """Sentence-safe prompt clipping."""
 
-from backend.services.agents.core.prompt_budget import clip_text
+from backend.services.agents.core.render.prompt_budget import clip_text
 
 
 def test_clip_text_unchanged_when_short():
@@ -16,7 +16,7 @@ def test_clip_text_prefers_sentence_boundary():
 
 
 def test_chat_history_budget_room():
-    from backend.services.agents.core.prompt_budget import CHAT_HISTORY_MSG_CHARS, SYNTH_MAX_OUTPUT_TOKENS
+    from backend.services.agents.core.render.prompt_budget import CHAT_HISTORY_MSG_CHARS, SYNTH_MAX_OUTPUT_TOKENS
 
     assert CHAT_HISTORY_MSG_CHARS >= 1_600
     assert SYNTH_MAX_OUTPUT_TOKENS >= 2_048

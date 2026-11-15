@@ -1,0 +1,18 @@
+{
+  "servers": [
+    {
+      "name": "personal",
+      "enabled": true,
+      "transport": "builtin",
+      "guidance": "User mail, calendar, commitments, and indexed notes. mindos_search for inbox/notes; mindos_calendar_* for schedule; mindos_summarize_url for any summarize-this-link/PDF request (one tool call, one final answer); mindos_gmail_sync → mindos_process_outbox when search is empty."
+    },
+    {
+      "name": "fetch",
+      "enabled": true,
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@zhafron/mcp-web-search"],
+      "guidance": "Backend for mindos_summarize_url (PDF/HTML pagination). Do not call fetch_* directly for user summarize requests—use mindos_summarize_url instead. search_web only for open-web queries without a URL."
+    }
+  ]
+}

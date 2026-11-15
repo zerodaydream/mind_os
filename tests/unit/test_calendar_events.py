@@ -1,18 +1,43 @@
 import pytest
 
-from backend.services.integrations.core.calendar_events import (
+from backend.services.graph.core.deep_agent import _user_oauth_signal, should_route_deep_for_oauth
+from backend.services.integrations.core.calendar.events import (
     build_event_body,
     build_event_window,
+    calendar_scope_granted,
     format_when_label,
     missing_calendar_fields,
     split_event_ids,
 )
 
 
+def test_calendar_scope_granted() -> None:
+    assert calendar_scope_granted(["https://www.googleapis.com/auth/calendar.events"])
+    assert not calendar_scope_granted(["https://www.googleapis.com/auth/gmail.readonly"])
+
+
+def test_oauth_continuation_routes_deep() -> None:
+    hist = [
+        {"role": "assistant", "content": "Reply **yes** if you want to connect now."},
+    ]
+    assert should_route_deep_for_oauth("yes", hist)
+    assert _user_oauth_signal("done") == "done"
+
+
 def test_missing_fields() -> None:
     assert missing_calendar_fields("", "2026-01-01T10:00") == ["title"]
     assert missing_calendar_fields("Meet", "") == ["start datetime (start_iso)"]
     assert not missing_calendar_fields("Meet", "2026-01-01T10:00")
+
+
+def test_build_event_body_kolkata_local_hour() -> None:
+    body = build_event_body(
+        title="Reminder",
+        start_iso="2026-11-17T13:00:00",
+        time_zone="Asia/Kolkata",
+    )
+    assert body["start"]["dateTime"] == "2026-11-17T13:00:00"
+    assert body["start"]["timeZone"] == "Asia/Kolkata"
 
 
 def test_build_event_body_default_end() -> None:
@@ -43,7 +68,10 @@ def test_build_event_all_day() -> None:
 
 
 def test_format_when_label() -> None:
-    assert format_when_label("2026-11-16T13:00:00+05:30") == "Mon 16 Nov 2026, 1:00 PM"
+    assert (
+        format_when_label("2026-11-16T13:00:00+05:30", "Asia/Kolkata")
+        == "Mon 16 Nov 2026, 1:00 PM IST"
+    )
     assert format_when_label("2026-06-01") == "Mon 01 Jun 2026"
 
 

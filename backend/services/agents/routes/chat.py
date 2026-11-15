@@ -8,8 +8,9 @@ from backend.common.api.deps import app_settings, db_session
 from backend.common.config_loader.settings import Settings
 import uuid
 
-from backend.services.agents.core.orchestrate import handle_turn
+from backend.services.agents.core.turn.orchestrate import handle_turn
 from backend.services.ingest.core.manual import ensure_default_user
+from backend.services.integrations.core.calendar.timezone import detect_client_iana_timezone
 
 router = APIRouter(tags=["agents"])
 
@@ -20,6 +21,7 @@ class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=4000)
     source: Literal["gmail", "manual"] | None = None
     session_id: str | None = None
+    client_tz: str | None = None
 
     @field_validator("message")
     @classmethod
@@ -51,6 +53,7 @@ async def chat(
             raise HTTPException(status_code=400, detail="invalid session_id") from exc
     user = await ensure_default_user(session, cfg)
     gateway = getattr(request.app.state.services, "llm", None)
+    client_tz = (body.client_tz or "").strip() or detect_client_iana_timezone()
     return await handle_turn(
         session,
         user,
@@ -59,4 +62,5 @@ async def chat(
         body.message,
         session_id=sid,
         source=body.source,
+        client_tz=client_tz,
     )

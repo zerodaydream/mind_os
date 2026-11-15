@@ -74,7 +74,7 @@ def answer_has_empty_table_shell(text: str) -> bool:
 
 
 def gmail_rows_markdown_table(rows: list[dict], *, limit: int = 10) -> str:
-    from backend.services.agents.core.mail_display import format_mail_display_when
+    from backend.services.agents.core.render.mail_display import format_mail_display_when
 
     data = [
         ["Subject", "Direction", "Sent", "To", "From"],

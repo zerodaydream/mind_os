@@ -1,20 +1,31 @@
-.PHONY: install sync sync-agents tool-agents test lint up down migrate teardown
+.PHONY: install sync sync-cli tool tool-global sync-agents sync-voice tool-agents tool-voice test lint up down migrate teardown
 
 UV := $(shell command -v uv 2>/dev/null)
 ifeq ($(UV),)
   UV := $(HOME)/.pyenv/shims/uv
 endif
 
-install: sync
+CLI_EXTRA := --extra cli
 
-sync:
-	$(UV) sync --group dev
+install: sync tool-global
+
+sync sync-cli:
+	$(UV) sync --group dev $(CLI_EXTRA)
+
+# Repo .venv + ~/.local/bin/mindos (any terminal)
+tool tool-global: sync
+	$(UV) tool install -e ".[cli]" --force
 
 sync-agents:
 	$(UV) sync --group dev --extra agents
 
-tool-agents: sync-agents
-	$(UV) tool install -e ".[agents]" --force
+sync-voice:
+	$(UV) sync --group dev --extra voice
+
+tool-agents: sync
+	$(UV) tool install -e ".[cli]" --force
+
+tool-voice: tool-global
 
 test:
 	$(UV) run pytest -q

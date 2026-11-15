@@ -1,4 +1,4 @@
-from backend.services.integrations.core.token_store import decrypt_tokens, encrypt_tokens
+from backend.services.integrations.core.google.token_store import decrypt_tokens, encrypt_tokens
 
 
 def test_token_roundtrip() -> None:

@@ -164,6 +164,46 @@ def trace_tool(fn: F) -> F:
     return wrapper  # type: ignore[return-value]
 
 
+class McpLangSmithInterceptor:
+    """LangSmith TOOL runs for MCP stdio/http tool calls (langchain-mcp-adapters)."""
+
+    async def __call__(self, request, handler):
+        if not tracing_active():
+            return await handler(request)
+        try:
+            from langsmith.run_helpers import trace
+        except ImportError:
+            return await handler(request)
+        run_name = unique_run_name(f"mcp_{request.server_name}_{request.name}")
+        ls_cm = trace(
+            name=run_name,
+            run_type="tool",
+            inputs={
+                "mcp_server": request.server_name,
+                "mcp_tool": request.name,
+                "args": {
+                    k: str(v)[:400] for k, v in list((request.args or {}).items())[:12]
+                },
+            },
+        )
+        ls_run = ls_cm.__enter__()
+        try:
+            result = await handler(request)
+        except Exception as exc:
+            if ls_run is not None:
+                ls_run.end(error=str(exc))
+            ls_cm.__exit__(type(exc), exc, exc.__traceback__)
+            raise
+        if ls_run is not None:
+            ls_run.end(outputs={"result": str(result)[:2000]})
+        ls_cm.__exit__(None, None, None)
+        return result
+
+
+def mcp_langsmith_interceptors() -> list[McpLangSmithInterceptor]:
+    return [McpLangSmithInterceptor()]
+
+
 def traceable_if_enabled(name: str, *, run_type: str = "chain"):
     def decorator(fn):
         traced: Any = None

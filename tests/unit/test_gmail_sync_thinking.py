@@ -1,4 +1,4 @@
-from backend.services.agents.core.turn_context import format_gmail_sync_thinking
+from backend.services.agents.core.turn.turn_context import format_gmail_sync_thinking
 
 
 def test_sync_thinking_table_includes_counts() -> None:

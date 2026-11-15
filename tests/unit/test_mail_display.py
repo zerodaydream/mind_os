@@ -1,4 +1,4 @@
-from backend.services.agents.core.mail_display import format_mail_display_when
+from backend.services.agents.core.render.mail_display import format_mail_display_when
 
 
 def test_format_mail_display_when_iso() -> None:

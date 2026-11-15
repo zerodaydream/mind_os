@@ -1,6 +1,6 @@
 from datetime import timezone
 
-from backend.services.integrations.core.gmail_sync import (
+from backend.services.integrations.core.gmail.sync import (
     gmail_artifact_body,
     gmail_direction,
     gmail_header_block,

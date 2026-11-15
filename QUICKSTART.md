@@ -28,34 +28,41 @@ cp backend/config.json.example backend/config.json
 
 No API keys required for ingest/search/rules once those features land; today: health + tests work without keys.
 
+**Agent tools:** Gmail, calendar, search, and commitments load from `backend/mcp_servers.json` (`transport: "builtin"`). Optional `fetch` (`@zhafron/mcp-web-search` via `npx`) reads public URLs and PDFs—needs Node, no API key. Set `"enabled": false` on `fetch` in that file to disable.
+
 ## 2. Native dev (fastest loop)
 
 ```bash
-uv sync --group dev
+make sync    # dev + cli extra (agents + voice)
 make test
 uv run uvicorn backend.app:app --reload --port 8000
 ```
 
-Optional extras: `uv sync --group dev --extra llm --extra agents`
+**Global `mindos` in any terminal** (once per machine):
+
+```bash
+make install
+# or: bash backend/scripts/install-global.sh
+```
+
+That runs `uv sync --extra cli` and `uv tool install -e ".[cli]"`. Other extras: `llm`, `embed` (worker).
 
 Check: `curl http://localhost:8000/health` → `{"status":"ok"}`
 
 ### Terminal (primary UX)
 
-From any terminal, prefer the repo launcher (uses `.venv`, agents extra when synced):
+**Option A — global:** after `make install`, run `mindos chat` from any directory.
+
+**Option B — repo on PATH** (always uses this repo’s synced `.venv`):
 
 ```bash
-export PATH="/path/to/mind_os/bin:$PATH"   # once per shell, or add to ~/.zshrc
+export PATH="/path/to/mind_os/bin:$PATH"
 mindos chat
 ```
 
-Or from the repo root: `.venv/bin/mindos chat` or `make sync-agents && uv run mindos chat`.
-
-`uv sync --extra agents` only updates the repo `.venv`. If you use `mindos` from `uv tool install`, run `make tool-agents` (or `uv tool install -e ".[agents]" --force`) so the tool env gets deepagents too.
+Or from repo root: `uv run mindos chat` (after `make sync`).
 
 Gmail OAuth: open `http://127.0.0.1:8000/v1/integrations/google/start` once (API must be running).
-
-Optional agents (Deep Agents for plan/execute): `uv sync --group dev --extra agents`
 
 ## 3. Docker (full lean stack)
 

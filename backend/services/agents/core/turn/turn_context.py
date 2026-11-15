@@ -10,7 +10,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.common.database.models import Commitment, Memory
-from backend.services.agents.core.prompt_budget import (
+from backend.services.agents.core.render.prompt_budget import (
     PREFETCH_COMMITMENTS,
     PREFETCH_CONTEXT_MAX,
     PREFETCH_CTX_ARTIFACTS,
@@ -20,8 +20,8 @@ from backend.services.agents.core.prompt_budget import (
     PREFETCH_SEARCH_LIMIT,
     clip_text,
 )
-from backend.services.agents.core.mail_display import format_mail_display_when
-from backend.services.agents.core.partial import emit_partial
+from backend.services.agents.core.render.mail_display import format_mail_display_when
+from backend.services.agents.core.render.partial import emit_partial
 from backend.services.retrieval.core.hybrid import hybrid_search_artifacts
 
 _MAIL_KEYWORDS = (
@@ -420,7 +420,7 @@ async def maybe_refresh_mail_index(
 ) -> TurnContext:
     """Gmail sync + outbox drain once when mail is asked but hybrid search missed."""
     from backend.common.config_loader import get_config
-    from backend.services.integrations.core.gmail_sync import sync_gmail_inbox
+    from backend.services.integrations.core.gmail.sync import sync_gmail_inbox
     from backend.worker.consumer import drain_outbox
 
     if not should_refresh_mail_index(message, ctx, source=source):

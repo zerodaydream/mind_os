@@ -13,6 +13,12 @@ def test_format_todos_think() -> None:
     assert "✓ Event C (completed)" in text
 
 
+def test_format_todos_string_items() -> None:
+    text = _format_todos_think(["Create 1pm event", {"content": "Done", "status": "done"}])
+    assert "○ Create 1pm event (pending)" in text
+    assert "✓ Done (done)" in text
+
+
 def test_latest_todos_from_tool_call() -> None:
     msgs = [
         {

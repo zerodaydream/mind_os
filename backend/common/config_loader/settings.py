@@ -51,6 +51,10 @@ class Settings(BaseSettings):
     mindos_sync_interval_days: float = Field(default=2.0, validation_alias="MINDOS_SYNC_INTERVAL_DAYS")
     gmail_sync_query: str = Field(default="", validation_alias="GMAIL_SYNC_QUERY")
     gmail_sync_max_messages: int = Field(default=200, validation_alias="GMAIL_SYNC_MAX_MESSAGES")
+    mindos_default_timezone: str = Field(
+        default="",
+        validation_alias="MINDOS_DEFAULT_TIMEZONE",
+    )
     langsmith_tracing: bool = Field(default=False, validation_alias="LANGSMITH_TRACING")
     langsmith_api_key: str = Field(default="", validation_alias="LANGSMITH_API_KEY")
     langsmith_project: str = Field(default="", validation_alias="LANGSMITH_PROJECT")

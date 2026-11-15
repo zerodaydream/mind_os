@@ -1436,7 +1436,7 @@ def chat_input_lines(
 
 
 def chat_conversation(
-    turn: Callable[[str], str],
+    turn: Callable[..., str],
     *,
     initial_history: list[tuple[str, str]] | None = None,
     list_history: Callable[[], list] | None = None,
@@ -1765,7 +1765,7 @@ def _chat_conversation_loop(
         if action == "down":
             if _editing_draft():
                 line, col = _chat_cursor_logical(buf, cursor)
-                max_line = buf.count("\n")
+                max_line, _ = _chat_cursor_logical(buf, len(buf))
                 if line < max_line:
                     cursor = _chat_cursor_from_logical(buf, line + 1, col)
             else:
@@ -1961,7 +1961,6 @@ def _chat_conversation_loop(
             input_lines = [
                 f"{' ' * len(prefix)}… +{drop} line(s) above"
             ] + input_lines[-(max_input_rows - 1) :]
-
         input_start = box_bottom - len(input_lines)
         input_box_top = input_start - 1
         transcript_h = max(1, input_box_top - transcript_top)
@@ -2030,14 +2029,19 @@ def _chat_conversation_loop(
         stream_idx: int | None = None
         last_paint = 0.0
         pending = ""
-        compose_after_think = False
+        draw_lock = threading.Lock()
+
+        def _draw_turn(*, show_cursor: bool = False) -> None:
+            with draw_lock:
+                _draw(show_cursor=show_cursor)
 
         def on_partial(text: str, phase: str = "answer") -> None:
-            nonlocal thinking_line, think_idx, stream_idx, last_paint, _render_sig, pending, compose_after_think
+            nonlocal thinking_line, think_idx, stream_idx, last_paint, _render_sig, pending
             pending = text
             now = time.monotonic()
+            # Agent status goes in history thinking block; footer spinner would race curses.
+            thinking_line = None
             if phase == "think":
-                compose_after_think = True
                 if think_idx is None:
                     history.append(("thinking", text))
                     think_idx = len(history) - 1
@@ -2045,17 +2049,15 @@ def _chat_conversation_loop(
                     history[think_idx] = ("thinking", text)
                 _render_sig = None
                 follow_tail = True
-                _draw(show_cursor=False)
+                _draw_turn(show_cursor=False)
                 return
-            compose_after_think = False
-            thinking_line = None
             if stream_idx is None:
                 history.append(("assistant", text))
                 stream_idx = len(history) - 1
                 last_paint = now
                 _render_sig = None
                 follow_tail = True
-                _draw(show_cursor=False)
+                _draw_turn(show_cursor=False)
                 return
             if now - last_paint < _CHAT_STREAM_MIN_S:
                 return
@@ -2063,7 +2065,7 @@ def _chat_conversation_loop(
             history[stream_idx] = ("assistant", text)
             _render_sig = None
             follow_tail = True
-            _draw(show_cursor=False)
+            _draw_turn(show_cursor=False)
 
         stop = threading.Event()
         err: list[BaseException | None] = [None]
@@ -2080,22 +2082,19 @@ def _chat_conversation_loop(
                 stop.set()
 
         def _spin() -> None:
-            nonlocal thinking_line, compose_after_think
+            nonlocal thinking_line
             i = 0
             while not stop.is_set():
-                if thinking_line is not None:
-                    if compose_after_think:
-                        pfx = _chat_role_prefix("mindos")
-                        tail = " composing answer…"
-                    else:
-                        pfx = _chat_role_prefix("thinking")
-                        tail = " …"
-                    thinking_line = f"{pfx}{frames[i % len(frames)]}{tail}"
-                    _draw(show_cursor=False)
+                if thinking_line is None:
+                    stop.wait(0.08)
+                    continue
+                thinking_line = (
+                    f"{_chat_role_prefix('thinking')}{frames[i % len(frames)]} …"
+                )
+                _draw_turn(show_cursor=False)
                 i += 1
                 stop.wait(0.08)
 
-        compose_after_think = False
         thinking_line = f"{_chat_role_prefix('thinking')}{frames[0]} …"
         spinner = threading.Thread(target=_spin, daemon=True)
         spinner.start()
@@ -2105,7 +2104,8 @@ def _chat_conversation_loop(
         if err[0] is not None:
             answer = f"error: {err[0]}"
         else:
-            answer = answer_box[0] or "(empty)"
+            raw = answer_box[0] or "(empty)"
+            answer = raw[0] if isinstance(raw, tuple) else raw
 
         plan, rest = _split_plan_prefix(answer)
         if plan:
@@ -2139,7 +2139,9 @@ def _chat_conversation_loop(
         stdscr.meta(True)
     blink = False
     while True:
-        blink_idle = follow_tail and not buf and thinking_line is None and input_focus
+        blink_idle = (
+            follow_tail and not buf and thinking_line is None and input_focus
+        )
         voice_waiting = _voice_busy()
         if voice_waiting:
             stdscr.timeout(120)
@@ -2180,9 +2182,6 @@ def _chat_conversation_loop(
                 _insert_newline()
             elif kind == "enter":
                 if input_focus and buf.strip():
-                    _submit_turn()
-                elif top_tab == 0:
-                    stdscr.timeout(-1)
                     return
                 elif top_tab == 1:
                     _open_history_tab()

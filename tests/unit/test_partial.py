@@ -1,4 +1,4 @@
-from backend.services.agents.core.partial import emit_partial
+from backend.services.agents.core.render.partial import emit_partial
 
 
 def test_emit_partial_phase_kw() -> None:

@@ -1,4 +1,4 @@
-from backend.services.agents.core.router import classify
+from backend.services.agents.core.routing.router import classify
 
 
 def test_override_plan() -> None:

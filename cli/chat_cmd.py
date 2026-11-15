@@ -14,10 +14,11 @@ from backend.common.config_loader import get_config
 from backend.common.config_loader.settings import get_settings, reload_settings
 from backend.common.langsmith_setup import flush_traces
 from backend.common.database import lifecycle
-from backend.services.agents.core.orchestrate import handle_turn
-from backend.services.agents.core.sessions import delete_session, get_session, list_sessions
+from backend.services.agents.core.turn.orchestrate import handle_turn
+from backend.services.agents.core.session.sessions import delete_session, get_session, list_sessions
 from backend.services.ingest.core.manual import ensure_default_user
 from backend.worker.bootstrap import bootstrap, worker_services
+from backend.services.integrations.core.calendar.timezone import detect_client_iana_timezone
 
 
 def _rel_time(dt: datetime | None) -> str:
@@ -42,6 +43,7 @@ async def _turn(
     session_id: uuid.UUID | None,
     *,
     on_partial: Callable[[str], None] | None = None,
+    client_tz: str = "",
 ) -> dict:
     settings = get_settings()
     user = await ensure_default_user(session, settings)
@@ -53,6 +55,7 @@ async def _turn(
         message,
         session_id=session_id,
         on_partial=on_partial,
+        client_tz=client_tz,
     )
 
 
@@ -62,12 +65,16 @@ async def _answer_for(
     session_id: uuid.UUID | None,
     *,
     on_partial: Callable[[str], None] | None = None,
+    client_tz: str = "",
 ) -> tuple[str, uuid.UUID]:
     if lifecycle._session_factory is None:
         raise RuntimeError("database not initialized — check DATABASE_URL and Postgres")
     try:
         async with lifecycle._session_factory() as session:
-            out = await _turn(session, message, gateway, session_id, on_partial=on_partial)
+            out = await _turn(
+                session, message, gateway, session_id,
+                on_partial=on_partial, client_tz=client_tz,
+            )
             await session.commit()
     finally:
         flush_traces()
@@ -182,15 +189,22 @@ def cmd_chat(*, session_id: uuid.UUID | None = None) -> int:
     else:
         state, gateway, initial_history = _bootstrap_chat(session_id)
 
+    client_tz = detect_client_iana_timezone()
+
     def turn(msg: str, on_partial: Callable[[str], None] | None = None) -> str:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", SyntaxWarning)
             ans, sid = run_async(
-                _answer_for(msg, gateway, state["session_id"], on_partial=on_partial)
+                _answer_for(
+                    msg,
+                    gateway,
+                    state["session_id"],
+                    on_partial=on_partial,
+                    client_tz=client_tz,
+                )
             )
         state["session_id"] = sid
         return ans
-
     def list_history() -> list[tuple[str, str, str]]:
         return run_async(_history_rows())
 
@@ -244,8 +258,10 @@ def cmd_chat(*, session_id: uuid.UUID | None = None) -> int:
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", SyntaxWarning)
-                ans, sid = run_async(_answer_for(message, gateway, state["session_id"]))
-            state["session_id"] = sid
+                ans, sid = run_async(
+                    _answer_for(message, gateway, state["session_id"], client_tz=client_tz)
+                )
+                state["session_id"] = sid
             term.note_md(ans)
         except KeyboardInterrupt:
             break

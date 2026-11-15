@@ -5,14 +5,14 @@ from __future__ import annotations
 import re
 
 from backend.common.utils.enums import LlmMode, LlmTask
-from backend.services.agents.core.prompt_budget import (
+from backend.services.agents.core.render.prompt_budget import (
     CHAT_HISTORY_MSG_CHARS,
     CHAT_HISTORY_TURNS,
     EXTRACT_MAX_OUTPUT_TOKENS,
     ROUTER_LLM_MAX_CHARS,
     clip_text,
 )
-from backend.services.agents.core.router import Intent, classify
+from backend.services.agents.core.routing.router import Intent, classify
 
 _AMBIGUOUS_ACTION = (
     "find",

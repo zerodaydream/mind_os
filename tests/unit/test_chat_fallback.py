@@ -1,5 +1,5 @@
-from backend.services.agents.core.chat import _fallback_answer
-from backend.services.agents.core.turn_context import TurnContext
+from backend.services.agents.core.converse.chat import _fallback_answer
+from backend.services.agents.core.turn.turn_context import TurnContext
 
 
 def test_fallback_lists_context() -> None:

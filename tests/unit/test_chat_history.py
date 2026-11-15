@@ -1,5 +1,5 @@
-from backend.services.agents.core.chat import _format_history
-from backend.services.agents.core.sessions import _title_from
+from backend.services.agents.core.converse.chat import _format_history
+from backend.services.agents.core.session.sessions import _title_from
 
 
 def test_format_history_roles() -> None:

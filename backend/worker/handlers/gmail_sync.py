@@ -4,7 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.common.config_loader.settings import get_settings
 from backend.common.database.models import User
-from backend.services.integrations.core.gmail_sync import schedule_gmail_sync, sync_gmail_inbox
+from backend.services.integrations.core.gmail.sync import schedule_gmail_sync, sync_gmail_inbox
 
 
 async def handle_gmail_sync(session: AsyncSession, payload: dict) -> None:

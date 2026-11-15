@@ -5,7 +5,7 @@ from backend.common.config_loader import get_config
 from backend.common.config_loader.settings import get_settings
 from backend.common.database import lifecycle
 from backend.services.ingest.core.manual import ensure_default_user
-from backend.services.integrations.core.gmail_sync import sync_gmail_inbox
+from backend.services.integrations.core.gmail.sync import sync_gmail_inbox
 from backend.worker.bootstrap import bootstrap
 from backend.worker.consumer import drain_outbox
 

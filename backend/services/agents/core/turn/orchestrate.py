@@ -7,23 +7,25 @@ from collections.abc import Callable
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.services.agents.core.chat import run_chat
-from backend.services.agents.core.router import classify
-from backend.services.agents.core.router_llm import (
+from backend.services.agents.core.converse.chat import run_chat
+from backend.services.agents.core.routing.router import classify, needs_url_agent
+from backend.services.agents.core.routing.router_llm import (
     compact_thread_task,
     needs_turn_routing,
     route_turn,
     thread_pending_execute,
 )
-from backend.services.agents.core.sessions import (
+from backend.services.agents.core.session.sessions import (
     append_message,
     create_session,
     get_session,
     recent_messages,
 )
-from backend.services.agents.core.prompt_budget import CHAT_HISTORY_TURNS
-from backend.services.agents.core.turn_context import maybe_refresh_mail_index, prefetch_turn_context
+from backend.services.agents.core.render.prompt_budget import CHAT_HISTORY_TURNS
+from backend.services.agents.core.turn.turn_context import maybe_refresh_mail_index, prefetch_turn_context
 from backend.common.langsmith_setup import begin_turn_trace, flush_traces, tracing_active, unique_run_name
+from backend.services.integrations.core.calendar.scheduling import pending_calendar_slot_reply
+from backend.services.graph.core.deep_agent import run_deep_agent, should_route_deep_for_oauth
 
 
 def _mail_table_ask(message: str) -> bool:
@@ -73,6 +75,7 @@ async def handle_turn(
     session_id: uuid.UUID | None = None,
     source: str | None = None,
     on_partial: Callable[[str], None] | None = None,
+    client_tz: str = "",
 ) -> dict:
     turn_trace = begin_turn_trace() if tracing_active() else None
     ls_cm = None
@@ -105,6 +108,7 @@ async def handle_turn(
             session_id=session_id,
             source=source,
             on_partial=on_partial,
+            client_tz=client_tz,
             ls_run=ls_run,
         )
     except Exception as exc:
@@ -126,6 +130,7 @@ async def _handle_turn_body(
     session_id: uuid.UUID | None = None,
     source: str | None = None,
     on_partial: Callable[[str], None] | None = None,
+    client_tz: str = "",
     ls_run=None,
 ) -> dict:
     chat = None
@@ -136,6 +141,13 @@ async def _handle_turn_body(
 
     prior_history = await recent_messages(session, session_id=chat.id, limit=CHAT_HISTORY_TURNS)
     intent, body = classify(message)
+    if intent == "converse" and needs_url_agent(body, prior_history):
+        intent = "plan"
+    if should_route_deep_for_oauth(body, prior_history):
+        intent = "execute"
+    if intent == "converse" and pending_calendar_slot_reply(body, prior_history):
+        intent = "execute"
+        body = compact_thread_task(body, prior_history)
     if needs_turn_routing(body, intent, prior_history):
         routed = await route_turn(gateway, message, prior_history)
         if routed is not None:
@@ -174,8 +186,6 @@ async def _handle_turn_body(
         answer = out.get("answer") or ""
         sources = out.get("sources") or turn_context.sources
     elif intent in ("plan", "execute"):
-        from backend.services.graph.core.deep_agent import run_deep_agent
-
         try:
             out = await run_deep_agent(
                 session,
@@ -188,6 +198,7 @@ async def _handle_turn_body(
                 turn_context=turn_context,
                 history=history,
                 on_partial=on_partial,
+                client_tz=client_tz,
             )
         except OSError as exc:
             out, mode = await _synth_plan(

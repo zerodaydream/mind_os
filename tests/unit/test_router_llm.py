@@ -1,5 +1,5 @@
-from backend.services.agents.core.router import classify
-from backend.services.agents.core.router_llm import (
+from backend.services.agents.core.routing.router import classify
+from backend.services.agents.core.routing.router_llm import (
     _parse_intent_line,
     _parse_turn_routing,
     needs_llm_refine,

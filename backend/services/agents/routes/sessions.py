@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.common.api.deps import app_settings, db_session
 from backend.common.config_loader.settings import Settings
-from backend.services.agents.core.sessions import delete_session
+from backend.services.agents.core.session.sessions import delete_session
 from backend.services.ingest.core.manual import ensure_default_user
 
 router = APIRouter(tags=["agents"])
