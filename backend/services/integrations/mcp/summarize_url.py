@@ -96,11 +96,13 @@ async def _fetch_via_mcp(url: str, *, on_ping: PartialFn | None) -> str:
     parts: list[str] = []
     start = 0
     page = 0
-    emit_partial(on_ping, f"Viewing {_short_url(url)}…", phase="think")
+    emit_partial(on_ping, f"→ Viewing {_short_url(url)}…", phase="think")
     while len("".join(parts)) < _DOC_CHAR_CAP:
         page += 1
         if page > 1:
-            emit_partial(on_ping, f"Reading more of the document (part {page})…", phase="think")
+            emit_partial(
+                on_ping, f"→ Reading more of the document (part {page})…", phase="think"
+            )
         with _silence_stdio_server_banner():
             payload = await tool.ainvoke({"url": url, "start_index": start})
         chunk, nxt = _parse_fetch_payload(payload)
@@ -171,7 +173,7 @@ async def fetch_public_document(url: str, *, on_ping: PartialFn | None) -> str:
         return ""
     body = await _fetch_via_mcp(url, on_ping=on_ping)
     if not body:
-        emit_partial(on_ping, f"Fetching {_short_url(url)}…", phase="think")
+        emit_partial(on_ping, f"→ Fetching {_short_url(url)}…", phase="think")
         body = await _arxiv_atom_text(url)
     if not body:
         try:
@@ -200,7 +202,7 @@ async def summarize_public_url(
     doc = await fetch_public_document(url, on_ping=on_ping)
     if doc.startswith("Fetch failed") or doc.startswith("Could not read"):
         return doc
-    emit_partial(on_ping, "Summarizing the full document…", phase="think")
+    emit_partial(on_ping, "→ Summarizing the full document…", phase="think")
     focus_line = f"\nFocus: {focus.strip()}" if (focus or "").strip() else ""
     prompt = (
         "Answer from the document below in clear prose for the user. "

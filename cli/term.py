@@ -53,17 +53,31 @@ def tui_flush() -> None:
         _show_sink(_tui_stdscr, lines)
 
 
-def tui_busy(fn, *, label: str = "Working"):
+def tui_busy(
+    fn,
+    *,
+    label: str = "Working",
+    labels: list[str] | tuple[str, ...] | None = None,
+    label_interval_s: float = 1.5,
+):
     """Spinner while a blocking CLI action runs."""
+    lines = list(labels) if labels else [label]
     stdscr = _tui_stdscr
     if stdscr is None:
         if _RICH and _CONSOLE:
-            with _CONSOLE.status(f"[bold yellow]{label}[/]", spinner="dots"):
+            with _CONSOLE.status(f"[bold yellow]{lines[0]}[/]", spinner="dots"):
                 return fn()
         return fn()
 
     stop = threading.Event()
     frames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+    started = time.monotonic()
+
+    def _current_label() -> str:
+        if len(lines) == 1:
+            return lines[0]
+        idx = int((time.monotonic() - started) / max(0.2, label_interval_s)) % len(lines)
+        return lines[idx]
 
     def _spin() -> None:
         i = 0
@@ -71,7 +85,7 @@ def tui_busy(fn, *, label: str = "Working"):
             _normal, sel = _curses_harvest(stdscr)
             h, w = stdscr.getmaxyx()
             stdscr.erase()
-            msg = f"  {label}  {frames[i % len(frames)]}"
+            msg = f"  {_current_label()}  {frames[i % len(frames)]}"
             try:
                 col = max(0, (w - len(msg)) // 2)
                 stdscr.addstr(max(0, h // 2), col, msg[: w - 1], sel)
@@ -461,6 +475,20 @@ def step(label: str, detail: str = "", *, ok: bool | None = None) -> None:
     sys.stdout.write(f"  {color}{mark}{_C.reset}  {label}{extra}\n")
 
 
+def think_status(text: str) -> None:
+    """In-chat agent status — dim plain lines, same role as TUI thinking block."""
+    t = (text or "").strip()
+    if not t:
+        return
+    if _sink is not None:
+        for line in t.splitlines():
+            _record(line)
+        return
+    for line in t.splitlines():
+        sys.stdout.write(f"  {_C.dim}{line}{_C.reset}\n")
+    sys.stdout.flush()
+
+
 def note(text: str) -> None:
     if _sink is not None:
         for line in text.splitlines() or [text]:
@@ -733,7 +761,7 @@ def _session_menu_draw(
         if not delete_session(sid):
             return
         sessions.pop(idx)
-        _tui_flash(stdscr, "Deleted successfully", wait_s=2.0, attr=_curses_success_attr())
+        _tui_flash(stdscr, "Deleted successfully", wait_s=1.0, attr=_curses_success_attr())
         if not sessions:
             return
         idx = min(idx, len(sessions) - 1)
@@ -770,7 +798,7 @@ def _session_menu_draw(
             slice_rows,
             width=table_w,
             selected=local_sel,
-            title="Mind OS · saved chats",
+            title="Chat History",
         )
         panel_y0 = 0
         if brand:
@@ -876,7 +904,7 @@ def pick_command(*, subtitle: str = "") -> str | None:
                 return _menu_draw(
                     stdscr,
                     _MENU_VALUES,
-                    title="mindos · local context",
+                    title="Main Menu",
                     header_lines=header,
                 )
 
@@ -909,7 +937,7 @@ def run_interactive(
             choice = _menu_draw(
                 stdscr,
                 _MENU_VALUES,
-                title="mindos · local context",
+                title="Main Menu",
                 header_lines=hdr,
             )
             show_subtitle = False
@@ -1015,6 +1043,37 @@ def _split_plan_prefix(text: str) -> tuple[str, str]:
         return "", text
     rest = "\n".join(lines[i:]).lstrip("\n")
     return "\n".join(plan).strip(), rest
+
+
+def _merge_think_partial(prev: str, text: str) -> str:
+    text = (text or "").strip()
+    if not text:
+        return prev
+    if not prev:
+        return text
+    if text.startswith("Plan:"):
+        return text
+    if text in prev.splitlines():
+        return prev
+    if prev.startswith("Plan:") or ("\n" not in text and len(text) < 240):
+        return f"{prev}\n{text}".strip()
+    return text
+
+
+def _advance_think_reveal(target: str, revealed: str, *, chunk: int) -> str:
+    target = target or ""
+    revealed = revealed or ""
+    if not target:
+        return revealed
+    if revealed and not target.startswith(revealed):
+        if target.startswith("Plan:"):
+            revealed = ""
+        else:
+            return target
+    take = min(chunk, len(target) - len(revealed))
+    if take <= 0:
+        return revealed
+    return revealed + target[len(revealed) : len(revealed) + take]
 
 
 def _thinking_chat_lines(text: str, width: int) -> list[tuple[str, str]]:
@@ -1143,6 +1202,9 @@ def _chat_think_turn(fn: Callable[[], str], on_tick: Callable[[int], None]) -> s
 
 _CHAT_INPUT_TIMEOUT_MS = 400
 _CHAT_STREAM_MIN_S = 0.055
+_CHAT_THINK_TICK_S = 0.03
+_CHAT_THINK_CHARS_PER_TICK = 5
+_CHAT_THINK_PULSE_S = 0.42
 _VOICE_SPEAK_DOTS = (".", "..", "...")
 _VOICE_SPEAK_DOT_S = 0.75
 _CHAT_ROLE_NAME_W = max(len("you"), len("mindos"), len("mindos [thinking]"))
@@ -1439,8 +1501,9 @@ def chat_conversation(
     turn: Callable[..., str],
     *,
     initial_history: list[tuple[str, str]] | None = None,
+    initial_session_title: str = "New Chat",
     list_history: Callable[[], list] | None = None,
-    load_history: Callable[[str], list[tuple[str, str]] | None] | None = None,
+    load_history: Callable[[str], tuple[list[tuple[str, str]], str] | None] | None = None,
     delete_history: Callable[[str], bool] | None = None,
 ) -> None:
     """Continuous assistant chat; top bar Back / History (←/→, Enter on empty input)."""
@@ -1457,6 +1520,7 @@ def chat_conversation(
             turn,
             stdscr=stdscr,
             initial_history=initial_history,
+            initial_session_title=initial_session_title,
             list_history=list_history,
             load_history=load_history,
             delete_history=delete_history,
@@ -1474,8 +1538,9 @@ def _chat_conversation_loop(
     *,
     stdscr,
     initial_history: list[tuple[str, str]] | None,
+    initial_session_title: str = "New Chat",
     list_history: Callable[[], list] | None,
-    load_history: Callable[[str], list[tuple[str, str]] | None],
+    load_history: Callable[[str], tuple[list[tuple[str, str]], str] | None],
     delete_history: Callable[[str], bool] | None = None,
 ) -> None:
     import curses as c
@@ -1539,6 +1604,8 @@ def _chat_conversation_loop(
 
     _TOP_TABS = ("Back", "History")
     history: list[tuple[str, str]] = list(initial_history or [])
+    session_title_target = (initial_session_title or "New Chat").strip() or "New Chat"
+    session_title_shown = session_title_target
     scroll = 0
     follow_tail = bool(history)
     buf = ""
@@ -1546,8 +1613,10 @@ def _chat_conversation_loop(
     input_focus = True
     top_tab = 0
     thinking_line: str | None = None
+    think_live = False
+    think_pulse = 0
     frames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
-    _render_sig: tuple[int, int, str | None] | None = None
+    _render_sig: tuple | None = None
     _rendered_lines: list[tuple[int, str] | tuple[int, str, int]] = []
 
     voice_preview_q: SimpleQueue[str] = SimpleQueue()
@@ -1650,7 +1719,10 @@ def _chat_conversation_loop(
                     pad = prefix if i == 0 else cont_pad
                     row: tuple[int, str] | tuple[int, str, int] = (think_attr, f"{pad}{ln}")
                     if style == "todo_active" and ln.startswith("→"):
-                        row = (think_attr, f"{pad}{ln}", think_icon_attr)
+                        icon_a = think_icon_attr
+                        if think_live and i == len(lines) - 1 and think_pulse % 2:
+                            icon_a = think_attr
+                        row = (think_attr, f"{pad}{ln}", icon_a)
                     out.append(row)
                 continue
             lines = _markdown_chat_lines(text, wrap_w)
@@ -1664,7 +1736,7 @@ def _chat_conversation_loop(
     ) -> list[tuple[int, str] | tuple[int, str, int]]:
         nonlocal _render_sig, _rendered_lines
         think = thinking_line or ""
-        sig = (len(history), inner_w, think)
+        sig = (len(history), inner_w, think, think_live, think_pulse)
         if sig != _render_sig:
             _rendered_lines = _flat_history(inner_w)
             if thinking_line:
@@ -1878,7 +1950,12 @@ def _chat_conversation_loop(
             if loaded is None:
                 thinking_line = "  (session not found)"
                 return
-            history = list(loaded)
+            nonlocal session_title_shown, session_title_target
+            if isinstance(loaded, tuple) and len(loaded) >= 2:
+                history, session_title_target = list(loaded[0]), loaded[1]
+                session_title_shown = session_title_target
+            else:
+                history = list(loaded)  # type: ignore[arg-type]
             thinking_line = None
             follow_tail = True
             _render_sig = None
@@ -1901,9 +1978,9 @@ def _chat_conversation_loop(
         box_bottom = h - 1
 
         stdscr.erase()
-        title = "mindos · chat"
+        header = (session_title_shown or "New Chat").strip() or "New Chat"
         try:
-            stdscr.addstr(0, pad, title[: max(0, w - pad - 1)], normal | c.A_BOLD)
+            stdscr.addstr(0, pad, header[: max(0, w - pad - 1)], normal | c.A_BOLD)
         except c.error:
             pass
         tab_gap = 2
@@ -1922,16 +1999,12 @@ def _chat_conversation_loop(
             tab_x += len(segment) + tab_gap
         hint_attr = tab_norm
         hint1 = (
-            " Tab → Back/History  |  ←/→ tabs  |  Enter send (History · Enter = saved chats)"
-            if top_tab == 1
-            else " Tab → Back/History  |  ←/→ tabs  |  Enter send (Back · Enter = leave)"
+            " Tab → Main Menu/History  | Tab while typing → browse  |  Ctrl+G voice | ←/→ Navigate "
         )
-        hint2 = " Tab again while typing → browse  |  h = history (when not typing)  |  Ctrl+G voice"
         try:
             stdscr.addstr(1, pad, tui_theme.rule(inner_w)[:inner_w], normal)
             stdscr.addstr(2, pad, hint1[:inner_w], hint_attr)
-            stdscr.addstr(3, pad, hint2[:inner_w], hint_attr)
-            stdscr.addstr(4, pad, tui_theme.rule(inner_w)[:inner_w], normal)
+            stdscr.addstr(3, pad, tui_theme.rule(inner_w)[:inner_w], normal)
         except c.error:
             pass
         if _voice_busy():
@@ -2013,6 +2086,7 @@ def _chat_conversation_loop(
 
     def _submit_turn() -> None:
         nonlocal buf, cursor, scroll, thinking_line, follow_tail, _render_sig
+        nonlocal think_live, think_pulse, session_title_shown, session_title_target
         if _voice_busy():
             _voice_stop()
         msg = buf.rstrip()
@@ -2029,7 +2103,19 @@ def _chat_conversation_loop(
         stream_idx: int | None = None
         last_paint = 0.0
         pending = ""
+        think_target = ""
+        think_revealed = ""
         draw_lock = threading.Lock()
+
+        def _sync_think_history() -> None:
+            nonlocal think_idx
+            if think_idx is None:
+                if not think_revealed:
+                    return
+                history.append(("thinking", think_revealed))
+                think_idx = len(history) - 1
+            else:
+                history[think_idx] = ("thinking", think_revealed)
 
         def _draw_turn(*, show_cursor: bool = False) -> None:
             with draw_lock:
@@ -2037,20 +2123,23 @@ def _chat_conversation_loop(
 
         def on_partial(text: str, phase: str = "answer") -> None:
             nonlocal thinking_line, think_idx, stream_idx, last_paint, _render_sig, pending
+            nonlocal think_target, think_revealed, session_title_shown, session_title_target
             pending = text
             now = time.monotonic()
-            # Agent status goes in history thinking block; footer spinner would race curses.
-            thinking_line = None
-            if phase == "think":
-                if think_idx is None:
-                    history.append(("thinking", text))
-                    think_idx = len(history) - 1
-                else:
-                    history[think_idx] = ("thinking", text)
+            if phase == "title":
+                nxt = (text or "").strip()
+                if nxt:
+                    session_title_target = nxt
+                    if session_title_shown == "New Chat":
+                        session_title_shown = ""
                 _render_sig = None
-                follow_tail = True
                 _draw_turn(show_cursor=False)
                 return
+            if phase == "think":
+                think_target = _merge_think_partial(think_target, text)
+                thinking_line = None
+                return
+            thinking_line = None
             if stream_idx is None:
                 history.append(("assistant", text))
                 stream_idx = len(history) - 1
@@ -2085,7 +2174,10 @@ def _chat_conversation_loop(
             nonlocal thinking_line
             i = 0
             while not stop.is_set():
-                if thinking_line is None:
+                if think_revealed or think_target:
+                    if thinking_line is not None:
+                        thinking_line = None
+                        _draw_turn(show_cursor=False)
                     stop.wait(0.08)
                     continue
                 thinking_line = (
@@ -2095,12 +2187,69 @@ def _chat_conversation_loop(
                 i += 1
                 stop.wait(0.08)
 
+        def _think_stream() -> None:
+            nonlocal think_revealed, thinking_line, _render_sig, think_pulse, follow_tail
+            nonlocal session_title_shown, session_title_target
+            last_pulse = time.monotonic()
+            while not stop.is_set():
+                advanced = False
+                if (
+                    session_title_target != "New Chat"
+                    and len(session_title_shown) < len(session_title_target)
+                ):
+                    with draw_lock:
+                        session_title_shown = _advance_think_reveal(
+                            session_title_target,
+                            session_title_shown,
+                            chunk=_CHAT_THINK_CHARS_PER_TICK,
+                        )
+                        _render_sig = None
+                        advanced = True
+                        _draw(show_cursor=False)
+                if len(think_revealed) < len(think_target):
+                    with draw_lock:
+                        think_revealed = _advance_think_reveal(
+                            think_target,
+                            think_revealed,
+                            chunk=_CHAT_THINK_CHARS_PER_TICK,
+                        )
+                        thinking_line = None
+                        _sync_think_history()
+                        _render_sig = None
+                        follow_tail = True
+                        advanced = True
+                        _draw(show_cursor=False)
+                now = time.monotonic()
+                if (
+                    think_live
+                    and not advanced
+                    and think_revealed
+                    and now - last_pulse >= _CHAT_THINK_PULSE_S
+                ):
+                    think_pulse += 1
+                    last_pulse = now
+                    with draw_lock:
+                        _render_sig = None
+                        _draw(show_cursor=False)
+                stop.wait(_CHAT_THINK_TICK_S)
+
+        think_live = True
+        think_pulse = 0
         thinking_line = f"{_chat_role_prefix('thinking')}{frames[0]} …"
         spinner = threading.Thread(target=_spin, daemon=True)
+        think_thread = threading.Thread(target=_think_stream, daemon=True)
         spinner.start()
+        think_thread.start()
         _run_turn()
-        spinner.join(timeout=0.3)
+        stop.set()
+        spinner.join(timeout=0.35)
+        think_thread.join(timeout=1.5)
+        think_revealed = think_target
+        _sync_think_history()
         thinking_line = None
+        think_live = False
+        think_pulse = 0
+        session_title_shown = session_title_target
         if err[0] is not None:
             answer = f"error: {err[0]}"
         else:

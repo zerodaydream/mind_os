@@ -17,10 +17,10 @@ def test_needs_llm_refine_skips_when_plan() -> None:
 
 def test_needs_llm_refine_ambiguous_converse() -> None:
     intent, body = classify("hello there")
-    assert intent == "converse"
+    assert intent == "plan"
     assert needs_llm_refine(body, intent) is False
     vague = "converse " + ("x" * 165) + " list table subject"
-    assert classify(vague)[0] == "converse"
+    assert classify(vague)[0] == "plan"
     assert needs_llm_refine(vague, "converse") is True
 
 

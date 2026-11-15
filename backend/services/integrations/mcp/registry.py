@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import json
 import logging
@@ -22,10 +21,7 @@ logging.getLogger("langchain_google_genai._function_utils").setLevel(logging.ERR
 
 _SERVER_NAME = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 _ENV_REF = re.compile(r"^\$[{]?([A-Za-z_][A-Za-z0-9_]*)[}]?$")
-_LOAD_TIMEOUT_SEC = float(os.getenv("MINDOS_MCP_LOAD_TIMEOUT_SEC", "20"))
 _MCP_STDIO_LABELS = {"fetch": "web fetch"}
-_MCP_EXTERNAL_TOOLS: list[Any] | None = None
-_MCP_EXTERNAL_KEY: tuple[tuple[str, ...], ...] | None = None
 
 
 def mcp_loading_user_message(specs: list[McpServerSpec]) -> str:
@@ -34,14 +30,6 @@ def mcp_loading_user_message(specs: list[McpServerSpec]) -> str:
         return "Connecting external tools…"
     label = ", ".join(_MCP_STDIO_LABELS.get(n, n) for n in stdio)
     return f"Connecting {label} (may take a few seconds on first load)…"
-
-
-def _external_mcp_key(specs: list[McpServerSpec]) -> tuple[tuple[str, ...], ...]:
-    return tuple(
-        (s.name, s.transport, tuple(s.connection.get("args") or ()))
-        for s in specs
-        if s.transport != "builtin"
-    )
 
 
 @contextlib.contextmanager
@@ -244,35 +232,6 @@ async def load_mcp_for_agent(
             )
         )
 
-    external = [s for s in specs if s.transport != "builtin"]
-    if external and mcp_adapters_available():
-        from langchain_mcp_adapters.client import MultiServerMCPClient
-
-        from backend.common.langsmith_setup import mcp_langsmith_interceptors
-        from backend.services.agents.core.render.partial import emit_partial
-
-        cache_key = _external_mcp_key(specs)
-        global _MCP_EXTERNAL_TOOLS, _MCP_EXTERNAL_KEY
-        if _MCP_EXTERNAL_TOOLS is not None and _MCP_EXTERNAL_KEY == cache_key:
-            tools.extend(_MCP_EXTERNAL_TOOLS)
-        else:
-            emit_partial(on_partial, mcp_loading_user_message(external), phase="think")
-            connections = {s.name: s.connection for s in external}
-            client = MultiServerMCPClient(
-                connections,
-                tool_name_prefix=True,
-                handle_tool_errors=True,
-                tool_interceptors=mcp_langsmith_interceptors(),
-            )
-            try:
-                with _silence_stdio_server_banner():
-                    extra = await asyncio.wait_for(
-                        client.get_tools(), timeout=_LOAD_TIMEOUT_SEC
-                    )
-                _MCP_EXTERNAL_TOOLS = list(extra)
-                _MCP_EXTERNAL_KEY = cache_key
-                tools.extend(extra)
-            except Exception as exc:  # noqa: BLE001 — MCP must not break a chat turn
-                logger.warning("MCP tool load failed: %s", exc)
+    # shortcut: stdio MCP (fetch) not mounted on the agent; mindos_summarize_url loads fetch on demand
 
     return tools, guidance

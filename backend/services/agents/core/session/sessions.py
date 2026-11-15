@@ -86,8 +86,6 @@ async def append_message(
         metadata_=metadata or {},
     )
     session.add(msg)
-    if role == "user" and (not chat.title or chat.title == "New chat"):
-        chat.title = _title_from(content)
     chat.updated_at = datetime.now(timezone.utc)
     await session.flush()
     return msg

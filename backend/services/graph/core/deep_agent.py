@@ -305,7 +305,7 @@ async def run_deep_agent(
             ),
             "mode": "deep_agent",
             "intent": intent,
-            "sources": turn_context.sources if turn_context else [],
+            "sources": [],
         }
 
     invoke = {"messages": [{"role": "user", "content": user_content}]}
@@ -377,7 +377,6 @@ async def run_deep_agent(
         }
 
     flush_traces()
-    sources = turn_context.sources if turn_context else []
     from backend.services.graph.core.deep_session import append_session_turn
 
     todos = _latest_todos(result.get("messages") if isinstance(result, dict) else None)
@@ -394,7 +393,7 @@ async def run_deep_agent(
         "answer": answer or "(empty agent reply)",
         "mode": "deep_agent",
         "intent": intent,
-        "sources": sources,
+        "sources": [],
     }
 
 
@@ -566,7 +565,7 @@ def _emit_tool_think(msgs, on_partial, *, seen: set[str]) -> None:
             seen.add(key)
             line = _tool_think_line(tid, _tool_call_args(tc))
             if line:
-                emit_partial(on_partial, line, phase="think")
+                emit_partial(on_partial, f"→ {line}", phase="think")
         break
 
 

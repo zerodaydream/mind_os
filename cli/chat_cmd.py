@@ -14,6 +14,7 @@ from backend.common.config_loader import get_config
 from backend.common.config_loader.settings import get_settings, reload_settings
 from backend.common.langsmith_setup import flush_traces
 from backend.common.database import lifecycle
+from backend.services.agents.core.session.title import display_session_title
 from backend.services.agents.core.turn.orchestrate import handle_turn
 from backend.services.agents.core.session.sessions import delete_session, get_session, list_sessions
 from backend.services.ingest.core.manual import ensure_default_user
@@ -81,7 +82,8 @@ async def _answer_for(
     answer = (out.get("answer") or "").strip() or "(empty)"
     sources = out.get("sources") or []
     intent = out.get("intent")
-    if sources and intent in ("plan", "execute"):
+    mode = out.get("mode") or ""
+    if sources and intent in ("plan", "execute") and mode in ("synth", "plan_synth", "retrieval_only"):
         lines = [
             f"  {i}. [{s.get('source') or '?'}] "
             f"{s.get('title') or s.get('artifact_id') or ''}"
@@ -121,7 +123,9 @@ async def _remove_session(session_id: uuid.UUID) -> bool:
         return ok
 
 
-async def _load_session(session_id: uuid.UUID) -> tuple[list[tuple[str, str]], uuid.UUID] | None:
+async def _load_session(
+    session_id: uuid.UUID,
+) -> tuple[list[tuple[str, str]], uuid.UUID, str] | None:
     if lifecycle._session_factory is None:
         return None
     settings = get_settings()
@@ -135,10 +139,31 @@ async def _load_session(session_id: uuid.UUID) -> tuple[list[tuple[str, str]], u
             for m in chat.messages
             if m.role in ("user", "assistant")
         ]
-        return history, chat.id
+        return history, chat.id, display_session_title(chat.title)
 
 
-def _bootstrap_chat(session_id: uuid.UUID | None) -> tuple[dict, object | None, list[tuple[str, str]]]:
+_CHAT_LOADING_LABELS = (
+    "Bootstrapping",
+    "Indexifying",
+    "Retrievifying",
+    "Inboxinating",
+    "Vectorizing",
+    "Calendaring",
+    "Deepifying",
+    "Toolbinding",
+    "Contextualizing",
+    "Hybridizing",
+    "Reconciling",
+    "Sessionizing",
+    "Gatewaying",
+    "Almostifying",
+    "Ostensibly finishing",
+)
+
+
+def _bootstrap_chat(
+    session_id: uuid.UUID | None,
+) -> tuple[dict, object | None, list[tuple[str, str]], str]:
     bootstrap_env()
     settings = reload_settings()
     if settings.langsmith_tracing:
@@ -154,11 +179,13 @@ def _bootstrap_chat(session_id: uuid.UUID | None) -> tuple[dict, object | None, 
     services = worker_services()
     gateway = services.llm if services else None
     state: dict = {"session_id": session_id}
+    session_label = "New Chat"
     if session_id is not None:
         loaded = run_async(_load_session(session_id))
         initial_history = loaded[0] if loaded else []
         if loaded:
             state["session_id"] = loaded[1]
+            session_label = loaded[2]
     else:
         initial_history = []
     if term.in_tui() and voice_stt.stt_status()[0]:
@@ -166,7 +193,7 @@ def _bootstrap_chat(session_id: uuid.UUID | None) -> tuple[dict, object | None, 
             voice_stt.warm()
         except Exception:
             pass
-    return state, gateway, initial_history
+    return state, gateway, initial_history, session_label
 
 
 def cmd_chat(*, session_id: uuid.UUID | None = None) -> int:
@@ -184,12 +211,13 @@ def cmd_chat(*, session_id: uuid.UUID | None = None) -> int:
     start_repl_loop()
     try:
         if term.in_tui():
-            state, gateway, initial_history = term.tui_busy(
+            state, gateway, initial_history, session_label = term.tui_busy(
                 lambda: _bootstrap_chat(session_id),
-                label="Loading chat",
+                labels=_CHAT_LOADING_LABELS,
+                label_interval_s=1.5,
             )
         else:
-            state, gateway, initial_history = _bootstrap_chat(session_id)
+            state, gateway, initial_history, session_label = _bootstrap_chat(session_id)
     except Exception:
         stop_repl_loop()
         raise
@@ -213,10 +241,10 @@ def cmd_chat(*, session_id: uuid.UUID | None = None) -> int:
     def list_history() -> list[tuple[str, str, str]]:
         return run_async(_history_rows())
 
-    def load_history(sid: str) -> list[tuple[str, str]] | None:
+    def load_history(sid: str) -> tuple[list[tuple[str, str]], str] | None:
         if sid == "__new__":
             state["session_id"] = None
-            return []
+            return [], "New Chat"
         try:
             uid = uuid.UUID(sid)
         except ValueError:
@@ -224,9 +252,9 @@ def cmd_chat(*, session_id: uuid.UUID | None = None) -> int:
         loaded = run_async(_load_session(uid))
         if loaded is None:
             return None
-        hist, chat_id = loaded
+        hist, chat_id, title = loaded
         state["session_id"] = chat_id
-        return hist
+        return hist, title
 
     def delete_history(sid: str) -> bool:
         if sid == "__new__":
@@ -246,6 +274,7 @@ def cmd_chat(*, session_id: uuid.UUID | None = None) -> int:
                 term.chat_conversation(
                     turn,
                     initial_history=initial_history,
+                    initial_session_title=session_label,
                     list_history=list_history,
                     load_history=load_history,
                     delete_history=delete_history,
@@ -259,7 +288,7 @@ def cmd_chat(*, session_id: uuid.UUID | None = None) -> int:
         # shortcut: non-TUI fallback — one line at a time, upgrade when headless needs history
         def _cli_think(text: str, *, phase: str = "answer") -> None:
             if phase == "think":
-                term.note(f"  {text}")
+                term.think_status(text)
 
         while True:
             message = term.prompt_line("ask › ")
