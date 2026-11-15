@@ -16,3 +16,6 @@ backend/data/vault/*
 !backend/data/vault/.gitkeep
 
 .DS_Store
+.mindos/
+*.tgz
+*.example

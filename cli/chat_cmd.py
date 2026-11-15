@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from cli import term, voice_stt
-from cli.async_util import run_async
+from cli.async_util import run_async, start_repl_loop, stop_repl_loop
 from cli.env import bootstrap_env
 from backend.common.config_loader import get_config
 from backend.common.config_loader.settings import get_settings, reload_settings
@@ -181,13 +181,18 @@ def cmd_chat(*, session_id: uuid.UUID | None = None) -> int:
         term.error("retrieval disabled in backend/config.json")
         term.action_end()
         return 1
-    if term.in_tui():
-        state, gateway, initial_history = term.tui_busy(
-            lambda: _bootstrap_chat(session_id),
-            label="Loading chat",
-        )
-    else:
-        state, gateway, initial_history = _bootstrap_chat(session_id)
+    start_repl_loop()
+    try:
+        if term.in_tui():
+            state, gateway, initial_history = term.tui_busy(
+                lambda: _bootstrap_chat(session_id),
+                label="Loading chat",
+            )
+        else:
+            state, gateway, initial_history = _bootstrap_chat(session_id)
+    except Exception:
+        stop_repl_loop()
+        raise
 
     client_tz = detect_client_iana_timezone()
 
@@ -235,37 +240,50 @@ def cmd_chat(*, session_id: uuid.UUID | None = None) -> int:
             state["session_id"] = None
         return ok
 
-    if term.in_tui():
-        try:
-            term.chat_conversation(
-                turn,
-                initial_history=initial_history,
-                list_history=list_history,
-                load_history=load_history,
-                delete_history=delete_history,
-            )
-        except Exception as exc:
-            term.action_begin()
-            term.error(f"chat ended: {exc}")
-            term.action_end()
-        return 0
-
-    # shortcut: non-TUI fallback — one line at a time, upgrade when headless needs history
-    while True:
-        message = term.prompt_line("ask › ")
-        if not message:
-            break
-        try:
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore", SyntaxWarning)
-                ans, sid = run_async(
-                    _answer_for(message, gateway, state["session_id"], client_tz=client_tz)
+    try:
+        if term.in_tui():
+            try:
+                term.chat_conversation(
+                    turn,
+                    initial_history=initial_history,
+                    list_history=list_history,
+                    load_history=load_history,
+                    delete_history=delete_history,
                 )
-                state["session_id"] = sid
-            term.note_md(ans)
-        except KeyboardInterrupt:
-            break
-        except Exception as exc:
-            term.error(str(exc))
-            return 1
-    return 0
+            except Exception as exc:
+                term.action_begin()
+                term.error(f"chat ended: {exc}")
+                term.action_end()
+            return 0
+
+        # shortcut: non-TUI fallback — one line at a time, upgrade when headless needs history
+        def _cli_think(text: str, *, phase: str = "answer") -> None:
+            if phase == "think":
+                term.note(f"  {text}")
+
+        while True:
+            message = term.prompt_line("ask › ")
+            if not message:
+                break
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", SyntaxWarning)
+                    ans, sid = run_async(
+                        _answer_for(
+                            message,
+                            gateway,
+                            state["session_id"],
+                            on_partial=_cli_think,
+                            client_tz=client_tz,
+                        )
+                    )
+                    state["session_id"] = sid
+                term.note_md(ans)
+            except KeyboardInterrupt:
+                break
+            except Exception as exc:
+                term.error(str(exc))
+                return 1
+        return 0
+    finally:
+        stop_repl_loop()

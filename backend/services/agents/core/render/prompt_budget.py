@@ -15,6 +15,8 @@ DEEP_USER_CONTEXT_MAX = 6_000
 # Conversation + synth
 CHAT_HISTORY_TURNS = 6
 CHAT_HISTORY_MSG_CHARS = 1_600
+# Deep agent: LangGraph checkpoint holds the thread; keep a short recap only.
+DEEP_CHAT_HISTORY_TURNS = 2
 ROUTER_LLM_MAX_CHARS = 1_200
 SYNTH_MAX_OUTPUT_TOKENS = 2_048
 EXTRACT_MAX_OUTPUT_TOKENS = 32

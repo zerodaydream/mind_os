@@ -23,6 +23,7 @@ from backend.services.agents.core.render.prompt_budget import (
 from backend.services.agents.core.render.mail_display import format_mail_display_when
 from backend.services.agents.core.render.partial import emit_partial
 from backend.services.retrieval.core.hybrid import hybrid_search_artifacts
+from backend.services.retrieval.core.search_memories import search_memories_ilike
 
 _MAIL_KEYWORDS = (
     "email",
@@ -294,7 +295,17 @@ async def prefetch_turn_context(
         if wants_commitment_context(message)
         else []
     )
-    memories = await _approved_memories(session, user.id)
+    if intent in ("plan", "execute") and len(message) >= 8:
+        mem_hits = await search_memories_ilike(
+            session, user_id=user.id, query=message, limit=PREFETCH_MEMORIES
+        )
+        memories = (
+            [f"[{h['kind']}] {h['content']}" for h in mem_hits if h.get("content")]
+            if mem_hits
+            else await _approved_memories(session, user.id)
+        )
+    else:
+        memories = await _approved_memories(session, user.id)
     recipient = _mail_recipient_needle(message) if wants_mail else None
     gmail_ids = [
         h["artifact_id"] for h in results if (h.get("source") or "").lower() == "gmail"

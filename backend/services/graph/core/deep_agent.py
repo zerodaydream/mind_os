@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 import sys
 import uuid
 from collections.abc import Callable
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -142,23 +140,6 @@ def _history_mentions_calendar(history: list[dict] | None) -> bool:
     return False
 
 
-def _fs_root() -> Path:
-    home = os.environ.get("MINDOS_HOME", "").strip()
-    if home:
-        return Path(home).expanduser().resolve()
-    return Path.cwd().resolve()
-
-
-def _checkpointer():
-    # shortcut: in-memory when postgres checkpointer missing; upgrade for multi-process agents
-    try:
-        from langgraph.checkpoint.memory import MemorySaver
-
-        return MemorySaver()
-    except ImportError:
-        return None
-
-
 async def run_deep_agent(
     session: AsyncSession,
     user,
@@ -226,7 +207,9 @@ async def run_deep_agent(
             "mindos_process_outbox if ingested > 0 → mindos_search (at most one extra sync cycle). "
             "If Steps already taken were completed before you started, summarize them in your opening. "
             "Tables/lists only from retrieved data. Be concise; finish every sentence. "
-            "Use write_todos for multi-step work. Stay in workspace root. "
+            "Session workspace: /NOTES.md and /SESSION.md; project tree at /project/; "
+            "durable scratch at /store/. Prefer /NOTES.md for multi-step findings. "
+            "Use write_todos for multi-step work. "
             "Calendar tools: list_upcoming, free_busy, list_calendars, create, update, delete. "
             "Use list before reschedule; delete/update need event id from list/create. "
             "Create: mindos_calendar_create_event (all_day, recurrence, attendees, reminders). "
@@ -247,14 +230,22 @@ async def run_deep_agent(
         "middleware": middleware,
         "system_prompt": system_prompt,
     }
-    if intent == "execute":
-        from deepagents.backends import FilesystemBackend
+    from backend.services.graph.core.deep_session import (
+        build_deep_backend,
+        deep_checkpointer,
+        deep_store,
+        memory_sources_for_thread,
+        read_notes_preview,
+    )
 
-        kwargs["backend"] = FilesystemBackend(root_dir=str(_fs_root()), virtual_mode=True)
-
-    checkpointer = _checkpointer()
+    kwargs["backend"] = build_deep_backend(thread_id)
+    kwargs["memory"] = memory_sources_for_thread(thread_id)
+    checkpointer = deep_checkpointer()
     if checkpointer is not None:
         kwargs["checkpointer"] = checkpointer
+    store = deep_store()
+    if store is not None:
+        kwargs["store"] = store
 
     agent = create_deep_agent(**kwargs)
     tags = ["deep_agent", intent]
@@ -266,9 +257,11 @@ async def run_deep_agent(
         metadata={"intent": intent, "user_id": str(user.id)},
         tags=tags,
     )
+    from backend.services.agents.core.render.prompt_budget import DEEP_CHAT_HISTORY_TURNS
     from backend.services.agents.core.routing.router_llm import _format_history
 
-    hist_block = _format_history(history)
+    hist_block = _format_history(history, max_turns=DEEP_CHAT_HISTORY_TURNS)
+    notes_preview = read_notes_preview(thread_id)
     user_content = message
     if hist_block:
         user_content = f"Recent conversation:\n{hist_block}\n\nUser task:\n{message}"
@@ -287,15 +280,24 @@ async def run_deep_agent(
         if hist_block:
             user_content += f"\n\nRecent conversation:\n{hist_block}"
         user_content += f"\n\nUser task:\n{message}"
+    if notes_preview:
+        user_content = f"Session workspace (NOTES.md):\n{notes_preview}\n\n{user_content}"
+    if hist_block:
+        user_content = (
+            f"{user_content}\n\n_(Older turns are in the LangGraph thread checkpoint for this chat.)_"
+        )
     user_content = f"{_clock_block(calendar_task, default_tz)}\n\n{user_content}"
     oauth_url = _oauth_start_url(settings)
-    calendar_turn = (
+    calendar_thread = (
         _message_mentions_calendar(message)
         or _history_mentions_calendar(history)
         or _oauth_continuation_turn(message, history)
     )
+    calendar_finalize = _message_mentions_calendar(message) or _oauth_continuation_turn(
+        message, history
+    )
     auth_status = await google_calendar_auth_status(session, user)
-    if calendar_turn and auth_status != "ok":
+    if calendar_thread and auth_status != "ok":
         return {
             "answer": (
                 "Google Calendar needs a quick browser sign-in.\n\n"
@@ -344,7 +346,7 @@ async def run_deep_agent(
                     _surface_tool_outputs(_extract_answer(result) or "", result),
                     result,
                     oauth_url=oauth_url,
-                    calendar_turn=calendar_turn,
+                    calendar_turn=calendar_finalize,
                 )
             )
             if deep_run is not None:
@@ -363,7 +365,7 @@ async def run_deep_agent(
                     _surface_tool_outputs(_extract_answer(result) or "", result),
                     result,
                     oauth_url=oauth_url,
-                    calendar_turn=calendar_turn,
+                    calendar_turn=calendar_finalize,
                 )
             )
     except Exception as exc:
@@ -376,6 +378,18 @@ async def run_deep_agent(
 
     flush_traces()
     sources = turn_context.sources if turn_context else []
+    from backend.services.graph.core.deep_session import append_session_turn
+
+    todos = _latest_todos(result.get("messages") if isinstance(result, dict) else None)
+    try:
+        append_session_turn(
+            thread_id,
+            user_message=message,
+            answer=answer or "",
+            todos=todos,
+        )
+    except OSError:
+        pass
     return {
         "answer": answer or "(empty agent reply)",
         "mode": "deep_agent",
@@ -416,14 +430,14 @@ def _finalize_calendar_answer(
     del settings, auth_status
     if not calendar_turn:
         return answer
-    for text in _tool_texts(result):
+    for text in _current_turn_tool_texts(result):
         head = text.lstrip()
         if head.startswith("Created calendar event") or head.startswith("Updated calendar event"):
             return text
         if "permission missing" in text.lower() or "not connected" in text.lower():
             return f"{text}\n\nOpen:\n{oauth_url}\n\nReply **done** when finished."
     if _answer_leaks_system_prompt(answer):
-        for text in _tool_texts(result):
+        for text in _current_turn_tool_texts(result):
             if text.lstrip().startswith("Created calendar event"):
                 return text
         return "What time should I use for the calendar event?"
@@ -658,6 +672,20 @@ def _message_text(msg) -> str:
     return ""
 
 
+def _is_human_message(msg) -> bool:
+    kind = getattr(msg, "type", None)
+    if kind in ("human", "user"):
+        return True
+    if isinstance(msg, dict) and msg.get("type") in ("human", "user"):
+        return True
+    role = getattr(msg, "role", None)
+    if role in ("human", "user"):
+        return True
+    if isinstance(msg, dict) and msg.get("role") in ("human", "user"):
+        return True
+    return type(msg).__name__ == "HumanMessage"
+
+
 def _is_tool_message(msg) -> bool:
     kind = getattr(msg, "type", None)
     if kind == "tool":
@@ -680,6 +708,22 @@ def _tool_texts(result) -> list[str]:
     return out
 
 
+def _current_turn_tool_texts(result) -> list[str]:
+    if not isinstance(result, dict):
+        return []
+    chunk: list[str] = []
+    for msg in reversed(result.get("messages") or []):
+        if _is_human_message(msg):
+            break
+        if not _is_tool_message(msg):
+            continue
+        text = _message_text(msg).strip()
+        if text:
+            chunk.append(text)
+    chunk.reverse()
+    return chunk
+
+
 def _surfaceable_urls(text: str) -> list[str]:
     """Only create/update (or single-link) tools—not list-upcoming dumps."""
     urls = _TOOL_URL.findall(text)
@@ -697,7 +741,7 @@ def _surfaceable_urls(text: str) -> list[str]:
 
 def _surface_tool_outputs(answer: str, result) -> str:
     """Append tool URLs only when the model reply omitted them (matches by eid too)."""
-    tool_texts = _tool_texts(result)
+    tool_texts = _current_turn_tool_texts(result)
     if not tool_texts:
         return answer
     extras: list[str] = []

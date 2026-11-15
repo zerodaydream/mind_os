@@ -8,6 +8,7 @@ from backend.common.utils.enums import LlmMode, LlmTask
 from backend.services.agents.core.render.prompt_budget import (
     CHAT_HISTORY_MSG_CHARS,
     CHAT_HISTORY_TURNS,
+    DEEP_CHAT_HISTORY_TURNS,
     EXTRACT_MAX_OUTPUT_TOKENS,
     ROUTER_LLM_MAX_CHARS,
     clip_text,
@@ -31,11 +32,12 @@ _AMBIGUOUS_ACTION = (
 _CONTEXTIVE_MAX_CHARS = 120
 
 
-def _format_history(history: list[dict] | None) -> str:
+def _format_history(history: list[dict] | None, *, max_turns: int | None = None) -> str:
     if not history:
         return ""
+    limit = max_turns if max_turns is not None else CHAT_HISTORY_TURNS
     lines: list[str] = []
-    for m in history[-CHAT_HISTORY_TURNS:]:
+    for m in history[-limit:]:
         role = m.get("role") or "user"
         content = (m.get("content") or "").strip()
         if not content:
@@ -56,6 +58,17 @@ def needs_llm_refine(message: str, intent: Intent) -> bool:
     if "table" in lower and any(a in lower for a in ("subject", "content", "message", "mail")):
         return True
     return False
+
+
+def _looks_like_thread_continuation(message: str) -> bool:
+    lower = (message or "").strip().lower()
+    if not lower:
+        return False
+    if any(w in lower for w in ("remember", "my name is", "call me", "forget that", "who am i")):
+        return False
+    if lower in {"yes", "y", "ok", "okay", "sure", "done", "go ahead", "do it", "please do"}:
+        return True
+    return len(lower) <= 32
 
 
 def thread_pending_execute(history: list[dict] | None) -> bool:

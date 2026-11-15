@@ -1,5 +1,6 @@
 from backend.services.agents.core.routing.router import classify
 from backend.services.agents.core.routing.router_llm import (
+    _looks_like_thread_continuation,
     _parse_intent_line,
     _parse_turn_routing,
     needs_llm_refine,
@@ -26,6 +27,11 @@ def test_needs_llm_refine_ambiguous_converse() -> None:
 def test_parse_intent_line() -> None:
     assert _parse_intent_line("plan") == "plan"
     assert _parse_intent_line("The answer is: execute") == "execute"
+
+
+def test_remember_name_not_thread_continuation() -> None:
+    assert _looks_like_thread_continuation("my name is dhanush, please remember it") is False
+    assert _looks_like_thread_continuation("yes") is True
 
 
 def test_thread_pending_execute_after_scheduling() -> None:

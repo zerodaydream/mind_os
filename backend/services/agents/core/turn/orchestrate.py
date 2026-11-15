@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.services.agents.core.converse.chat import run_chat
 from backend.services.agents.core.routing.router import classify, needs_url_agent
 from backend.services.agents.core.routing.router_llm import (
+    _looks_like_thread_continuation,
     compact_thread_task,
     needs_turn_routing,
     route_turn,
@@ -152,7 +153,7 @@ async def _handle_turn_body(
         routed = await route_turn(gateway, message, prior_history)
         if routed is not None:
             intent, body = routed
-        elif thread_pending_execute(prior_history):
+        elif thread_pending_execute(prior_history) and _looks_like_thread_continuation(message):
             intent = "execute"
             body = compact_thread_task(message, prior_history)
 

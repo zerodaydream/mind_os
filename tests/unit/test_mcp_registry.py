@@ -1,6 +1,7 @@
 from backend.services.integrations.mcp.registry import (
     _personal_pack_enabled,
     mcp_guidance_prompt,
+    mcp_loading_user_message,
     parse_mcp_servers,
 )
 
@@ -58,6 +59,25 @@ def test_parse_builtin_stdio_and_http() -> None:
 def test_personal_pack_default_when_config_missing() -> None:
     assert _personal_pack_enabled([], None) is True
     assert _personal_pack_enabled([], {"servers": []}) is True
+
+
+def test_mcp_loading_user_message_fetch() -> None:
+    specs = parse_mcp_servers(
+        {
+            "servers": [
+                {
+                    "name": "fetch",
+                    "enabled": True,
+                    "transport": "stdio",
+                    "command": "npx",
+                    "args": ["-y", "@zhafron/mcp-web-search"],
+                }
+            ]
+        }
+    )
+    msg = mcp_loading_user_message(specs)
+    assert "web fetch" in msg
+    assert "mcp-web-search" not in msg
 
 
 def test_mcp_guidance_prompt_lists_servers() -> None:
