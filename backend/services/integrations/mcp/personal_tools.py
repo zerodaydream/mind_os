@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from backend.common.config_loader import get_config
-from backend.common.database.models import Commitment
+from backend.common.database.models import Artifact, Commitment
 from backend.common.langsmith_setup import trace_tool
 from backend.services.integrations.core.calendar.events import (
     create_calendar_event,
@@ -26,7 +26,11 @@ from backend.services.integrations.core.calendar.scheduling import (
     validate_create_schedule,
 )
 from backend.services.integrations.core.calendar.timezone import effective_calendar_tz
-from backend.services.integrations.core.gmail.sync import sync_gmail_inbox
+from backend.services.integrations.core.gdrive.drive_store import drive_file_exists
+from backend.services.integrations.core.gmail.sync import (
+    refresh_gmail_message_drive,
+    sync_gmail_inbox,
+)
 from backend.services.integrations.mcp.summarize_url import summarize_public_url
 from backend.services.retrieval.core.hybrid import hybrid_search_artifacts
 from backend.worker.consumer import drain_outbox
@@ -42,6 +46,33 @@ def _oauth_start_url(settings) -> str:
 def _event_start_from_api(event: dict) -> str:
     start = event.get("start") or {}
     return start.get("dateTime") or start.get("date") or ""
+
+
+async def _gmail_attachment_lines(metadata: dict | None) -> list[str]:
+    """Exact attachment filenames; Drive URL only when the file still exists."""
+    lines: list[str] = []
+    stale = 0
+    for rec in (metadata or {}).get("attachments") or []:
+        if not isinstance(rec, dict):
+            continue
+        name = (rec.get("filename") or "attachment").strip()
+        fid = (rec.get("drive_file_id") or "").strip()
+        url = (rec.get("drive_url") or "").strip()
+        if fid and not await drive_file_exists(fid):
+            stale += 1
+            lines.append(f"  attachment · {name} (drive missing; re-ingest)")
+            continue
+        if not url and fid:
+            url = f"https://drive.google.com/file/d/{fid}/view"
+        if url:
+            lines.append(f"  Drive · {name}: {url}")
+        else:
+            lines.append(f"  attachment · {name}")
+    if stale and not any(ln.startswith("  Drive ·") for ln in lines):
+        lines.append(
+            "  Drive · file(s) missing on Drive — re-ingest this thread with gmail-ingest."
+        )
+    return lines
 
 
 async def _chunk_preview(session: AsyncSession, artifact_id: str) -> str:
@@ -83,7 +114,44 @@ def build_personal_tools(
             if not preview:
                 preview = await _chunk_preview(session, h["artifact_id"])
             head = f"- [{h.get('source')}] {title} (score {h.get('rank', 0):.3f})"
-            lines.append(f"{head}\n  {preview}" if preview else head)
+            block = (
+                f"{head}\n  Source excerpt: {preview}" if preview else head
+            )
+            if (h.get("source") or "").lower() == "gmail":
+                row = await session.execute(
+                    select(Artifact.metadata_, Artifact.external_id).where(
+                        Artifact.id == h["artifact_id"],
+                        Artifact.user_id == user.id,
+                    )
+                )
+                art_row = row.one_or_none()
+                meta = art_row[0] if art_row else None
+                ext_id = art_row[1] if art_row else None
+                if ext_id and isinstance(meta, dict):
+                    try:
+                        if await refresh_gmail_message_drive(
+                            session,
+                            user=user,
+                            settings=settings,
+                            msg_id=str(ext_id),
+                        ):
+                            await session.commit()
+                            await drain_outbox(max_events=20)
+                            row = await session.execute(
+                                select(Artifact.metadata_).where(
+                                    Artifact.id == h["artifact_id"],
+                                    Artifact.user_id == user.id,
+                                )
+                            )
+                            meta = row.scalar_one_or_none()
+                    except Exception:
+                        pass
+                drive_lines = await _gmail_attachment_lines(
+                    meta if isinstance(meta, dict) else None
+                )
+                if drive_lines:
+                    block = f"{block}\n" + "\n".join(drive_lines)
+            lines.append(block)
         return "\n".join(lines)
 
     async def mindos_gmail_sync() -> str:
@@ -131,7 +199,7 @@ def build_personal_tools(
         return "\n".join(f"- {s}" for s in items) if items else "No open commitments."
 
     async def mindos_summarize_url(url: str, focus: str = "") -> str:
-        """Read a public link or PDF (full document) and return one summary. Use for summarize-this-URL requests."""
+        """Read a link or PDF; returns Answer plus a verbatim Source excerpt for proof."""
         return await summarize_public_url(url, focus, gateway=gateway, on_ping=on_partial)
 
     async def mindos_google_integration_status() -> str:

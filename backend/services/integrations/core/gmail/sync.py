@@ -30,6 +30,7 @@ from backend.services.ingest.core.gmail import (
 )
 from backend.services.integrations.core.gdrive.drive_store import (
     drive_download_bytes,
+    drive_file_exists,
     drive_trash_file,
     drive_upload_bytes,
     gdrive_ingest_configured,
@@ -409,6 +410,16 @@ def _gmail_should_verify_body(art: Artifact) -> bool:
     return bool((art.metadata_ or {}).get("attachments"))
 
 
+async def _gmail_drive_attachments_missing(meta: dict) -> bool:
+    for rec in meta.get("attachments") or []:
+        if not isinstance(rec, dict):
+            continue
+        fid = rec.get("drive_file_id")
+        if fid and not await drive_file_exists(str(fid)):
+            return True
+    return False
+
+
 async def _fetch_gmail_ingest_payload(
     gmail_get,
     msg_id: str,
@@ -494,21 +505,77 @@ async def _handle_skipped_gmail_message(
         select(ArtifactChunk.chunker_version).where(ArtifactChunk.artifact_id == art.id)
     )
     versions = list(rows.scalars().all())
+    meta = dict(art.metadata_ or {})
     fast_stale = _gmail_fast_index_stale(art, settings, versions)
-    if fast_stale or _gmail_should_verify_body(art):
+    drive_stale = await _gmail_drive_attachments_missing(meta)
+    if fast_stale or drive_stale or _gmail_should_verify_body(art):
         bundle = await _fetch_gmail_ingest_payload(
             gmail_get, msg_id, show_attachment_progress=show_attachment_progress
         )
         if bundle is None:
             return "skipped"
         new_hash = hashlib.sha256(bundle["body"].encode()).hexdigest()
-        if fast_stale or new_hash != art.content_hash:
+        if fast_stale or drive_stale or new_hash != art.content_hash:
             await _replace_gmail_artifact(
                 session, user=user, settings=settings, msg_id=msg_id, payload=bundle
             )
             return "ingested"
     await _backfill_gmail_artifact(session, user.id, msg_id, gmail_get)
     return "skipped"
+
+
+async def refresh_gmail_message_drive(
+    session: AsyncSession,
+    *,
+    user,
+    settings: Settings,
+    msg_id: str,
+) -> bool:
+    """Re-fetch one Gmail message when Drive attachment ids are missing; returns True if replaced."""
+    art = await _gmail_artifact_row(session, user.id, msg_id)
+    if art is None:
+        return False
+    if not await _gmail_drive_attachments_missing(dict(art.metadata_ or {})):
+        return False
+    result = await session.execute(
+        select(IntegrationAccount).where(
+            IntegrationAccount.user_id == user.id,
+            IntegrationAccount.provider == "google",
+            IntegrationAccount.status == "active",
+        )
+    )
+    account = result.scalar_one_or_none()
+    if account is None:
+        raise ValueError("Google not connected; GET /v1/integrations/google/start")
+    token = await ensure_google_access_token(session, account, settings)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        nonlocal_token = {"value": token}
+
+        async def refresh_google_auth() -> None:
+            nonlocal_token["value"] = await ensure_google_access_token(
+                session, account, settings, force_refresh=True
+            )
+            headers["Authorization"] = f"Bearer {nonlocal_token['value']}"
+
+        async def gmail_get(url: str, *, params: dict | None = None) -> httpx.Response:
+            resp = await client.get(url, params=params, headers=headers)
+            if resp.status_code == 401:
+                await refresh_google_auth()
+                resp = await client.get(url, params=params, headers=headers)
+            resp.raise_for_status()
+            return resp
+
+        outcome = await _handle_skipped_gmail_message(
+            session,
+            user=user,
+            settings=settings,
+            msg_id=msg_id,
+            gmail_get=gmail_get,
+            show_attachment_progress=False,
+        )
+    return outcome == "ingested"
 
 
 async def _delete_gmail_artifact(session: AsyncSession, user_id, msg_id: str) -> bool:

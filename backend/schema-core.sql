@@ -28,7 +28,7 @@ CREATE TABLE artifacts (
     external_id     TEXT,
     title           TEXT,
     occurred_at     TIMESTAMPTZ,
-    raw_path        TEXT,          -- vault relative path
+    raw_path        TEXT,          -- unused (legacy)
     content_hash    TEXT NOT NULL,
     metadata        JSONB NOT NULL DEFAULT '{}',
     tsv             TSVECTOR,

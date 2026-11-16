@@ -39,7 +39,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("status", help="Show connection and artifact counts")
     sub.add_parser(
         "cleanup",
-        help="Trash GDrive ingest folders; delete all artifacts, chunks, vault files",
+        help="Trash GDrive ingest folders; delete all artifacts and chunks",
     )
     ingest_p = sub.add_parser(
         "gmail-ingest",

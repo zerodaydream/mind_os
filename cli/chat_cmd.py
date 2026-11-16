@@ -100,7 +100,11 @@ async def fetch_chat_reply(
     sources = out.get("sources") or []
     intent = out.get("intent")
     mode = out.get("mode") or ""
-    if sources and intent in ("plan", "execute") and mode in ("synth", "plan_synth", "retrieval_only"):
+    if sources and intent in ("plan", "execute") and mode in (
+        "synth",
+        "plan_synth",
+        "retrieval_only",
+    ):
         lines = [
             f"  {i}. [{s.get('source') or '?'}] "
             f"{s.get('title') or s.get('artifact_id') or ''}"
@@ -405,6 +409,7 @@ def cmd_chat(*, session_id: uuid.UUID | None = None) -> int:
                 return 1
         return 0
     finally:
+        flush_traces()
         if chat_owns_event_loop:
             stop_shared_event_loop()
         elif term.in_tui():

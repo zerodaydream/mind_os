@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from sqlalchemy import delete, text, update
 
 from cli import term
@@ -17,18 +15,6 @@ from backend.services.integrations.core.gdrive.drive_store import (
 from backend.worker.bootstrap import bootstrap
 
 
-def clear_vault_dir(vault_path: str) -> int:
-    root = Path(vault_path).expanduser().resolve()
-    if not root.is_dir():
-        return 0
-    removed = 0
-    for path in sorted(root.rglob("*"), key=lambda p: len(p.parts), reverse=True):
-        if path.is_file() and path.name != ".gitkeep":
-            path.unlink()
-            removed += 1
-    return removed
-
-
 async def run_cleanup() -> int:
     bootstrap()
     settings = get_settings()
@@ -37,7 +23,7 @@ async def run_cleanup() -> int:
         return 1
 
     term.banner()
-    term.step("Cleanup", "artifacts · chunks · vault · GDrive ingest folders")
+    term.step("Cleanup", "artifacts · chunks · GDrive ingest folders")
 
     gdrive_roots = 0
     if gdrive_ingest_configured():
@@ -71,10 +57,9 @@ async def run_cleanup() -> int:
         n_arts = int(art_count)
         n_outbox = int(outbox.rowcount or 0)
 
-    vault_files = clear_vault_dir(settings.mindos_vault_path)
     term.step(
         "Database",
-        f"artifacts {n_arts} · outbox {n_outbox} · vault files {vault_files}",
+        f"artifacts {n_arts} · outbox {n_outbox}",
         ok=True,
     )
     return 0

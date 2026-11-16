@@ -4,13 +4,13 @@
       "name": "personal",
       "enabled": true,
       "transport": "builtin",
-      "guidance": "User mail, calendar, commitments, and indexed notes. mindos_search for inbox/notes; mindos_calendar_* for schedule; mindos_summarize_url for any summarize-this-link/PDF request (one tool call, one final answer); mindos_gmail_sync → mindos_process_outbox when search is empty."
+      "guidance": "Indexed mail and Drive first: mindos_search before any filesystem tool when the user names attachments, people, or email threads. mindos_calendar_* for schedule; mindos_summarize_url for URL/PDF content and compare-two-files; mindos_gmail_sync → mindos_process_outbox only when search is empty or user wants fresh Gmail."
     },
     {
       "name": "filesystem",
       "enabled": true,
       "transport": "builtin",
-      "guidance": "mindos_fs_locate once for natural find/count/list (folder + name from user words). mindos_fs_find only for explicit globs. No root=/. Destructive: preview then confirmed=True."
+      "guidance": "Local disk only—not Gmail/Drive ingested mail. For attachments, recipients, or mail thread names use personal mindos_search first. mindos_fs_locate for on-disk paths under allowed roots; mindos_fs_find only for explicit globs. No root=/. Destructive: preview then confirmed=True."
     },
     {
       "name": "convert",

@@ -12,9 +12,6 @@ node_modules/
 *.egg-info/
 backend.egg-info/
 
-backend/data/vault/*
-!backend/data/vault/.gitkeep
-
 .DS_Store
 .mindos/
 *.tgz

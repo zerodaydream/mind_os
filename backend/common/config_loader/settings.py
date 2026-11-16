@@ -14,9 +14,6 @@ class Settings(BaseSettings):
         validation_alias="DATABASE_URL",
     )
     mindos_secret_key: str = "change-me"
-    mindos_vault_path: str = Field(
-        default="./backend/data/vault", validation_alias="MINDOS_VAULT_PATH"
-    )
     mindos_llm_mode: LlmMode = Field(default=LlmMode.DEGRADED, validation_alias="MINDOS_LLM_MODE")
     mindos_llm_daily_usd: float = Field(default=2.0, validation_alias="MINDOS_LLM_DAILY_USD")
     mindos_llm_monthly_usd: float = Field(default=40.0, validation_alias="MINDOS_LLM_MONTHLY_USD")
@@ -26,10 +23,18 @@ class Settings(BaseSettings):
         default="google", validation_alias="MINDOS_DEFAULT_PROVIDER"
     )
     mindos_extract_model: str = Field(
-        default="gemini-2.5-flash", validation_alias="MINDOS_EXTRACT_MODEL"
+        default="gemini-3.5-flash-lite", validation_alias="MINDOS_EXTRACT_MODEL"
     )
     mindos_synth_model: str = Field(
         default="gemini-3.5-flash-lite", validation_alias="MINDOS_SYNTH_MODEL"
+    )
+    mindos_thinking_level: str = Field(
+        default="MEDIUM",
+        validation_alias="MINDOS_THINKING_LEVEL",
+    )
+    mindos_thinking_budget: int = Field(
+        default=1024,
+        validation_alias="MINDOS_THINKING_BUDGET",
     )
     google_api_key: str = Field(default="", validation_alias="GOOGLE_API_KEY")
     mindos_default_user_email: str = Field(

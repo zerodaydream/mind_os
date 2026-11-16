@@ -1066,18 +1066,22 @@ def _split_plan_prefix(text: str) -> tuple[str, str]:
 
 
 def _merge_think_partial(prev: str, text: str) -> str:
-    text = (text or "").strip()
-    if not text:
-        return prev
-    if not prev:
-        return text
-    if text.startswith("Plan:"):
-        return text
-    if text in prev.splitlines():
-        return prev
-    if prev.startswith("Plan:") or ("\n" not in text and len(text) < 240):
+    from backend.services.agents.core.render.partial import merge_stream_text
+
+    merged = merge_stream_text(prev, text)
+    if not prev or merged == text:
+        return merged
+    if text.startswith("Plan:") or prev.startswith("Plan:"):
+        if text.startswith("Plan:"):
+            return text
         return f"{prev}\n{text}".strip()
-    return text
+    if "\n→ " in text or text.startswith("→ ") or "→ " in prev:
+        if prev in text:
+            return text
+        if text in prev:
+            return prev
+        return f"{prev}\n{text}".strip()
+    return merged
 
 
 def _advance_think_reveal(target: str, revealed: str, *, chunk: int) -> str:
@@ -1213,6 +1217,8 @@ def _chat_think_turn(fn: Callable[[], str], on_tick: Callable[[int], None]) -> s
 _CHAT_INPUT_TIMEOUT_MS = 400
 _CHAT_STREAM_MIN_S = 0.055
 _CHAT_THINK_TICK_S = 0.03
+_THINK_SPIN_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+_THINK_DOT_FRAMES = (".", "..", "...", ".")
 _CHAT_THINK_CHARS_PER_TICK = 5
 _CHAT_THINK_PULSE_S = 0.42
 _VOICE_SPEAK_DOTS = (".", "..", "...")
@@ -1255,9 +1261,14 @@ def _chat_break_long_words(text: str, width: int) -> bool:
 
 
 def _chat_wrap_text(text: str, width: int) -> list[str]:
+    from cli import md_render
+
     width = max(8, width)
     if not text:
         return []
+    bare = text.strip()
+    if md_render.is_http_url(bare):
+        return [bare]
     if len(text) <= width:
         return [text]
     chunks = textwrap.wrap(
@@ -1664,7 +1675,6 @@ def _chat_conversation_loop(
     thinking_line: str | None = None
     think_live = False
     think_pulse = 0
-    frames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
     _render_sig: tuple | None = None
     _rendered_lines: list[tuple[int, str] | tuple[int, str, int]] = []
 
@@ -2222,14 +2232,16 @@ def _chat_conversation_loop(
             nonlocal thinking_line
             i = 0
             while not stop.is_set():
-                if think_revealed or think_target:
+                if (think_target or "").strip():
                     if thinking_line is not None:
                         thinking_line = None
                         _draw_turn(show_cursor=False)
                     stop.wait(0.08)
                     continue
                 thinking_line = (
-                    f"{_chat_role_prefix('thinking')}{frames[i % len(frames)]} …"
+                    f"{_chat_role_prefix('thinking')}"
+                    f"{_THINK_SPIN_FRAMES[i % len(_THINK_SPIN_FRAMES)]} "
+                    f"Thinking{_THINK_DOT_FRAMES[i % len(_THINK_DOT_FRAMES)]}"
                 )
                 _draw_turn(show_cursor=False)
                 i += 1
@@ -2283,7 +2295,10 @@ def _chat_conversation_loop(
 
         think_live = True
         think_pulse = 0
-        thinking_line = f"{_chat_role_prefix('thinking')}{frames[0]} …"
+        thinking_line = (
+            f"{_chat_role_prefix('thinking')}"
+            f"{_THINK_SPIN_FRAMES[0]} Thinking."
+        )
         spinner = threading.Thread(target=_spin, daemon=True)
         think_thread = threading.Thread(target=_think_stream, daemon=True)
         spinner.start()

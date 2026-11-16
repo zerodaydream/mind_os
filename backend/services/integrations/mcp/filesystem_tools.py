@@ -528,13 +528,17 @@ def _find_progress(
 ) -> None:
     if cb is None:
         return
+    from backend.services.agents.core.render.tool_status import tool_status_line
+
+    tool = "mindos_fs_list" if list_only else "mindos_fs_locate"
+    base = tool_status_line(tool)
     if found is None:
-        verb = "Listing" if list_only else "Searching"
-        emit_partial(cb, f"→ {verb} {where}…", phase="think")
+        where_bit = f" ({where})" if where else ""
+        emit_partial(cb, f"→ {base}{where_bit}…", phase="think")
     elif found:
-        emit_partial(cb, f"→ {where} — found!", phase="think")
+        emit_partial(cb, f"→ Match found{ f' in {where}' if where else ''}", phase="think")
     else:
-        emit_partial(cb, f"→ {where} — not found", phase="think")
+        emit_partial(cb, f"→ No match found{ f' in {where}' if where else ''}", phase="think")
 
 
 def _fmt_entry(path: Path) -> str:

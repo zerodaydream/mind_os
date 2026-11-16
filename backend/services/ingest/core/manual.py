@@ -1,6 +1,5 @@
 import hashlib
 from datetime import datetime
-from pathlib import Path
 
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -36,12 +35,6 @@ async def ingest_manual_note(
     occurred_at: datetime | None = None,
 ) -> Artifact:
     content_hash = hashlib.sha256(body.encode()).hexdigest()
-    vault = Path(settings.mindos_vault_path)
-    vault.mkdir(parents=True, exist_ok=True)
-    rel = f"{source}/{content_hash[:16]}.txt"
-    dest = vault / rel
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_text(body, encoding="utf-8")
 
     artifact = Artifact(
         user_id=user.id,
@@ -49,7 +42,6 @@ async def ingest_manual_note(
         external_id=external_id or content_hash[:32],
         title=title,
         content_hash=content_hash,
-        raw_path=rel,
         metadata_=metadata or {},
         occurred_at=occurred_at,
     )

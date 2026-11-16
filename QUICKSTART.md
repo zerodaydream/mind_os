@@ -100,6 +100,8 @@ make teardown    # stop + remove volumes
 
 Defaults in `.env`: `MINDOS_LLM_DAILY_USD=2.00`, `MINDOS_LLM_MONTHLY_USD=40.00`, `MINDOS_LLM_KILL_SWITCH=0`. Embeddings are **local** (`fastembed` + `BAAI/bge-base-en-v1.5`, 768-dim; override with `EMBEDDING_MODEL`).
 
+Google model ids (see [Models](https://ai.google.dev/gemini-api/docs/models)): default **`gemini-3.5-flash-lite`** for extract + synth. **`MINDOS_THINKING_LEVEL`** (default `MEDIUM`; `OFF` to disable) streams model reasoning in the dim **mindos [thinking]** block; set `MINDOS_THINKING_BUDGET` only for Gemini 2.x models.
+
 ## 5. Troubleshooting
 
 | Issue | Fix |

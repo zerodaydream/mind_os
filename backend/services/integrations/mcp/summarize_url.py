@@ -96,7 +96,13 @@ async def _fetch_via_mcp(url: str, *, on_ping: PartialFn | None) -> str:
     parts: list[str] = []
     start = 0
     page = 0
-    emit_partial(on_ping, f"→ Viewing {_short_url(url)}…", phase="think")
+    from backend.services.agents.core.render.tool_status import tool_status_line
+
+    emit_partial(
+        on_ping,
+        f"→ {tool_status_line('mindos_summarize_url')} ({_short_url(url)})…",
+        phase="think",
+    )
     while len("".join(parts)) < _DOC_CHAR_CAP:
         page += 1
         if page > 1:
@@ -173,7 +179,13 @@ async def fetch_public_document(url: str, *, on_ping: PartialFn | None) -> str:
         return ""
     body = await _fetch_via_mcp(url, on_ping=on_ping)
     if not body:
-        emit_partial(on_ping, f"→ Fetching {_short_url(url)}…", phase="think")
+        from backend.services.agents.core.render.tool_status import tool_status_line
+
+        emit_partial(
+            on_ping,
+            f"→ {tool_status_line('fetch_url')} ({_short_url(url)})…",
+            phase="think",
+        )
         body = await _arxiv_atom_text(url)
     if not body:
         try:
@@ -202,15 +214,20 @@ async def summarize_public_url(
     doc = await fetch_public_document(url, on_ping=on_ping)
     if doc.startswith("Fetch failed") or doc.startswith("Could not read"):
         return doc
-    emit_partial(on_ping, "→ Summarizing the full document…", phase="think")
+    from backend.services.agents.core.render.tool_status import tool_status_line
+
+    emit_partial(on_ping, f"→ {tool_status_line('mindos_summarize_url')}…", phase="think")
     focus_line = f"\nFocus: {focus.strip()}" if (focus or "").strip() else ""
     prompt = (
         "Answer from the document below in clear prose for the user. "
-        "When the user asks about a sheet/tab/row, extract those details from the source text. "
-        "Start with the exact title and all author names when the source lists them. "
-        "Cover all major sections; do not stop at the opening only. "
-        "Use only facts from the source text."
-        f"{focus_line}\n\n---\n{doc}\n---\n\nAnswer:"
+        "Use only facts from the source text—never invent numbers, areas, or names. "
+        f"{focus_line}\n\n"
+        "Reply in exactly this shape:\n"
+        "Answer: (your prose)\n\n"
+        "Source excerpt: \"...\" — one or two sentences copied verbatim from the document "
+        "that prove your answer (keep original units and spelling). "
+        "If no supporting quote exists, write: Source excerpt: (not found in document)\n\n"
+        f"---\n{doc}\n---\n\n"
     )
     prompt = clip_text(prompt, 120_000, min_keep=8_000)
     try:

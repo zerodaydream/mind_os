@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from sqlalchemy import select, text
@@ -21,7 +20,6 @@ from backend.services.agents.core.render.prompt_budget import (
     clip_text,
 )
 from backend.services.agents.core.render.mail_display import format_mail_display_when
-from backend.services.agents.core.render.partial import emit_partial
 from backend.services.retrieval.core.hybrid import hybrid_search_artifacts
 from backend.services.retrieval.core.search_memories import search_memories_ilike
 
@@ -45,7 +43,6 @@ _MAIL_KEYWORDS = (
     "jobs",
 )
 _LIST_PHRASES = ("show all", "list all", "all my", "display all", "every ")
-_PREFETCH_SYNC_WORDS = ("sync", "refresh", "latest", "update my", "pull new")
 
 
 def converse_wants_context(message: str) -> bool:
@@ -92,6 +89,62 @@ def wants_commitment_context(message: str) -> bool:
     """True when message asks about todos or commitments."""
     lower = message.lower()
     return any(w in lower for w in _COMMITMENT_WORDS)
+
+
+def _mail_followup_topic(message: str, history: list[dict] | None) -> str | None:
+    """Prior user turn after at least one assistant reply (conversation follow-up)."""
+    msg = message.strip()
+    if len(msg) > 100 or not history:
+        return None
+    after_assistant = False
+    for row in reversed(history or []):
+        role = row.get("role")
+        if role == "assistant":
+            after_assistant = True
+            continue
+        if role != "user":
+            continue
+        text = (row.get("content") or "").strip()
+        if len(text) < 8 or text.lower() == msg.lower():
+            continue
+        if after_assistant:
+            return text[:160]
+    return None
+
+
+def _gmail_attachment_url_lines(metadata: dict | None) -> list[str]:
+    """Exact filenames from ingest metadata — agent must not invent names."""
+    lines: list[str] = []
+    for rec in (metadata or {}).get("attachments") or []:
+        if not isinstance(rec, dict):
+            continue
+        name = (rec.get("filename") or "attachment").strip()
+        url = (rec.get("drive_url") or "").strip()
+        if not url and (fid := (rec.get("drive_file_id") or "").strip()):
+            url = f"https://drive.google.com/file/d/{fid}/view"
+        if url:
+            lines.append(f"  Drive · {name}: {url}")
+        else:
+            lines.append(f"  attachment · {name}")
+    return lines
+
+
+def _pronoun_recipient(message: str, history: list[dict] | None) -> str | None:
+    if not re.search(r"\b(her|him|them)\b", message, re.I):
+        return None
+    for row in reversed(history or []):
+        text = (row.get("content") or "").strip()
+        if needle := _mail_recipient_needle(text) or _mail_to_needle(text):
+            return needle
+    return None
+
+
+def _mail_to_needle(message: str) -> str | None:
+    """Recipient after ``to`` (e.g. ``… sent to Pat Smith``)."""
+    m = re.search(r"\bto\s+([a-z0-9][a-z0-9 .@'-]{1,72})", message.lower())
+    if not m:
+        return None
+    return m.group(1).strip().rstrip("?.!")
 
 
 def _mail_recipient_needle(message: str) -> str | None:
@@ -141,18 +194,6 @@ def preflight_prompt_block(actions: list[str]) -> str:
     )
 
 
-def should_refresh_mail_index(message: str, ctx: TurnContext, *, source: str | None) -> bool:
-    """Whether to sync Gmail before answering."""
-    if not wants_mail_context(message, source):
-        return False
-    lower = message.lower()
-    if any(w in lower for w in _PREFETCH_SYNC_WORDS):
-        return True
-    if ctx.hybrid_hit_count == 0 and not ctx.gmail_ctx and not ctx.results:
-        return True
-    return False
-
-
 async def _open_commitment_summaries(session: AsyncSession, user_id) -> list[str]:
     """Open commitment summaries from Postgres."""
     rows = await session.execute(
@@ -192,7 +233,8 @@ async def _ingested_gmail(
     rows = await session.execute(
         text(
             f"""
-            SELECT a.id, a.title, a.metadata->>'from' AS from_addr,
+            SELECT a.id, a.title, a.metadata,
+                   a.metadata->>'from' AS from_addr,
                    a.metadata->>'to' AS to_addr,
                    a.metadata->>'direction' AS direction,
                    a.metadata->>'mail_at' AS mail_at,
@@ -221,6 +263,7 @@ async def _ingested_gmail(
             "direction": r.direction,
             "mail_at": r.mail_at,
             "preview": r.preview,
+            "metadata": r.metadata if isinstance(r.metadata, dict) else {},
         }
         for r in rows
     ]
@@ -261,11 +304,13 @@ def format_context_text(
                 f"To: {recip or '?'} | From: {sender}"
             )
             preview = (g.get("preview") or "").strip().replace("\n", " ")
+            block = header
+            drive_lines = _gmail_attachment_url_lines(g.get("metadata"))
             if preview:
                 prev = clip_text(preview, PREFETCH_MAIL_PREVIEW)
-                ctx_lines.append(f"{header}\n  {prev}")
-            else:
-                ctx_lines.append(header)
+                block = f"{block}\n  {prev}"
+            block += "".join(f"\n{ln}" for ln in drive_lines)
+            ctx_lines.append(block)
     if commitments:
         ctx_lines.append("Open commitments:")
         ctx_lines.extend(f"- {s}" for s in commitments)
@@ -289,15 +334,18 @@ async def prefetch_turn_context(
     *,
     source: str | None = None,
     intent: str | None = None,
+    history: list[dict] | None = None,
 ) -> TurnContext:
     message = message.strip()
     if intent == "converse" and not converse_wants_context(message):
         return TurnContext(message=message, has_context=False)
     wants_mail = wants_mail_context(message, source)
+    topic = _mail_followup_topic(message, history)
+    search_query = f"{topic} {message}".strip() if topic else message
     hybrid_hits = await hybrid_search_artifacts(
         session,
         user_id=user.id,
-        query=message,
+        query=search_query,
         settings=settings,
         limit=PREFETCH_SEARCH_LIMIT,
         source=source,
@@ -319,7 +367,11 @@ async def prefetch_turn_context(
         )
     else:
         memories = await _approved_memories(session, user.id)
-    recipient = _mail_recipient_needle(message) if wants_mail else None
+    recipient = (
+        (_mail_recipient_needle(message) or _pronoun_recipient(message, history))
+        if wants_mail
+        else None
+    )
     gmail_ids = [
         h["artifact_id"] for h in results if (h.get("source") or "").lower() == "gmail"
     ]
@@ -330,6 +382,10 @@ async def prefetch_turn_context(
             )
         elif gmail_ids:
             gmail_ctx = await _ingested_gmail(session, user.id, artifact_ids=gmail_ids)
+        elif topic:
+            gmail_ctx = await _ingested_gmail(
+                session, user.id, to_needle=topic[:120], limit=30
+            )
         elif results:
             gmail_ctx = []
         else:
@@ -381,33 +437,6 @@ async def prefetch_turn_context(
     )
 
 
-async def _announce_mail_refresh(
-    gateway,
-    message: str,
-    *,
-    on_partial: Callable[[str], None] | None,
-) -> str:
-    from backend.common.utils.enums import LlmMode, LlmTask
-
-    fallback = "I'll sync Gmail and search your indexed mail again for that."
-    if gateway is None or gateway.mode == LlmMode.DEGRADED:
-        emit_partial(on_partial, fallback, phase="think")
-        return fallback
-    prompt = (
-        "You are MindOS assistant. The user's question needs fresher Gmail data in the index.\n"
-        f"User question: {message}\n\n"
-        "Write exactly one short sentence telling the user you will sync Gmail and check again. "
-        "Plain text only; no markdown or quotes."
-    )
-    try:
-        res = await gateway.complete(prompt, task=LlmTask.SYNTH, max_output_tokens=64)
-        line = (res.text or "").strip() or fallback
-    except Exception:
-        line = fallback
-    emit_partial(on_partial, line, phase="think")
-    return line
-
-
 def format_gmail_sync_thinking(stats: dict, *, processed: int | None) -> str:
     """Markdown table stats after Gmail sync."""
     ingested = int(stats.get("ingested") or 0)
@@ -429,72 +458,3 @@ def format_gmail_sync_thinking(stats: dict, *, processed: int | None) -> str:
     else:
         lines.append(f"| outbox indexed | {processed} |")
     return "\n".join(lines)
-
-
-async def maybe_refresh_mail_index(
-    session: AsyncSession,
-    user,
-    settings,
-    message: str,
-    ctx: TurnContext,
-    *,
-    source: str | None = None,
-    intent: str | None = None,
-    gateway=None,
-    on_partial: Callable[[str], None] | None = None,
-) -> TurnContext:
-    """Gmail sync + outbox drain once when mail is asked but hybrid search missed."""
-    from backend.common.config_loader import get_config
-    from backend.services.integrations.core.gmail.sync import sync_gmail_inbox
-    from backend.worker.consumer import drain_outbox
-
-    if not should_refresh_mail_index(message, ctx, source=source):
-        return ctx
-    if not get_config().is_enabled("integrations"):
-        return ctx
-    actions: list[str] = []
-    think_text = await _announce_mail_refresh(
-        gateway, message, on_partial=on_partial
-    )
-    actions.append(think_text)
-    try:
-        stats = await sync_gmail_inbox(session, user=user, settings=settings)
-        await session.commit()
-    except Exception:
-        actions.append("Gmail sync failed — continuing with the current index.")
-        think_text = f"{think_text}\n\n**Gmail sync**\n\n- status: failed"
-        emit_partial(on_partial, think_text, phase="think")
-        ctx.preflight_actions = actions
-        return ctx
-    ingested = int(stats.get("ingested") or 0)
-    scanned = int(stats.get("scanned") or 0)
-    actions.append(f"Gmail sync finished (ingested {ingested}, scanned {scanned}).")
-    processed: int | None = None
-    if ingested > 0:
-        think_text = f"{think_text}\n\n_Indexing new mail for search…_"
-        emit_partial(on_partial, think_text, phase="think")
-    try:
-        total = 0
-        while total < 500:
-            n = await drain_outbox(max_events=80)
-            if n == 0:
-                break
-            total += n
-        processed = total
-    except Exception:
-        actions.append("Outbox processing failed — some new mail may not be searchable yet.")
-        processed = -1
-    else:
-        if processed:
-            actions.append(f"Indexed {processed} outbox event(s) for search.")
-    stats_block = format_gmail_sync_thinking(
-        stats, processed=processed if processed else None
-    )
-    think_text = f"{think_text}\n\n{stats_block}"
-    emit_partial(on_partial, think_text, phase="think")
-    actions.append(stats_block)
-    refreshed = await prefetch_turn_context(
-        session, user, settings, message, source=source, intent=intent
-    )
-    refreshed.preflight_actions = actions
-    return refreshed

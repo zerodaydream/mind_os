@@ -32,7 +32,5 @@ def bootstrap_env() -> Path | None:
             key = key.strip()
             val = val.strip().strip('"').strip("'")
             os.environ.setdefault(key, val)
-    vault = home / "data" / "vault"
-    os.environ.setdefault("MINDOS_VAULT_PATH", str(vault))
     fix_ssl_cert_env()
     return home

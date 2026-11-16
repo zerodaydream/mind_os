@@ -1,11 +1,12 @@
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 
 from backend.common.langsmith_setup import tracing_active, turn_trace_id, unique_run_name
 from backend.common.utils.enums import LlmMode, LlmTask
 from backend.common.utils.exceptions import BudgetExceededError, LlmDisabledError
 from backend.common.config_loader.settings import Settings
+from backend.services.agents.core.render.partial import emit_partial, merge_stream_text
 from backend.services.llm.core.budget import BudgetGuard
-from backend.services.llm.providers.google import stream_google
+from backend.services.llm.providers.google import build_gemini_thinking_config, stream_google
 from backend.services.llm.providers.mock import MockProvider
 from backend.services.llm.core.types import CompletionResult
 
@@ -35,6 +36,15 @@ class ProviderGateway:
             return self._settings.mindos_extract_model
         return self._settings.mindos_synth_model
 
+    def thinking_config_for(self, task: LlmTask, model: str) -> dict | None:
+        if task != LlmTask.SYNTH:
+            return None
+        return build_gemini_thinking_config(
+            model,
+            self._settings.mindos_thinking_level,
+            budget=self._settings.mindos_thinking_budget,
+        )
+
     def _prepare(self, prompt: str, *, task: LlmTask, model: str | None, max_output_tokens: int):
         prompt = prompt[:_MAX_INPUT_CHARS]
         max_output_tokens = min(max_output_tokens, _MAX_OUTPUT_TOKENS)
@@ -42,8 +52,13 @@ class ProviderGateway:
         return prompt, resolved_model, max_output_tokens
 
     async def _iter_live_chunks(
-        self, prompt: str, resolved_model: str, max_output_tokens: int
-    ) -> AsyncIterator[str]:
+        self,
+        prompt: str,
+        resolved_model: str,
+        max_output_tokens: int,
+        *,
+        task: LlmTask,
+    ) -> AsyncIterator[tuple[str, str]]:
         provider = self._settings.mindos_default_provider.lower()
         if provider == "google":
             async for part in stream_google(
@@ -51,6 +66,7 @@ class ProviderGateway:
                 model=resolved_model,
                 api_key=self._settings.google_api_key,
                 max_output_tokens=max_output_tokens,
+                thinking_config=self.thinking_config_for(task, resolved_model),
             ):
                 yield part
             return
@@ -63,6 +79,7 @@ class ProviderGateway:
         task: LlmTask = LlmTask.SYNTH,
         model: str | None = None,
         max_output_tokens: int = 1024,
+        on_partial: Callable[..., None] | None = None,
     ) -> AsyncIterator[str]:
         prompt, resolved_model, max_output_tokens = self._prepare(
             prompt, task=task, model=model, max_output_tokens=max_output_tokens
@@ -78,7 +95,8 @@ class ProviderGateway:
         if not self._budget.allow_request():
             raise BudgetExceededError("Daily or monthly LLM budget exceeded")
 
-        parts: list[str] = []
+        think_text = ""
+        answer: list[str] = []
         ls_cm = None
         ls_run = None
         if tracing_active():
@@ -97,12 +115,19 @@ class ProviderGateway:
             )
             ls_run = ls_cm.__enter__()
         try:
-            async for part in self._iter_live_chunks(prompt, resolved_model, max_output_tokens):
-                parts.append(part)
-                yield part
+            async for kind, piece in self._iter_live_chunks(
+                prompt, resolved_model, max_output_tokens, task=task
+            ):
+                if kind == "think":
+                    think_text = merge_stream_text(think_text, piece)
+                    emit_partial(on_partial, think_text, phase="think")
+                else:
+                    answer.append(piece)
+                    emit_partial(on_partial, "".join(answer), phase="answer")
+                    yield piece
         finally:
             if ls_run is not None:
-                text = "".join(parts)
+                text = "".join(answer)
                 ls_run.end(outputs={"text": text[:8000], "chars": len(text)})
             if ls_cm is not None:
                 ls_cm.__exit__(None, None, None)
@@ -114,13 +139,18 @@ class ProviderGateway:
         task: LlmTask = LlmTask.SYNTH,
         model: str | None = None,
         max_output_tokens: int = 1024,
+        on_partial: Callable[..., None] | None = None,
     ) -> CompletionResult:
         prompt, resolved_model, max_output_tokens = self._prepare(
             prompt, task=task, model=model, max_output_tokens=max_output_tokens
         )
         parts: list[str] = []
         async for chunk in self.stream(
-            prompt, task=task, model=resolved_model, max_output_tokens=max_output_tokens
+            prompt,
+            task=task,
+            model=resolved_model,
+            max_output_tokens=max_output_tokens,
+            on_partial=on_partial,
         ):
             parts.append(chunk)
         text = "".join(parts).strip()

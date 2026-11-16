@@ -57,10 +57,12 @@ async def _synth_stream(
     """Stream synth completion chunks via gateway."""
     parts: list[str] = []
     async for chunk in gateway.stream(
-        prompt, task=LlmTask.SYNTH, max_output_tokens=SYNTH_MAX_OUTPUT_TOKENS
+        prompt,
+        task=LlmTask.SYNTH,
+        max_output_tokens=SYNTH_MAX_OUTPUT_TOKENS,
+        on_partial=on_partial,
     ):
         parts.append(chunk)
-        emit_partial(on_partial, "".join(parts), phase="answer")
     return "".join(parts).strip()
 
 

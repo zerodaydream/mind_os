@@ -1,16 +1,21 @@
 from cli.md_render import prepare_chat_line, prepare_chat_text
 
+_DRIVE = "https://drive.google.com/file/d/13-OjKILZ-HHr5Xvuj6AbI4LWfcRLHe7/view"
 
-def test_prepare_chat_line_strips_duplicate_markdown_url() -> None:
-    url = "https://www.google.com/calendar/event?eid=abc"
-    line = f"[{url}]({url})"
-    out = prepare_chat_line(line)
-    assert out.count("google.com") == 1
-    assert "[" not in out
+
+def test_prepare_chat_line_label_then_full_url() -> None:
+    out = prepare_chat_line(f"1. {_DRIVE}")
+    assert out.splitlines() == ["1. Link", _DRIVE]
+
+
+def test_prepare_chat_line_markdown_link_keeps_label() -> None:
+    out = prepare_chat_line(f"[Chin Prop pdf]({_DRIVE})")
+    assert out.splitlines()[0] == "Chin Prop pdf"
+    assert _DRIVE in out
 
 
 def test_prepare_chat_text_dedupes_bare_url_line() -> None:
     url = "https://tinyurl.com/abc"
     text = f"1. Nov 16\n{url}\n{url}"
     out = prepare_chat_text(text)
-    assert out.count(url) == 1
+    assert out.count("tinyurl.com") == 1

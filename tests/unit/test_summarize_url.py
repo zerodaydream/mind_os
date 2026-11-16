@@ -1,5 +1,5 @@
 from backend.services.integrations.mcp.summarize_url import _parse_fetch_payload
-from backend.services.graph.core.deep_agent import _tool_think_line
+from backend.services.graph.core.deep_agent import _canonical_tool_name
 
 
 def test_parse_fetch_payload_pagination() -> None:
@@ -13,18 +13,5 @@ def test_parse_fetch_payload_pagination() -> None:
     assert nxt2 is None
 
 
-def test_tool_think_strips_turn_trace_suffix() -> None:
-    line = _tool_think_line(
-        "mindos_convert_file_8dcad8f2c0",
-        {"to_format": "mp3"},
-    )
-    assert line == "Converting file to mp3…"
-
-
-def test_tool_think_summarize() -> None:
-    line = _tool_think_line(
-        "mindos_summarize_url",
-        {"url": "https://example.com/paper.pdf"},
-    )
-    assert "summar" in line.lower()
-    assert "example.com" in line
+def test_canonical_tool_name_strips_trace_suffix() -> None:
+    assert _canonical_tool_name("mindos_convert_file_8dcad8f2c0") == "mindos_convert_file"

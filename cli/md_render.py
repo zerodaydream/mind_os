@@ -12,6 +12,12 @@ _NOTE = re.compile(r"^\*\((.+)\)\*\s*$")
 _LIST = re.compile(r"^(\s*)([-*]|\d+\.)\s+(.*)$")
 _MD_LINK = re.compile(r"\[([^\]]*)\]\((https?://[^)]+)\)")
 _BARE_URL = re.compile(r"https?://[^\s\]\)]+")
+_TUI_LINK_LABEL = "Link"
+
+
+def is_http_url(text: str) -> bool:
+    s = text.strip()
+    return s.startswith("http://") or s.startswith("https://")
 
 
 def strip_inline_md(text: str) -> str:
@@ -20,39 +26,46 @@ def strip_inline_md(text: str) -> str:
     return text.strip()
 
 
-def _display_url(url: str, *, max_len: int = 64) -> str:
-    url = url.strip()
-    if len(url) <= max_len:
-        return url
-    return f"{url[: max_len - 1]}…"
+def visible_tui_text(text: str) -> str:
+    return text
+
+
+def _link_block(label: str, url: str) -> str:
+    """Label line, then URL alone (no indent — copy must not pick up spaces)."""
+    return f"{label}\n{url}"
 
 
 def prepare_chat_line(line: str) -> str:
-    """Markdown links and long URLs for narrow terminal columns."""
+    """Markdown/bare URLs → label + full URL on the next line (copy-friendly, no OSC)."""
 
     def _link_sub(match: re.Match[str]) -> str:
         label, url = match.group(1).strip(), match.group(2).strip()
-        short = _display_url(url)
-        if not label or label == url:
-            return short
-        return f"{strip_inline_md(label)}: {short}"
+        vis = strip_inline_md(label) if label and label != url else _TUI_LINK_LABEL
+        return _link_block(vis, url)
 
     line = _MD_LINK.sub(_link_sub, line)
+    line = _BARE_URL.sub(lambda m: _link_block(_TUI_LINK_LABEL, m.group(0).rstrip(".,;")), line)
     return line
+
+
+def _line_urls(line: str) -> list[str]:
+    urls = [m.group(2) for m in _MD_LINK.finditer(line)]
+    if urls:
+        return urls
+    return _BARE_URL.findall(line)
 
 
 def prepare_chat_text(text: str) -> str:
     out: list[str] = []
-    prev_url = ""
+    prev_key = ""
     for raw in text.splitlines():
         line = prepare_chat_line(raw)
-        bare = _BARE_URL.findall(line)
-        if len(bare) == 1 and bare[0] == prev_url and line.strip() == prev_url:
+        urls = _line_urls(raw)
+        key = urls[0] if len(urls) == 1 else ""
+        vis = line.split("\n", 1)[0].strip()
+        if key and key == prev_key and vis in (_TUI_LINK_LABEL, strip_inline_md(vis)):
             continue
-        if bare:
-            prev_url = bare[-1]
-        else:
-            prev_url = ""
+        prev_key = key if len(urls) == 1 else ""
         out.append(line)
     return "\n".join(out)
 
@@ -130,6 +143,12 @@ def ascii_table(rows: list[list[str]], width: int) -> list[str]:
     rows = [r + [""] * (ncol - len(r)) for r in rows]
     col_w = [max(len(rows[r][c]) for r in range(len(rows))) for c in range(ncol)]
     col_w = [max(1, w) for w in col_w]
+    url_cols: set[int] = set()
+    for r in rows:
+        for c, cell in enumerate(r):
+            if c < ncol and is_http_url(cell):
+                url_cols.add(c)
+                col_w[c] = max(col_w[c], len(cell.strip()))
 
     def _total() -> int:
         return sum(col_w) + 3 * ncol + 1
@@ -137,7 +156,12 @@ def ascii_table(rows: list[list[str]], width: int) -> list[str]:
     # shortcut: min 6 chars per column; wrap tall cells instead of truncating to 1 char
     _MIN_COL = 6
     while _total() > width and max(col_w) > _MIN_COL:
-        c = max(range(ncol), key=lambda i: col_w[i])
+        shrinkable = [
+            c for c in range(ncol) if c not in url_cols and col_w[c] > _MIN_COL
+        ]
+        if not shrinkable:
+            break
+        c = max(shrinkable, key=lambda i: col_w[i])
         col_w[c] -= 1
 
     def _border() -> str:
@@ -155,7 +179,9 @@ def ascii_table(rows: list[list[str]], width: int) -> list[str]:
         for c in range(ncol):
             txt = (cells[c] if c < len(cells) else "")
             w = col_w[c]
-            if len(txt) <= w:
+            if is_http_url(txt):
+                wrapped.append([txt.strip()])
+            elif len(txt) <= w:
                 wrapped.append([txt])
             else:
                 wrapped.append(textwrap.wrap(txt, width=w) or [txt[:w]])

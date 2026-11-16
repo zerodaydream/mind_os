@@ -26,11 +26,9 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: postgresql+asyncpg://mindos:mindos@postgres:5432/mindos
-      MINDOS_VAULT_PATH: /data/vault
     ports:
       - "8000:8000"
     volumes:
-      - mindos_vault:/data/vault
       - ./backend/config.json:/app/backend/config.json:ro
     depends_on:
       postgres:
@@ -45,9 +43,7 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: postgresql+asyncpg://mindos:mindos@postgres:5432/mindos
-      MINDOS_VAULT_PATH: /data/vault
     volumes:
-      - mindos_vault:/data/vault
       - ./backend/config.json:/app/backend/config.json:ro
     depends_on:
       postgres:
@@ -75,5 +71,4 @@ services:
 
 volumes:
   mindos_pg:
-  mindos_vault:
   ollama_models:

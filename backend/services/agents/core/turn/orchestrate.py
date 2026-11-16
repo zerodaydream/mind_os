@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 import uuid
 from collections.abc import Callable
 
@@ -22,7 +23,7 @@ from backend.services.agents.core.session.title import (
     needs_session_title,
 )
 from backend.services.agents.core.render.prompt_budget import CHAT_HISTORY_TURNS
-from backend.services.agents.core.turn.turn_context import maybe_refresh_mail_index, prefetch_turn_context
+from backend.services.agents.core.turn.turn_context import prefetch_turn_context
 from backend.common.langsmith_setup import begin_turn_trace, flush_traces, tracing_active, unique_run_name
 from backend.services.graph.core.deep_agent import run_deep_agent
 
@@ -106,8 +107,16 @@ async def handle_turn(
             ls_run.end(error=str(exc))
         raise
     finally:
+        exc_info = sys.exc_info()
+        if ls_run is not None and exc_info[0] is KeyboardInterrupt:
+            try:
+                ls_run.end(error="cancelled")
+            except Exception:
+                pass
         if ls_cm is not None:
-            ls_cm.__exit__(None, None, None)
+            ls_cm.__exit__(*exc_info)
+        if exc_info[0] is not None:
+            flush_traces()
 
 
 async def _handle_turn_body(
@@ -149,18 +158,7 @@ async def _handle_turn_body(
     history = history[:-1] if history and history[-1].get("role") == "user" else history
 
     turn_context = await prefetch_turn_context(
-        session, user, settings, body, source=source, intent=intent
-    )
-    turn_context = await maybe_refresh_mail_index(
-        session,
-        user,
-        settings,
-        body,
-        turn_context,
-        source=source,
-        intent=intent,
-        gateway=gateway,
-        on_partial=on_partial,
+        session, user, settings, body, source=source, intent=intent, history=history
     )
 
     try:

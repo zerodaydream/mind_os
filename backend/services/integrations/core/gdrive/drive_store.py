@@ -311,6 +311,23 @@ async def drive_upload_bytes(*, name: str, mime_type: str, data: bytes) -> str:
     return str(file_id)
 
 
+async def drive_file_exists(file_id: str) -> bool:
+    """False when the file was deleted (e.g. after mindos cleanup) or the id is invalid."""
+    if not (file_id or "").strip():
+        return False
+    token = _bearer_token()
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.get(
+            f"https://www.googleapis.com/drive/v3/files/{file_id}",
+            params={"fields": "id"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        if resp.status_code == 404:
+            return False
+        resp.raise_for_status()
+        return bool(resp.json().get("id"))
+
+
 async def drive_download_bytes(file_id: str) -> bytes:
     token = _bearer_token()
     async with httpx.AsyncClient(timeout=120.0) as client:
