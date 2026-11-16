@@ -1,10 +1,8 @@
 from backend.services.integrations.core.gmail.sync import DEFAULT_GMAIL_FULL_INGEST_QUERY
 
 
-def test_full_ingest_query_excludes_promotions_and_unsubscribe() -> None:
+def test_full_ingest_query_inbox_and_sent_not_attachment_only() -> None:
     q = DEFAULT_GMAIL_FULL_INGEST_QUERY
-    assert "promotions" in q
-    assert "unsubscribe" in q
-    assert "spam" in q
-    assert "has:attachment" in q
-    assert "from:me" not in q
+    assert "in:inbox" in q
+    assert "in:sent" in q
+    assert "has:attachment" not in q

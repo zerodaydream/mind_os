@@ -49,7 +49,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--query",
         type=str,
         default=None,
-        help="Gmail search query override (default: no promotions / spam / unsubscribe)",
+        help="Gmail search override (default: inbox + sent, no chats/drafts)",
     )
     ingest_p.add_argument(
         "--limit",

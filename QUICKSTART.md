@@ -108,6 +108,6 @@ Defaults in `.env`: `MINDOS_LLM_DAILY_USD=2.00`, `MINDOS_LLM_MONTHLY_USD=40.00`,
 | `role "mindos" does not exist` on migrate | Host `alembic` hit **local** Postgres on 5432, not Docker — use `DATABASE_URL=...@localhost:5433/mindos` (compose maps **5433→5432**) |
 | Port 5432 in use | Default Docker publish is **5433** on the host (see `docker-compose.yml`) |
 | Tests flaky on env | `get_settings()` is cached; tests clear cache in `conftest.py` |
-| Large Gmail backlog | Default `mindos sync` scans up to `GMAIL_SYNC_MAX_MESSAGES` (200) per page batch; it continues pages while more match. Full backfill: `mindos gmail-ingest --limit 0` |
+| Large Gmail backlog | Full backfill: `mindos gmail-ingest --limit 0 --process` (default: inbox + sent, attachments when present). Narrow with `--query 'has:attachment'`. `mindos sync` caps at `GMAIL_SYNC_MAX_MESSAGES` (200) unless you use gmail-ingest. |
 | Chunk keyword search slow / error `text_tsv` | Run `uv run alembic upgrade head` (migration `20261116_0005`) |
 | Gmail attachments on GDrive | GDrive REST (`integrations/core/gdrive/drive_store.py`); folder **MindOS Gmail Attachments** (`GDRIVE_INGEST_FOLDER`); `GDRIVE_OAUTH_PATH` / `GDRIVE_TOKEN_PATH` (legacy `GDRIVE_MCP_*` still read) |

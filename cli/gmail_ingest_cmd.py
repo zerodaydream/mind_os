@@ -48,27 +48,18 @@ async def run_gmail_full_ingest(*, process: bool, query: str | None, limit: int)
     async with lifecycle._session_factory() as session:
         user = await ensure_default_user(session, settings)
         try:
-            page_token: str | None = None
-            est = None
-            while True:
-                stats = await sync_gmail_inbox(
-                    session,
-                    user=user,
-                    settings=settings,
-                    max_messages=limit if limit > 0 else 0,
-                    query=list_query,
-                    page_token=page_token,
-                    single_list_page=limit == 0,
-                )
-                total_ingested += int(stats.get("ingested") or 0)
-                total_skipped += int(stats.get("skipped") or 0)
-                total_scanned += int(stats.get("scanned") or 0)
-                if est is None:
-                    est = stats.get("result_size_estimate")
-                page_token = stats.get("next_page_token")
-                if limit != 0 or not page_token:
-                    break
+            stats = await sync_gmail_inbox(
+                session,
+                user=user,
+                settings=settings,
+                max_messages=limit if limit > 0 else 0,
+                query=list_query,
+            )
             await session.commit()
+            total_ingested = int(stats.get("ingested") or 0)
+            total_skipped = int(stats.get("skipped") or 0)
+            total_scanned = int(stats.get("scanned") or 0)
+            est = stats.get("result_size_estimate")
             est_bit = f" · ~{est} matched" if isinstance(est, int) and est >= 0 else ""
             elapsed = time.perf_counter() - started
             term.step(

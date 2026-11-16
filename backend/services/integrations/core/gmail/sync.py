@@ -40,10 +40,8 @@ from backend.services.integrations.core.google.oauth import (
 )
 from backend.services.integrations.core.google.token_store import decrypt_tokens, encrypt_tokens
 
-# Full inbox: promotions tab + marketing with List-Unsubscribe; tune via gmail-ingest --query
-DEFAULT_GMAIL_FULL_INGEST_QUERY = (
-    "-category:promotions -label:spam -has:unsubscribe has:attachment"
-)
+# Inbox + sent (body-only OK); attachments extracted when present. Override via gmail-ingest --query
+DEFAULT_GMAIL_FULL_INGEST_QUERY = "(in:inbox OR in:sent) -in:chats -in:drafts"
 
 _URL = re.compile(r"https?://[^\s<>\"')\]]+", re.I)
 
@@ -670,7 +668,6 @@ async def sync_gmail_inbox(
     query: str | None = None,
     page_token: str | None = None,
     after_msg_id: str | None = None,
-    single_list_page: bool = False,
 ) -> dict:
     if max_messages is None:
         limit = settings.gmail_sync_max_messages
@@ -737,9 +734,10 @@ async def sync_gmail_inbox(
         while True:
             if use_cap and scanned >= limit:
                 break
-            page_size = 50
             if use_cap:
                 page_size = min(50, limit - scanned)
+            else:
+                page_size = 500  # Gmail list max; backfill in fewer pages than 50-size pages
             params: dict = {"maxResults": page_size, "q": list_query}
             if list_page_token:
                 params["pageToken"] = list_page_token
@@ -852,12 +850,20 @@ async def sync_gmail_inbox(
             list_page_token = page.get("nextPageToken")
             next_page_token = list_page_token
             if not list_page_token:
+                if (
+                    not use_cap
+                    and total_estimate
+                    and scanned < total_estimate
+                ):
+                    _gmail_sync_note(
+                        f"list ended at {scanned} · Gmail estimate was ~{total_estimate}"
+                    )
                 break
             if not use_cap:
                 await session.commit()
-                _gmail_sync_note(f"checkpoint · scanned {scanned} · ingested {ingested}")
-            if single_list_page:
-                break
+                _gmail_sync_note(
+                    f"checkpoint · scanned {scanned} · ingested {ingested} · more pages"
+                )
 
     if message_bar is not None:
         message_bar.close()
