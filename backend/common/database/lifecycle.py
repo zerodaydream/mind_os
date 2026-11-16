@@ -5,6 +5,7 @@ _session_factory: async_sessionmaker[AsyncSession] | None = None
 
 
 def init_db(database_url: str) -> None:
+    """Initialize the database."""
     global _engine, _session_factory
     if _engine is not None:
         return
@@ -19,6 +20,7 @@ def init_db(database_url: str) -> None:
 
 
 async def dispose_db() -> None:
+    """Dispose the database."""
     global _engine, _session_factory
     if _engine is not None:
         await _engine.dispose()

@@ -39,6 +39,7 @@ async def _synth_plan(
     turn_context,
     on_partial: Callable[[str], None] | None = None,
 ) -> tuple[dict, str]:
+    """Converse/plan synth fallback when deep agent is unavailable."""
     out = await run_chat(
         session,
         user,

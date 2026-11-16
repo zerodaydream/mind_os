@@ -1,3 +1,5 @@
+"""Interactive chat command: session I/O, warmup prefetch, TUI and plain-text modes."""
+
 from __future__ import annotations
 
 import threading
@@ -35,6 +37,7 @@ _chat_warmup_result: (
 
 
 def format_relative_timestamp(dt: datetime | None) -> str:
+    """Human-readable age for a UTC timestamp (e.g. ``3h ago``); empty if *dt* is None."""
     if dt is None:
         return ""
     if dt.tzinfo is None:
@@ -58,6 +61,7 @@ async def run_agent_turn(
     on_partial: Callable[[str], None] | None = None,
     client_tz: str = "",
 ) -> dict:
+    """One agent turn: resolve user, delegate to ``handle_turn``, return orchestrator output."""
     settings = get_settings()
     user = await ensure_default_user(session, settings)
     return await handle_turn(
@@ -80,6 +84,7 @@ async def fetch_chat_reply(
     on_partial: Callable[[str], None] | None = None,
     client_tz: str = "",
 ) -> tuple[str, uuid.UUID]:
+    """Run a turn in its own DB session; return rendered answer and persisted session id."""
     if lifecycle._session_factory is None:
         raise RuntimeError("database not initialized — check DATABASE_URL and Postgres")
     try:
@@ -124,6 +129,7 @@ async def list_chat_sessions_for_picker() -> list[tuple[str, str, str]]:
 
 
 async def delete_chat_session(session_id: uuid.UUID) -> bool:
+    """Delete a chat session for the default user; False if DB unavailable or not found."""
     if lifecycle._session_factory is None:
         return False
     settings = get_settings()
@@ -138,6 +144,7 @@ async def delete_chat_session(session_id: uuid.UUID) -> bool:
 async def load_chat_history(
     session_id: uuid.UUID,
 ) -> tuple[list[tuple[str, str]], uuid.UUID, str] | None:
+    """Load TUI history rows, canonical id, and display title; None if missing."""
     if lifecycle._session_factory is None:
         return None
     settings = get_settings()
@@ -166,6 +173,7 @@ def prepare_chat_session_state(
     *,
     warm_voice: bool | None = None,
 ) -> tuple[dict, object | None, list[tuple[str, str]], str]:
+    """Bootstrap worker/LLM and return ``(state, gateway, history, session_label)``."""
     bootstrap_env()
     settings = reload_settings()
     if settings.langsmith_tracing:
@@ -227,6 +235,7 @@ def start_chat_warmup() -> None:
 
 
 def _take_chat_warmup_result() -> tuple[dict, object | None, list[tuple[str, str]], str] | None:
+    """Move the background warmup bundle out of module cache (at-most-once)."""
     global _chat_warmup_result
     with _chat_warmup_lock:
         if _chat_warmup_result is None:
@@ -239,6 +248,7 @@ def _take_chat_warmup_result() -> tuple[dict, object | None, list[tuple[str, str
 def resolve_chat_session_state(
     session_id: uuid.UUID | None,
 ) -> tuple[dict, object | None, list[tuple[str, str]], str]:
+    """Use warmup cache, wait on it, or build fresh state for *session_id* (None = new chat)."""
     if session_id is not None:
         return prepare_chat_session_state(session_id)
     ready = _take_chat_warmup_result()
@@ -258,6 +268,7 @@ def resolve_chat_session_state(
 
 
 def cmd_chat(*, session_id: uuid.UUID | None = None) -> int:
+    """Entry for ``mindos chat``: TUI conversation or line-at-a-time fallback. Exit code 0/1."""
     cfg = get_config()
     if not cfg.is_enabled("agents"):
         term.action_begin()

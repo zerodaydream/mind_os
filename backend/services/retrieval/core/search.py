@@ -1,8 +1,10 @@
+"""Artifact search: keyword (Postgres full-text) and helpers."""
+
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
-async def search_artifacts_fts(
+async def search_artifacts_by_keyword(
     session: AsyncSession,
     *,
     user_id,
@@ -10,6 +12,7 @@ async def search_artifacts_fts(
     limit: int = 20,
     source: str | None = None,
 ) -> list[dict]:
+    """Rank artifacts by keyword match (Postgres ``tsvector`` full-text search)."""
     src_clause = " AND source = :src" if source else ""
     sql = text(
         f"""

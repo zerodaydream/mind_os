@@ -13,6 +13,7 @@ async def enqueue(
     *,
     available_at: datetime | None = None,
 ) -> OutboxEvent:
+    """Enqueue an event to the outbox."""
     row = OutboxEvent(
         event_type=event_type,
         payload=payload,
@@ -25,6 +26,7 @@ async def enqueue(
 
 
 async def claim_next(session: AsyncSession) -> OutboxEvent | None:
+    """Claim the next event from the outbox."""
     stmt = (
         select(OutboxEvent)
         .where(
@@ -45,12 +47,14 @@ async def claim_next(session: AsyncSession) -> OutboxEvent | None:
 
 
 async def mark_done(session: AsyncSession, event_id: int) -> None:
+    """Mark an event as done."""
     await session.execute(
         update(OutboxEvent).where(OutboxEvent.id == event_id).values(status="done")
     )
 
 
 async def mark_failed(session: AsyncSession, event: OutboxEvent, *, error: str) -> None:
+    """Mark an event as failed."""
     attempts = event.attempts + 1
     delay_sec = min(60 * attempts, 300)
     event.attempts = attempts

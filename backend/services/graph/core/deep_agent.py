@@ -43,6 +43,7 @@ if TYPE_CHECKING:
 
 
 def deepagents_available() -> bool:
+    """Return True when the deepagents package is importable."""
     try:
         import deepagents  # noqa: F401
         return True
@@ -51,6 +52,7 @@ def deepagents_available() -> bool:
 
 
 def _model_string(settings) -> str:
+    """Build the LangChain model id string from settings."""
     provider = (settings.mindos_default_provider or "google").lower()
     model = settings.mindos_synth_model
     if provider == "google":
@@ -63,6 +65,7 @@ def _model_string(settings) -> str:
 
 
 def _clock_block(task: str, tz: str) -> str:
+    """Prompt block with now/tomorrow in the user timezone for calendar tasks."""
     try:
         now = datetime.now(ZoneInfo(tz))
     except Exception:
@@ -82,6 +85,7 @@ def _clock_block(task: str, tz: str) -> str:
 
 
 def _oauth_start_url(settings) -> str:
+    """Absolute or relative Google OAuth start URL from redirect settings."""
     base = (settings.google_oauth_redirect_uri or "").rsplit("/callback", 1)[0]
     return f"{base}/start" if base else "/v1/integrations/google/start"
 
@@ -90,6 +94,7 @@ _OAUTH_ACK = frozenset({"yes", "y", "ok", "okay", "sure", "done", "connected", "
 
 
 def _user_oauth_signal(message: str) -> str | None:
+    """Detect short user replies that continue an OAuth flow."""
     lower = message.strip().lower()
     if lower in _OAUTH_ACK:
         return lower
@@ -101,6 +106,7 @@ def _user_oauth_signal(message: str) -> str | None:
 
 
 def _assistant_sent_oauth_link(history: list[dict] | None) -> bool:
+    """True if a recent assistant message included the OAuth start link."""
     if not history:
         return False
     for m in reversed(history[-8:]):
@@ -112,6 +118,7 @@ def _assistant_sent_oauth_link(history: list[dict] | None) -> bool:
 
 
 def _oauth_continuation_turn(message: str, history: list[dict] | None) -> bool:
+    """True when the user is acknowledging or continuing Google sign-in."""
     sig = _user_oauth_signal(message)
     if not sig:
         return False
@@ -121,16 +128,19 @@ def _oauth_continuation_turn(message: str, history: list[dict] | None) -> bool:
 
 
 def should_route_deep_for_oauth(message: str, history: list[dict] | None) -> bool:
+    """Route plan/execute to deep agent after OAuth nudges."""
     return _oauth_continuation_turn(message, history)
 
 
 def _message_mentions_calendar(message: str) -> bool:
+    """True if the user message looks calendar-related."""
     from backend.services.integrations.core.calendar.scheduling import line_looks_calendar_related
 
     return line_looks_calendar_related(message)
 
 
 def _history_mentions_calendar(history: list[dict] | None) -> bool:
+    """True if recent user turns mention scheduling or calendar."""
     if not history:
         return False
     for m in reversed(history[-12:]):
@@ -155,6 +165,7 @@ async def run_deep_agent(
     on_partial: Callable[..., None] | None = None,
     client_tz: str = "",
 ) -> dict:
+    """Run Deep Agents for plan/execute; stream partials and return answer metadata."""
     if gateway is None or gateway.mode == LlmMode.DEGRADED:
         return {
             "answer": (
@@ -414,6 +425,7 @@ async def run_deep_agent(
 
 
 def _answer_leaks_system_prompt(answer: str) -> bool:
+    """Heuristic: assistant echoed internal instructions."""
     low = (answer or "").lower()
     return any(
         p in low
@@ -430,6 +442,7 @@ def _answer_leaks_system_prompt(answer: str) -> bool:
 
 
 def _replace_relative_oauth_paths(answer: str, oauth_url: str) -> str:
+    """Rewrite relative OAuth paths in answers to absolute URLs."""
     return (answer or "").replace("/v1/integrations/google/start", oauth_url)
 
 
@@ -442,6 +455,7 @@ def _finalize_calendar_answer(
     settings=None,
     auth_status: str = "ok",
 ) -> str:
+    """Inject OAuth link, calendar auth hints, and strip unsafe output."""
     del settings, auth_status
     if not calendar_turn:
         return answer
@@ -471,12 +485,14 @@ _TURN_TRACE_SUFFIX = re.compile(r"^(.+)_[a-f0-9]{10}$")
 
 
 def _canonical_tool_name(name: str) -> str:
+    """Normalize MCP/tool names for display and dedupe."""
     n = (name or "").strip()
     m = _TURN_TRACE_SUFFIX.match(n)
     return m.group(1) if m else n
 
 
 def _tool_call_name(tc) -> str:
+    """Extract tool name from a LangChain tool call object."""
     if isinstance(tc, dict):
         raw = str(tc.get("name") or "")
     else:
@@ -485,6 +501,7 @@ def _tool_call_name(tc) -> str:
 
 
 def _tool_call_args(tc) -> dict:
+    """Extract args dict from a LangChain tool call object."""
     if isinstance(tc, dict):
         raw = tc.get("args") or {}
     else:
@@ -498,6 +515,7 @@ def _tool_call_args(tc) -> dict:
 
 
 def _latest_todos(msgs) -> list[dict] | None:
+    """Read the newest todo list from agent message state."""
     latest: list[dict] | None = None
     for m in msgs or []:
         tool_calls = getattr(m, "tool_calls", None)
@@ -525,6 +543,7 @@ def _latest_todos(msgs) -> list[dict] | None:
 
 
 def _format_todos_think(todos: list[dict]) -> str:
+    """Format todos for the thinking/status partial stream."""
     lines = ["Plan:"]
     for item in todos:
         status = str(item.get("status") or "pending").lower()
@@ -536,6 +555,7 @@ def _format_todos_think(todos: list[dict]) -> str:
 
 
 def _emit_todo_think(msgs, on_partial, *, last_sig: list[str]) -> None:
+    """Push todo updates to on_partial when the list changes."""
     todos = _latest_todos(msgs)
     if not todos:
         return
@@ -547,6 +567,7 @@ def _emit_todo_think(msgs, on_partial, *, last_sig: list[str]) -> None:
 
 
 def _tool_think_line(name: str, args: dict, *, user_task: str = "") -> str:
+    """One human-readable status line for a tool invocation."""
     name = _canonical_tool_name(name)
     lower = name.lower()
     url = str(args.get("url") or "").strip()
@@ -624,6 +645,7 @@ def _tool_think_line(name: str, args: dict, *, user_task: str = "") -> str:
 
 
 def _emit_tool_think(msgs, on_partial, *, seen: set[str], user_task: str = "") -> None:
+    """Push new tool calls to on_partial once per call id."""
     if not msgs or on_partial is None:
         return
     for m in reversed(msgs):
@@ -651,6 +673,7 @@ def _emit_tool_think(msgs, on_partial, *, seen: set[str], user_task: str = "") -
 
 
 def _is_ai_stream_chunk(msg) -> bool:
+    """True for assistant content chunks during astream."""
     if _is_tool_message(msg):
         return False
     if getattr(msg, "tool_calls", None) or getattr(msg, "tool_call_chunks", None):
@@ -662,6 +685,7 @@ def _is_ai_stream_chunk(msg) -> bool:
 
 
 def _maybe_reset_answer_stream(msgs, buf: list[str]) -> None:
+    """Clear streamed answer buffer when a new AI message starts."""
     if not msgs:
         return
     last = msgs[-1]
@@ -670,6 +694,7 @@ def _maybe_reset_answer_stream(msgs, buf: list[str]) -> None:
 
 
 async def _ainvoke_values_only(agent, invoke, config, *, on_partial, user_task: str = "") -> dict:
+    """Invoke agent without token streaming; still emit tool/todo think."""
     last_sig: list[str] = [""]
     tool_seen: set[str] = set()
     result: dict | None = None
@@ -691,6 +716,7 @@ async def _ainvoke_values_only(agent, invoke, config, *, on_partial, user_task: 
 async def _ainvoke_streaming(
     agent, invoke, config, *, on_partial, user_task: str = ""
 ) -> dict:
+    """Invoke agent with astream; stream answer tokens to on_partial."""
     last_sig: list[str] = [""]
     tool_seen: set[str] = set()
     answer_buf: list[str] = []
@@ -751,6 +777,7 @@ _CALENDAR_EVENT_URL = re.compile(
 
 
 def _url_already_in_answer(url: str, answer: str) -> bool:
+    """True if a URL already appears in the final answer text."""
     if url in answer:
         return True
     m = _EID_IN_URL.search(url)
@@ -758,6 +785,7 @@ def _url_already_in_answer(url: str, answer: str) -> bool:
 
 
 def _message_text(msg) -> str:
+    """Extract plain text from a LangGraph message object."""
     content = getattr(msg, "content", None)
     if content is None and isinstance(msg, dict):
         content = msg.get("content")
@@ -771,6 +799,7 @@ def _message_text(msg) -> str:
 
 
 def _is_human_message(msg) -> bool:
+    """True when the message is from the user/human role."""
     kind = getattr(msg, "type", None)
     if kind in ("human", "user"):
         return True
@@ -785,6 +814,7 @@ def _is_human_message(msg) -> bool:
 
 
 def _is_tool_message(msg) -> bool:
+    """True when the message is a tool result."""
     kind = getattr(msg, "type", None)
     if kind == "tool":
         return True
@@ -794,6 +824,7 @@ def _is_tool_message(msg) -> bool:
 
 
 def _tool_texts(result) -> list[str]:
+    """Collect string payloads from all tool messages in state."""
     if not isinstance(result, dict):
         return []
     out: list[str] = []
@@ -807,6 +838,7 @@ def _tool_texts(result) -> list[str]:
 
 
 def _current_turn_tool_texts(result) -> list[str]:
+    """Tool outputs since the last human message this turn."""
     if not isinstance(result, dict):
         return []
     chunk: list[str] = []
@@ -860,6 +892,7 @@ def _surface_tool_outputs(answer: str, result) -> str:
 
 
 def _extract_answer(result) -> str:
+    """Pick the final assistant string from graph result messages."""
     if isinstance(result, dict):
         msgs = result.get("messages") or []
         for m in reversed(msgs):

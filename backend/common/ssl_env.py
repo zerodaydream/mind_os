@@ -7,6 +7,7 @@ from pathlib import Path
 
 
 def fix_ssl_cert_env() -> None:
+    """Fix broken SSL_CERT_* from the shell before httpx/ssl opens CA paths."""
     cert_file = os.environ.get("SSL_CERT_FILE")
     if cert_file and not Path(cert_file).is_file():
         try:

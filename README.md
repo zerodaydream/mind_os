@@ -157,7 +157,7 @@ flowchart LR
 | --- | --- |
 | Boot | `create_app()` mounts core + gated routers; lifespan opens DB pool and builds `app.state.services` |
 | Request | Routes use `common/api/deps.py`; LLM via `app.state.services.llm` when `llm: true` |
-| Ingest | API writes artifact + chunks + FTS + outbox event |
+| Ingest | API writes artifact + chunks + keyword index + outbox event |
 | Worker | `artifact.process` → optional embed (`retrieval: true`) → commitment extraction |
 
 ---
@@ -234,7 +234,7 @@ uv run alembic upgrade head
 | Service | `config.json` | Prefix | Notes |
 | --- | --- | --- | --- |
 | ingest | always | `/v1/ingest/*` | Vault + chunks + outbox |
-| retrieval | always (FTS); embed gated | `/v1/search` | FTS always; vectors need `retrieval: true` |
+| retrieval | always (keyword); embed gated | `/v1/search` | keyword search always; vectors need `retrieval: true` |
 | commitments | always | `/v1/commitments` | Populated by worker |
 | integrations | `integrations` | `/v1/integrations/*` | Gmail read + OAuth |
 | llm | `llm` | — | Used by worker/gateway, no public router |
@@ -249,7 +249,7 @@ uv run alembic upgrade head
 
 | Phase | Scope | Status |
 | --- | --- | --- |
-| 1–2 | Ingest, FTS, outbox, commitments | done |
+| 1–2 | Ingest, keyword search, outbox, commitments | done |
 | 3 | Google OAuth + Gmail | done |
 | 4 | Tensions | done |
 | 5 | Memories + integration hardening | done |

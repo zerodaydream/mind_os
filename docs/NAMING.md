@@ -12,6 +12,10 @@ Follow [PEP 8](https://peps.python.org/pep-0008/#naming-conventions) and the [Go
 
 Do **not** export vague names (`prefetch`, `boot`, `repl_running`) without a domain noun (`chat`, `event_loop`, `session`).
 
+## Plain language (not DBA jargon)
+
+Prefer verbs anyone can read: `add_*`, `save_*`, `update_*`, `delete_*`, `load_*`. Avoid `upsert`, `mutate`, `hydrate`, `materialize` in public names unless the behavior truly is update-or-insert — then name the outcome (`add_new_memories_from_artifact`, not `upsert_memories_from_artifact`). Say **keyword search** in code and docs; reserve **FTS** for SQL/Postgres (`tsvector`, `ts_rank`) where it is the actual mechanism.
+
 ## Functions and methods
 
 - **Verbs** for actions: `prepare_*`, `load_*`, `resolve_*`, `consume_*`, `format_*`.
@@ -47,3 +51,7 @@ Large files may keep `_` prefixes on drawing helpers, but each name should still
 3. Add or update a one-line docstring on non-obvious module globals.
 
 New code should match these rules; legacy `backend/` names can be cleaned when that code is edited.
+
+## Docstrings
+
+Google-style **one line** on every public function and on module-private helpers other modules import or tests touch. State purpose and non-obvious return shape; skip repeating the name. Multiline signatures: docstring on the first line of the body.

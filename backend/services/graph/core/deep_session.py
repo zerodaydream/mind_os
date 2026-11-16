@@ -18,6 +18,7 @@ SESSION_TURN_ANSWER_MAX = 3_500
 
 
 def mindos_home() -> Path:
+    """Resolved MINDOS_HOME or cwd for session files and project routes."""
     home = os.environ.get("MINDOS_HOME", "").strip()
     if home:
         return Path(home).expanduser().resolve()
@@ -25,10 +26,12 @@ def mindos_home() -> Path:
 
 
 def session_dir(thread_id) -> Path:
+    """Filesystem root for one chat thread's deep-agent workspace."""
     return mindos_home() / ".mindos" / "sessions" / str(thread_id)
 
 
 def ensure_session_workspace(thread_id) -> Path:
+    """Create session dir, NOTES.md, and SESSION.md if missing."""
     root = session_dir(thread_id)
     root.mkdir(parents=True, exist_ok=True)
     (root / "tool-dumps").mkdir(exist_ok=True)
@@ -48,6 +51,7 @@ def ensure_session_workspace(thread_id) -> Path:
 
 
 def read_notes_preview(thread_id) -> str:
+    """Clipped NOTES.md for deep-agent context."""
     path = session_dir(thread_id) / "NOTES.md"
     if not path.is_file():
         return ""
@@ -58,6 +62,7 @@ def read_notes_preview(thread_id) -> str:
 
 
 def memory_sources_for_thread(thread_id) -> list[str]:
+    """Virtual FS paths the agent may read (SESSION.md, AGENTS.md)."""
     sources = ["/SESSION.md"]
     if (mindos_home() / "AGENTS.md").is_file():
         sources.append("/project/AGENTS.md")
@@ -67,6 +72,7 @@ def memory_sources_for_thread(thread_id) -> list[str]:
 
 @lru_cache(maxsize=1)
 def deep_checkpointer() -> object | None:
+    """Process-wide LangGraph checkpointer or None if unavailable."""
     # shortcut: process-wide MemorySaver; upgrade to PostgresSaver for multi-replica
     try:
         from langgraph.checkpoint.memory import MemorySaver
@@ -78,6 +84,7 @@ def deep_checkpointer() -> object | None:
 
 @lru_cache(maxsize=1)
 def deep_store() -> object | None:
+    """Process-wide LangGraph store or None if unavailable."""
     try:
         from langgraph.store.memory import InMemoryStore
 
@@ -87,6 +94,7 @@ def deep_store() -> object | None:
 
 
 def build_deep_backend(thread_id) -> BackendProtocol:
+    """Composite deepagents backend: session FS, project, optional store."""
     from deepagents.backends import CompositeBackend, FilesystemBackend, StoreBackend
 
     session_root = ensure_session_workspace(thread_id)

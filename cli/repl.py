@@ -1,3 +1,5 @@
+"""Default ``mindos`` REPL: main menu plus shared asyncio loop for nested commands."""
+
 from __future__ import annotations
 
 from cli import term
@@ -34,6 +36,7 @@ def _dispatch_main_menu_choice(choice: str) -> bool:
 
 
 def run_repl() -> int:
+    """Bootstrap env, run the interactive menu until exit, then tear down the event loop."""
     home = bootstrap_env()
     start_shared_event_loop()
     try:

@@ -18,6 +18,7 @@ from backend.common.config_loader.settings import reload_settings
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """CLI argument definitions for ``mindos``."""
     p = argparse.ArgumentParser(
         prog="mindos",
         description="MindOS — sync and process ingested context (terminal-first).",
@@ -40,6 +41,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    """Dispatch subcommands, flags, or the interactive REPL when argv is empty."""
     bootstrap_env()
     reload_settings()
     args = build_parser().parse_args()

@@ -1,3 +1,5 @@
+"""FastAPI plugin: chat, run, and session routes."""
+
 from __future__ import annotations
 
 from typing import ClassVar
@@ -12,9 +14,11 @@ class AgentsPlugin(ServicePlugin):
     name: ClassVar[str] = "agents"
 
     def depends_on(self, _environment: str) -> tuple[str, ...]:
+        """Declare plugin load order (agents needs graph, llm, retrieval)."""
         return ("graph", "llm", "retrieval")
 
     def router(self) -> APIRouter:
+        """Mount service routes on the FastAPI app."""
         router = APIRouter()
         router.include_router(run.router)
         router.include_router(chat.router)

@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 async def search_memories_ilike(
     session: AsyncSession, *, user_id, query: str, limit: int = 10
 ) -> list[dict]:
+    """Search memories using ILIKE."""
     # shortcut: ILIKE, add tsvector index when memory volume grows
     pat = "%" + query.replace("%", "").replace("_", "") + "%"
     sql = text(

@@ -9,7 +9,7 @@ from backend.common.database.models import Artifact, ArtifactChunk, ChunkEmbeddi
 from backend.services.commitments.core.extract import extract_commitments
 from backend.services.llm.core.gateway import build_llm_gateway
 from backend.services.retrieval.core.embed import embed_texts
-from backend.services.memories.core.persist import upsert_memories_from_artifact
+from backend.services.memories.core.persist import add_new_memories_from_artifact
 from backend.services.memories.core.rules import extract_memory_rules
 from backend.services.tensions.core.detect import run_tension_detection
 
@@ -61,7 +61,7 @@ async def handle_artifact_process(session: AsyncSession, payload: dict) -> None:
     if config.is_enabled("memories"):
         drafts = extract_memory_rules(full_text)
         if drafts:
-            await upsert_memories_from_artifact(
+            await add_new_memories_from_artifact(
                 session,
                 user_id=artifact.user_id,
                 artifact_id=artifact_id,

@@ -1,4 +1,5 @@
 def embed_texts(texts: list[str], model_id: str) -> list[list[float]]:
+    """Embed texts using the model."""
     try:
         from sentence_transformers import SentenceTransformer
     except ImportError as e:

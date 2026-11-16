@@ -31,6 +31,7 @@ def _dispose_db_engine_sync() -> None:
 
 
 async def _ensure_cli_backend_ready() -> None:
+    """SSL env, then worker/DB bootstrap if the shared loop has no engine yet."""
     from backend.common.ssl_env import fix_ssl_cert_env
     from backend.common.database import lifecycle
     from backend.worker.bootstrap import bootstrap
@@ -41,6 +42,7 @@ async def _ensure_cli_backend_ready() -> None:
 
 
 def start_shared_event_loop() -> None:
+    """Create and retain the CLI event loop until ``stop_shared_event_loop``."""
     global _shared_event_loop
     _dispose_db_engine_sync()
     loop = asyncio.new_event_loop()
@@ -50,6 +52,7 @@ def start_shared_event_loop() -> None:
 
 
 def stop_shared_event_loop() -> None:
+    """Close the shared loop and dispose the async DB pool."""
     global _shared_event_loop
     if _shared_event_loop is None or _shared_event_loop.is_closed():
         _shared_event_loop = None
@@ -70,6 +73,7 @@ def stop_shared_event_loop() -> None:
 
 
 def run_async(coro: Coroutine[Any, Any, T]) -> T:
+    """Run *coro* on the shared loop, or a one-shot ``asyncio.run`` with teardown."""
     async def _run() -> T:
         await _ensure_cli_backend_ready()
         return await coro

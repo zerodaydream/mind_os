@@ -1,3 +1,5 @@
+"""HTTP chat turn endpoint."""
+
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -39,6 +41,7 @@ async def chat(
     session: AsyncSession = Depends(db_session),
     cfg: Settings = Depends(app_settings),
 ):
+    """POST /chat — one agent turn for API clients."""
     if not request.app.state.config.is_enabled("agents"):
         raise HTTPException(status_code=503, detail="agents disabled in config.json")
     if not request.app.state.config.is_enabled("retrieval"):

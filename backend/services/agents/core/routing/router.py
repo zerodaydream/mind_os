@@ -11,6 +11,7 @@ _HTTP_URL = re.compile(r"https?://\S+", re.I)
 
 
 def url_from_thread(message: str, history: list[dict] | None) -> str | None:
+    """First http(s) URL in message or recent history."""
     m = _HTTP_URL.search(message or "")
     if m:
         return m.group(0).rstrip(").,]")
@@ -24,5 +25,6 @@ def url_from_thread(message: str, history: list[dict] | None) -> str | None:
 
 
 def classify(message: str) -> tuple[Intent, str]:
+    """Keyword-free intent stub: currently always plan with full body."""
     body = message.strip()
     return "plan", body

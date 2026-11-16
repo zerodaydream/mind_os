@@ -67,7 +67,7 @@ def build_personal_tools(
     on_partial: Callable[..., None] | None = None,
 ):
     async def mindos_search(query: str, source: str = "") -> str:
-        """Hybrid FTS + vector search over Gmail and notes. Optional source: gmail or manual."""
+        """Hybrid keyword + vector search over Gmail and notes. Optional source: gmail or manual."""
         src = source.strip().lower() or None
         if src not in (None, "gmail", "manual"):
             src = None

@@ -1,4 +1,4 @@
-"""Terminal UI — Rich when available, ANSI fallback."""
+"""Terminal UI: curses menus, chat, and Rich/ANSI output with an action output sink."""
 
 from __future__ import annotations
 
@@ -30,11 +30,13 @@ _MENU_VALUES = [
 
 
 def action_begin() -> None:
+    """Start buffering command output until ``action_end`` (avoids TUI flicker)."""
     global _action_output_lines
     _action_output_lines = []
 
 
 def action_end(*, show: bool | None = None) -> list[str]:
+    """Flush the sink to screen or curses; return captured lines."""
     global _action_output_lines
     lines = list(_action_output_lines or [])
     _action_output_lines = None
@@ -48,6 +50,7 @@ def action_end(*, show: bool | None = None) -> list[str]:
 
 
 def tui_flush() -> None:
+    """Paint buffered lines on the live curses window without ending the action."""
     lines = action_end(show=False)
     if lines and _curses_main_window is not None:
         _show_action_output_lines(_curses_main_window, lines)
@@ -108,14 +111,17 @@ def tui_busy(
 
 
 def in_menu_session() -> bool:
+    """True while inside ``action_begin`` … ``action_end``."""
     return _action_output_lines is not None
 
 
 def in_tui() -> bool:
+    """True when ``run_interactive`` holds an active curses main window."""
     return _curses_session_active and _curses_main_window is not None
 
 
 def _append_to_action_sink(line: str) -> None:
+    """Record one output line when the action sink is active; no-op otherwise."""
     if _action_output_lines is not None:
         _action_output_lines.append(line)
 
@@ -354,6 +360,7 @@ def _log_draw(stdscr, lines: list[str], *, footer: str = "↑/↓ scroll · Ente
 
 
 def show_log(lines: list[str], *, footer: str = "Enter → menu") -> None:
+    """Scrollable log viewer (curses, inline TUI, or plain stdout)."""
     import curses
 
     if not lines or not sys.stdout.isatty():
@@ -405,6 +412,7 @@ def _menu_input_draw(stdscr, prompt: str) -> str:
 
 
 def menu_input(prompt: str) -> str:
+    """Single-line input using the active TUI or a one-off curses/Rich prompt."""
     import curses
 
     if _curses_main_window is not None:
@@ -422,6 +430,7 @@ def menu_input(prompt: str) -> str:
 
 
 def prompt_line(prompt: str) -> str:
+    """Read one line from stdin with optional Rich styling."""
     if _RICH and _CONSOLE and _action_output_lines is None:
         return _CONSOLE.input(f"[bold cyan]{prompt}[/] ").strip()
     sys.stdout.write(prompt)
@@ -430,6 +439,7 @@ def prompt_line(prompt: str) -> str:
 
 
 def banner() -> None:
+    """Print the mindos header (respects action sink and Rich availability)."""
     title = "mindos"
     subtitle = "local context · gmail · notes"
     if _action_output_lines is not None:
@@ -452,6 +462,7 @@ def banner() -> None:
 
 
 def step(label: str, detail: str = "", *, ok: bool | None = None) -> None:
+    """Status line with optional pass/fail marker (sync/status style output)."""
     if _action_output_lines is not None:
         mark = "✓" if ok is True else "✗" if ok is False else "·"
         extra = f"  {detail}" if detail else ""
@@ -490,6 +501,7 @@ def think_status(text: str) -> None:
 
 
 def note(text: str) -> None:
+    """User-visible message (plain or panel); buffered during menu actions."""
     if _action_output_lines is not None:
         for line in text.splitlines() or [text]:
             _append_to_action_sink(line)
@@ -515,6 +527,7 @@ def note_md(text: str) -> None:
 
 
 def error(text: str) -> None:
+    """Error line to stderr or the action sink."""
     if _action_output_lines is not None:
         _append_to_action_sink(f"error: {text}")
         return
@@ -973,6 +986,7 @@ def run_interactive(
 
 
 def _run_interactive_text_fallback(subtitle: str, handler) -> int:
+    """Menu loop without curses (non-TTY or curses failure)."""
     menu_subtitle = subtitle
     while True:
         try:
@@ -2458,6 +2472,7 @@ def _chat_conversation_loop(
 
 
 def prompt() -> str:
+    """Legacy one-line ``mindos ›`` prompt for non-menu callers."""
     if _RICH and _CONSOLE:
         return _CONSOLE.input("[bold cyan]mindos[/] [dim]›[/] ").strip()
     sys.stdout.write("mindos › ")

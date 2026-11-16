@@ -1,3 +1,5 @@
+"""``mindos status``: connectivity, counts, and feature flags."""
+
 from __future__ import annotations
 
 import asyncio
@@ -99,6 +101,7 @@ async def _status_async() -> int:
 
 
 def cmd_status() -> int:
+    """Print health summary; return 0 on success, 1 if Postgres is unreachable."""
     from cli.async_util import run_async
 
     return run_async(_status_async())

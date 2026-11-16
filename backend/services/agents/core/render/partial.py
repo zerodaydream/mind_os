@@ -8,6 +8,7 @@ PartialFn = Callable[..., None]
 
 
 def emit_partial(cb: PartialFn | None, text: str, *, phase: str = "answer") -> None:
+    """Call streaming callback with optional think vs answer phase."""
     if cb is None:
         return
     try:

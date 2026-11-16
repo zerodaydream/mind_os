@@ -1,3 +1,5 @@
+"""HTTP agent run endpoint."""
+
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -24,6 +26,7 @@ async def agents_run(
     session: AsyncSession = Depends(db_session),
     cfg: Settings = Depends(app_settings),
 ):
+    """POST /agents/run — pipeline wrapper with engine metadata."""
     sid = None
     if body.session_id:
         try:

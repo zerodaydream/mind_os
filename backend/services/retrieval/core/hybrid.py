@@ -1,21 +1,27 @@
+"""Combine keyword search and embedding similarity for artifact ranking."""
+
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.common.config_loader.settings import Settings
 from backend.services.retrieval.core.embed import embed_texts
-from backend.services.retrieval.core.search import search_artifacts_fts
+from backend.services.retrieval.core.search import search_artifacts_by_keyword
+
+_HYBRID_KEYWORD_WEIGHT = 0.35
+_HYBRID_VECTOR_WEIGHT = 0.65
 
 
-def _merge_hits(fts: list[dict], vector: list[dict], *, limit: int) -> list[dict]:
+def _merge_hits(keyword: list[dict], vector: list[dict], *, limit: int) -> list[dict]:
+    """Merge keyword search and vector search results."""
     by_id: dict[str, dict] = {}
-    max_fts = max((float(r["rank"]) for r in fts), default=0.0) or 1.0
-    for r in fts:
+    max_keyword = max((float(r["rank"]) for r in keyword), default=0.0) or 1.0
+    for r in keyword:
         aid = r["artifact_id"]
         by_id[aid] = {
             "artifact_id": aid,
             "title": r.get("title"),
             "source": r.get("source"),
-            "fts_rank": float(r["rank"]),
+            "keyword_rank": float(r["rank"]),
             "vec_rank": 0.0,
         }
     for r in vector:
@@ -26,14 +32,17 @@ def _merge_hits(fts: list[dict], vector: list[dict], *, limit: int) -> list[dict
                 "artifact_id": aid,
                 "title": r.get("title"),
                 "source": r.get("source"),
-                "fts_rank": 0.0,
+                "keyword_rank": 0.0,
                 "vec_rank": float(r["rank"]),
             }
         else:
             row["vec_rank"] = max(row["vec_rank"], float(r["rank"]))
     out: list[dict] = []
     for row in by_id.values():
-        score = 0.5 * (row["fts_rank"] / max_fts) + 0.5 * row["vec_rank"]
+        score = (
+            _HYBRID_KEYWORD_WEIGHT * (row["keyword_rank"] / max_keyword)
+            + _HYBRID_VECTOR_WEIGHT * row["vec_rank"]
+        )
         out.append({**row, "rank": score})
     out.sort(key=lambda x: x["rank"], reverse=True)
     return out[:limit]
@@ -48,6 +57,7 @@ async def _search_artifacts_vector(
     limit: int,
     source: str | None = None,
 ) -> list[dict]:
+    """Search artifacts using vector similarity."""
     vec = "[" + ",".join(str(float(x)) for x in query_vec) + "]"
     src_clause = " AND a.source = :src" if source else ""
     sql = text(
@@ -87,13 +97,14 @@ async def hybrid_search_artifacts(
     limit: int = 20,
     source: str | None = None,
 ) -> list[dict]:
-    fts = await search_artifacts_fts(
+    """Hybrid search: keyword (35%) plus vector similarity (65%) when embeddings work."""
+    keyword_hits = await search_artifacts_by_keyword(
         session, user_id=user_id, query=query, limit=limit, source=source
     )
     try:
         qvec = embed_texts([query], settings.embedding_model)[0]
     except RuntimeError:
-        return fts
+        return keyword_hits
     vector = await _search_artifacts_vector(
         session,
         user_id=user_id,
@@ -103,5 +114,5 @@ async def hybrid_search_artifacts(
         source=source,
     )
     if not vector:
-        return fts
-    return _merge_hits(fts, vector, limit=limit)
+        return keyword_hits
+    return _merge_hits(keyword_hits, vector, limit=limit)

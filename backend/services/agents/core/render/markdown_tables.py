@@ -8,10 +8,12 @@ _PLACEHOLDER = re.compile(r"\*\[(Subject|Job|Description|Summary)[^\]]*\]\*", re
 
 
 def _is_table_line(line: str) -> bool:
+    """True when a line looks like a markdown table row."""
     return line.strip().count("|") >= 2
 
 
 def _is_separator_line(line: str) -> bool:
+    """True for markdown header separator rows."""
     t = line.strip()
     if not t or not _is_table_line(t):
         return False
@@ -26,6 +28,7 @@ def _is_separator_line(line: str) -> bool:
 
 
 def _split_cells(line: str) -> list[str]:
+    """Split a pipe table row into cell strings."""
     s = line.strip()
     if s.startswith("|"):
         s = s[1:]
@@ -35,11 +38,13 @@ def _split_cells(line: str) -> list[str]:
 
 
 def _placeholder_row(cells: list[str]) -> bool:
+    """True when row is LLM placeholder tokens only."""
     joined = " | ".join(cells)
     return bool(_PLACEHOLDER.search(joined)) or "snippet]*" in joined.lower()
 
 
 def _format_table(rows: list[list[str]]) -> list[str]:
+    """Render rows as aligned markdown table lines."""
     ncol = max(len(r) for r in rows)
     rows = [r + [""] * (ncol - len(r)) for r in rows]
     lines = [
@@ -68,12 +73,14 @@ def table_has_body_rows(text: str) -> bool:
 
 
 def answer_has_empty_table_shell(text: str) -> bool:
+    """True when answer has table headers but no body rows."""
     if not any(_is_table_line(ln) for ln in text.splitlines()):
         return False
     return not table_has_body_rows(text)
 
 
 def gmail_rows_markdown_table(rows: list[dict], *, limit: int = 10) -> str:
+    """Markdown table for gmail_ctx dict rows."""
     from backend.services.agents.core.render.mail_display import format_mail_display_when
 
     data = [
@@ -95,6 +102,7 @@ def gmail_rows_markdown_table(rows: list[dict], *, limit: int = 10) -> str:
 
 
 def normalize_markdown_tables(text: str) -> str:
+    """Fix placeholder and broken tables in LLM markdown."""
     lines = text.splitlines()
     out: list[str] = []
     i = 0

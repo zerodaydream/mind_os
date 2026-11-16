@@ -18,6 +18,7 @@ _TITLE_PROMPT = (
 
 
 def display_session_title(title: str | None) -> str:
+    """UI label; map empty/new chat to ``New Chat``."""
     t = " ".join((title or "").split())
     if not t or t.lower() == "new chat":
         return "New Chat"
@@ -25,6 +26,7 @@ def display_session_title(title: str | None) -> str:
 
 
 def needs_session_title(title: str | None) -> bool:
+    """True when title is still the default placeholder."""
     t = (title or "").strip().lower()
     return not t or t == "new chat"
 
@@ -37,6 +39,7 @@ async def generate_session_title(
     *,
     on_partial: Callable[..., None] | None = None,
 ) -> str:
+    """LLM title from first message; fallback to truncated text."""
     fallback = _title_from(message)
     if gateway is None or gateway.mode == LlmMode.DEGRADED:
         chat.title = fallback

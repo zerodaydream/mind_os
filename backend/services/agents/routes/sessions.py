@@ -1,3 +1,5 @@
+"""HTTP session delete endpoint."""
+
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -18,6 +20,7 @@ async def delete_chat_session(
     session: AsyncSession = Depends(db_session),
     cfg: Settings = Depends(app_settings),
 ):
+    """DELETE /chat/sessions/{id} for the default user."""
     if not request.app.state.config.is_enabled("agents"):
         raise HTTPException(status_code=503, detail="agents disabled in config.json")
     user = await ensure_default_user(session, cfg)

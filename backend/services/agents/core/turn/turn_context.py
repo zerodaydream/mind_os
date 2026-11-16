@@ -89,11 +89,13 @@ _COMMITMENT_WORDS = (
 
 
 def wants_commitment_context(message: str) -> bool:
+    """True when message asks about todos or commitments."""
     lower = message.lower()
     return any(w in lower for w in _COMMITMENT_WORDS)
 
 
 def _mail_recipient_needle(message: str) -> str | None:
+    """Parse 'sent … to X' recipient filter from natural language."""
     m = re.search(r"\bsent\s+(?:\w+\s+)*to\s+([a-z0-9][a-z0-9 .@'-]{1,72})", message.lower())
     if not m:
         return None
@@ -101,6 +103,7 @@ def _mail_recipient_needle(message: str) -> str | None:
 
 
 def wants_mail_context(message: str, source: str | None) -> bool:
+    """Whether to load Gmail rows for this turn."""
     if source == "gmail":
         return True
     lower = message.lower()
@@ -113,6 +116,8 @@ def wants_mail_context(message: str, source: str | None) -> bool:
 
 @dataclass
 class TurnContext:
+    """Retrieval and mail context assembled once per turn."""
+
     message: str
     results: list[dict] = field(default_factory=list)
     sources: list[dict] = field(default_factory=list)
@@ -126,6 +131,7 @@ class TurnContext:
 
 
 def preflight_prompt_block(actions: list[str]) -> str:
+    """System text listing preflight steps already done."""
     if not actions:
         return ""
     body = "\n".join(f"- {a}" for a in actions)
@@ -136,6 +142,7 @@ def preflight_prompt_block(actions: list[str]) -> str:
 
 
 def should_refresh_mail_index(message: str, ctx: TurnContext, *, source: str | None) -> bool:
+    """Whether to sync Gmail before answering."""
     if not wants_mail_context(message, source):
         return False
     lower = message.lower()
@@ -147,6 +154,7 @@ def should_refresh_mail_index(message: str, ctx: TurnContext, *, source: str | N
 
 
 async def _open_commitment_summaries(session: AsyncSession, user_id) -> list[str]:
+    """Open commitment summaries from Postgres."""
     rows = await session.execute(
         select(Commitment.summary)
         .where(Commitment.user_id == user_id, Commitment.status == "open")
@@ -165,6 +173,7 @@ async def _ingested_gmail(
     to_needle: str | None = None,
     sent_only: bool = False,
 ) -> list[dict]:
+    """Query ingested Gmail artifacts for context tables."""
     clauses = ["a.user_id = :uid", "a.source = 'gmail'"]
     params: dict = {"uid": user_id, "lim": limit}
     if artifact_ids:
@@ -218,6 +227,7 @@ async def _ingested_gmail(
 
 
 async def _approved_memories(session: AsyncSession, user_id) -> list[str]:
+    """Approved memory strings for the user."""
     rows = await session.execute(
         select(Memory.kind, Memory.content)
         .where(Memory.user_id == user_id, Memory.approved.is_(True))
@@ -396,6 +406,7 @@ async def _announce_mail_refresh(
 
 
 def format_gmail_sync_thinking(stats: dict, *, processed: int | None) -> str:
+    """Markdown table stats after Gmail sync."""
     ingested = int(stats.get("ingested") or 0)
     skipped = int(stats.get("skipped") or 0)
     scanned = int(stats.get("scanned") or 0)

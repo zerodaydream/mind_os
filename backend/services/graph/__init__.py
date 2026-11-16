@@ -1,3 +1,5 @@
+"""LangGraph / deep agents integration (lazy plugin export)."""
+
 __all__ = ["plugin"]
 
 

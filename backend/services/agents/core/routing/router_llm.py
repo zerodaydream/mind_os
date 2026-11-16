@@ -33,6 +33,7 @@ _CONTEXTIVE_MAX_CHARS = 120
 
 
 def _format_history(history: list[dict] | None, *, max_turns: int | None = None) -> str:
+    """Compact transcript for router prompts."""
     if not history:
         return ""
     limit = max_turns if max_turns is not None else CHAT_HISTORY_TURNS
@@ -48,6 +49,7 @@ def _format_history(history: list[dict] | None, *, max_turns: int | None = None)
 
 
 def needs_llm_refine(message: str, intent: Intent) -> bool:
+    """True when converse intent needs LLM disambiguation."""
     if intent != "converse":
         return False
     lower = message.lower()
@@ -61,6 +63,7 @@ def needs_llm_refine(message: str, intent: Intent) -> bool:
 
 
 def _looks_like_thread_continuation(message: str) -> bool:
+    """True for short confirmations (yes, ok, …)."""
     lower = (message or "").strip().lower()
     if not lower:
         return False
@@ -72,6 +75,7 @@ def _looks_like_thread_continuation(message: str) -> bool:
 
 
 def thread_pending_execute(history: list[dict] | None) -> bool:
+    """True if recent turns were plan or execute."""
     if not history:
         return False
     for entry in history[-10:]:
@@ -90,6 +94,7 @@ def thread_pending_execute(history: list[dict] | None) -> bool:
 
 
 def compact_thread_task(message: str, history: list[dict] | None) -> str:
+    """Merge recent thread into one TASK string for the router."""
     lines: list[str] = []
     for entry in (history or [])[-8:]:
         content = (entry.get("content") or "").strip()
@@ -102,6 +107,7 @@ def compact_thread_task(message: str, history: list[dict] | None) -> str:
 
 
 def needs_turn_routing(message: str, intent: Intent, history: list[dict] | None) -> bool:
+    """Whether to call the LLM router for intent+task."""
     if needs_llm_refine(message, intent):
         return True
     if not history:
@@ -114,6 +120,7 @@ def needs_turn_routing(message: str, intent: Intent, history: list[dict] | None)
 
 
 def _parse_intent_line(text: str) -> Intent | None:
+    """Parse INTENT line from router model output."""
     line = (text or "").strip().splitlines()[0].lower() if text else ""
     for candidate in ("execute", "plan", "converse"):
         if candidate in line:
@@ -122,6 +129,7 @@ def _parse_intent_line(text: str) -> Intent | None:
 
 
 def _parse_turn_routing(text: str, fallback_message: str) -> tuple[Intent, str] | None:
+    """Parse INTENT and TASK lines from router output."""
     intent = _parse_intent_line(text)
     if intent is None:
         return None
@@ -136,6 +144,7 @@ def _parse_turn_routing(text: str, fallback_message: str) -> tuple[Intent, str] 
 
 
 async def refine_intent(gateway, message: str) -> Intent | None:
+    """LLM-only intent when keyword classify is insufficient."""
     routed = await route_turn(gateway, message, None)
     return routed[0] if routed else None
 
@@ -145,6 +154,7 @@ async def route_turn(
     message: str,
     history: list[dict] | None,
 ) -> tuple[Intent, str] | None:
+    """LLM classify latest message; return intent and task or None when offline."""
     if gateway is None or gateway.mode == LlmMode.DEGRADED:
         return None
     hist = _format_history(history)

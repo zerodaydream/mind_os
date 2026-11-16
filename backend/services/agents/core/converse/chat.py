@@ -1,3 +1,5 @@
+"""Converse/plan synth: LLM answers over prefetched TurnContext."""
+
 from collections.abc import Callable
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -32,6 +34,7 @@ _CONVERSE_SYSTEM = (
 
 
 def _looks_cut_off(text: str) -> bool:
+    """Heuristic: streamed synth answer ended mid-sentence."""
     t = text.rstrip()
     if len(t) < 24:
         return False
@@ -51,6 +54,7 @@ async def _synth_stream(
     *,
     on_partial: Callable[[str], None] | None = None,
 ) -> str:
+    """Stream synth completion chunks via gateway."""
     parts: list[str] = []
     async for chunk in gateway.stream(
         prompt, task=LlmTask.SYNTH, max_output_tokens=SYNTH_MAX_OUTPUT_TOKENS
@@ -61,6 +65,7 @@ async def _synth_stream(
 
 
 async def _finish_synth_answer(gateway, answer: str) -> str:
+    """Optionally continue a truncated synth answer."""
     if not _looks_cut_off(answer):
         return answer
     try:
@@ -79,6 +84,7 @@ async def _finish_synth_answer(gateway, answer: str) -> str:
 
 
 def _format_history(history: list[dict] | None) -> str:
+    """Format recent turns for synth prompts."""
     if not history:
         return ""
     lines: list[str] = []
@@ -93,6 +99,7 @@ def _format_history(history: list[dict] | None) -> str:
 
 
 def _ensure_table_rows(answer: str, ctx: TurnContext) -> str:
+    """Backfill empty markdown tables from gmail_ctx."""
     if not answer_has_empty_table_shell(answer) or not ctx.gmail_ctx:
         return answer
     built = gmail_rows_markdown_table(ctx.gmail_ctx)
@@ -102,6 +109,7 @@ def _ensure_table_rows(answer: str, ctx: TurnContext) -> str:
 
 
 def _fallback_answer(ctx: TurnContext) -> str:
+    """Retrieval-only answer when LLM is degraded."""
     lines: list[str] = []
     if ctx.commitments:
         lines.append("Open commitments:")

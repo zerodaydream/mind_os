@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 
 
 def format_mail_display_when(raw: str | None) -> str:
+    """Friendly local timestamp for mail_at ISO strings."""
     if not raw or not str(raw).strip():
         return "?"
     text = str(raw).strip()

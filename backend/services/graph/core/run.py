@@ -1,3 +1,5 @@
+"""Expose handle_turn to HTTP with installed engine metadata."""
+
 from backend.services.agents.core.turn.orchestrate import handle_turn
 from backend.services.graph.core.deep_agent import deepagents_available
 from backend.services.graph.core.engine import langgraph_available
@@ -7,6 +9,7 @@ from backend.services.integrations.core.calendar.timezone import detect_client_i
 async def run_agent_pipeline(
     session, user, settings, gateway, prompt: str, *, session_id=None
 ) -> dict:
+    """Run handle_turn and attach which agent engine extras are installed."""
     out = await handle_turn(
         session,
         user,

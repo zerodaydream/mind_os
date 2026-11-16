@@ -1,3 +1,5 @@
+"""Chat orchestration, routing, and HTTP routes (lazy plugin export)."""
+
 __all__ = ["plugin"]
 
 

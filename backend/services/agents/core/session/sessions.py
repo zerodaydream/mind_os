@@ -15,6 +15,7 @@ _TITLE_MAX = 60
 
 
 def _title_from(message: str) -> str:
+    """Fallback session title from first message (truncated)."""
     text = " ".join(message.strip().split())
     if len(text) <= _TITLE_MAX:
         return text or "New chat"
@@ -22,6 +23,7 @@ def _title_from(message: str) -> str:
 
 
 async def create_session(session: AsyncSession, *, user_id: uuid.UUID) -> ChatSession:
+    """Insert a new ChatSession row for the user."""
     row = ChatSession(user_id=user_id, title="New chat", thread_id=uuid.uuid4())
     session.add(row)
     await session.flush()
@@ -31,6 +33,7 @@ async def create_session(session: AsyncSession, *, user_id: uuid.UUID) -> ChatSe
 async def get_session(
     session: AsyncSession, *, session_id: uuid.UUID, user_id: uuid.UUID
 ) -> ChatSession | None:
+    """Load session with messages; None if not owned by user."""
     row = await session.execute(
         select(ChatSession)
         .where(ChatSession.id == session_id, ChatSession.user_id == user_id)
@@ -108,6 +111,7 @@ async def recent_messages(
     rows = await session.execute(
         select(ChatMessage)
         .where(ChatMessage.session_id == session_id)
+    """Last N messages as role/content dicts (oldest first)."""
         .order_by(ChatMessage.created_at.desc())
         .limit(limit)
     )

@@ -1,3 +1,5 @@
+"""Save user memories extracted from processed artifacts."""
+
 import uuid
 
 from sqlalchemy import select
@@ -6,13 +8,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.common.database.models import Memory
 
 
-async def upsert_memories_from_artifact(
+async def add_new_memories_from_artifact(
     session: AsyncSession,
     *,
     user_id: uuid.UUID,
     artifact_id: uuid.UUID,
     drafts: list[dict],
 ) -> int:
+    """Insert new approved memories from drafts; skip ones that already exist (same kind + text)."""
     if not drafts:
         return 0
     kinds = {d["kind"] for d in drafts}

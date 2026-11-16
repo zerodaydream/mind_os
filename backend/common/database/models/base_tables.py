@@ -22,6 +22,7 @@ from backend.common.database.base import Base
 
 
 class User(Base):
+    """Table for users."""
     __tablename__ = "users"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -31,6 +32,7 @@ class User(Base):
 
 
 class IntegrationAccount(Base):
+    """Table for integration accounts."""
     __tablename__ = "integration_accounts"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -45,6 +47,7 @@ class IntegrationAccount(Base):
 
 
 class Artifact(Base):
+    """Table for artifacts."""
     __tablename__ = "artifacts"
     __table_args__ = (UniqueConstraint("user_id", "source", "external_id"),)
 
@@ -64,6 +67,7 @@ class Artifact(Base):
 
 
 class ArtifactChunk(Base):
+    """Table for artifact chunks."""
     __tablename__ = "artifact_chunks"
     __table_args__ = (UniqueConstraint("artifact_id", "ord"),)
 
@@ -79,6 +83,7 @@ class ArtifactChunk(Base):
 
 
 class ChunkEmbedding(Base):
+    """Table for chunk embeddings."""
     __tablename__ = "chunk_embeddings"
 
     chunk_id: Mapped[uuid.UUID] = mapped_column(
@@ -92,6 +97,7 @@ class ChunkEmbedding(Base):
 
 
 class Commitment(Base):
+    """Table for commitments."""
     __tablename__ = "commitments"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -108,6 +114,7 @@ class Commitment(Base):
 
 
 class Memory(Base):
+    """Table for memories."""
     __tablename__ = "memories"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -123,6 +130,7 @@ class Memory(Base):
 
 
 class Tension(Base):
+    """Table for tensions."""
     __tablename__ = "tensions"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -137,6 +145,7 @@ class Tension(Base):
 
 
 class ChatSession(Base):
+    """Table for chat sessions."""
     __tablename__ = "chat_sessions"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -154,6 +163,7 @@ class ChatSession(Base):
 
 
 class ChatMessage(Base):
+    """Table for chat messages."""
     __tablename__ = "chat_messages"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -169,7 +179,8 @@ class ChatMessage(Base):
     session: Mapped[ChatSession] = relationship(back_populates="messages")
 
 
-class OutboxEvent(Base):
+class OutboxEvent(Base):    
+    """Table for outbox events."""
     __tablename__ = "outbox_events"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)

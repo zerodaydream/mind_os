@@ -1,3 +1,5 @@
+"""Gmail ingest and optional outbox processing for ``mindos sync``."""
+
 from __future__ import annotations
 
 from cli import term
@@ -22,6 +24,7 @@ async def _sync_gmail() -> dict:
 
 
 async def run_sync(*, gmail_only: bool, process: bool) -> int:
+    """Run configured ingest; optionally drain the worker outbox. Exit code 0/1."""
     if not get_config().is_enabled("integrations"):
         term.error("integrations disabled in backend/config.json")
         return 1

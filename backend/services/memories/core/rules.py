@@ -8,6 +8,7 @@ _KINDS = (
 
 
 def extract_memory_rules(text: str) -> list[dict]:
+    """Extract memory rules from text."""
     stripped = text.strip()
     if not stripped:
         return []
