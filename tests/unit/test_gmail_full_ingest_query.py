@@ -6,3 +6,5 @@ def test_full_ingest_query_excludes_promotions_and_unsubscribe() -> None:
     assert "promotions" in q
     assert "unsubscribe" in q
     assert "spam" in q
+    assert "has:attachment" in q
+    assert "from:me" not in q

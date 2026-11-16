@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.common.config_loader.settings import Settings
 from backend.common.database.models import Artifact, ArtifactChunk, User
-from backend.common.database.outbox import enqueue
+from backend.common.database.outbox import enqueue_artifact_process
 from backend.services.ingest.core.chunker import chunk_text
 
 
@@ -57,13 +57,19 @@ async def ingest_manual_note(
     await session.flush()
 
     version = settings.chunker_version
-    for ord_, chunk_body in chunk_text(body, version=version):
+    for ord_, chunk_body in chunk_text(
+        body, version=version, embedding_model=settings.embedding_model
+    ):
+        from backend.services.retrieval.core.embed import embed_token_count
+
         session.add(
             ArtifactChunk(
                 artifact_id=artifact.id,
                 ord=ord_,
                 text=chunk_body,
-                token_count=len(chunk_body.split()),
+                token_count=embed_token_count(
+                    chunk_body, model_id=settings.embedding_model, is_query=False
+                ),
                 chunker_version=version,
             )
         )
@@ -71,6 +77,6 @@ async def ingest_manual_note(
         text("UPDATE artifacts SET tsv = to_tsvector('english', :body) WHERE id = :id"),
         {"body": body, "id": artifact.id},
     )
-    await enqueue(session, "artifact.process", {"artifact_id": str(artifact.id)})
+    await enqueue_artifact_process(session, str(artifact.id))
     await session.flush()
     return artifact

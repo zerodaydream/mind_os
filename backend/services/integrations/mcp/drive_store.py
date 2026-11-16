@@ -224,12 +224,8 @@ async def _drive_mcp_upload(*, name: str, mime_type: str, data: bytes) -> str:
 
 
 async def drive_mcp_upload_bytes(*, name: str, mime_type: str, data: bytes) -> str:
-    if len(data) > _MCP_UPLOAD_MAX_BYTES:
-        return await _drive_rest_upload(name=name, mime_type=mime_type, data=data)
-    try:
-        return await _drive_mcp_upload(name=name, mime_type=mime_type, data=data)
-    except Exception:
-        return await _drive_rest_upload(name=name, mime_type=mime_type, data=data)
+    # shortcut: MCP stdio upload is slow; REST uses the same OAuth tokens
+    return await _drive_rest_upload(name=name, mime_type=mime_type, data=data)
 
 
 async def drive_mcp_download_bytes(file_id: str) -> bytes:

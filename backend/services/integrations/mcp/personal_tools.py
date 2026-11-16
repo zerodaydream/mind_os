@@ -79,7 +79,9 @@ def build_personal_tools(
         lines: list[str] = []
         for h in hits:
             title = h.get("title") or h["artifact_id"]
-            preview = await _chunk_preview(session, h["artifact_id"])
+            preview = (h.get("snippet") or "").strip().replace("\n", " ")
+            if not preview:
+                preview = await _chunk_preview(session, h["artifact_id"])
             head = f"- [{h.get('source')}] {title} (score {h.get('rank', 0):.3f})"
             lines.append(f"{head}\n  {preview}" if preview else head)
         return "\n".join(lines)

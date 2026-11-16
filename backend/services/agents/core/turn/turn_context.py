@@ -271,10 +271,13 @@ def format_context_text(
         ctx_lines.extend(f"- {s}" for s in commitments)
     if results:
         ctx_lines.append("Search hits:")
-        ctx_lines.extend(
-            f"- [{h.get('source')}] {h.get('title') or h['artifact_id']}"
-            for h in results[:PREFETCH_CTX_ARTIFACTS]
-        )
+        for h in results[:PREFETCH_CTX_ARTIFACTS]:
+            head = f"- [{h.get('source')}] {h.get('title') or h['artifact_id']}"
+            snip = (h.get("snippet") or "").strip().replace("\n", " ")
+            if snip:
+                ctx_lines.append(f"{head}\n  {clip_text(snip, PREFETCH_MAIL_PREVIEW)}")
+            else:
+                ctx_lines.append(head)
     return "\n".join(ctx_lines) if ctx_lines else "(no retrieval hits)"
 
 

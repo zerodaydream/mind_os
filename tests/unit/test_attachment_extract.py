@@ -20,8 +20,22 @@ pytest.importorskip("docx")
 pytest.importorskip("openpyxl")
 
 
+def test_attachment_kind_html_by_extension() -> None:
+    assert attachment_kind("application/octet-stream", "page.html") == "text"
+    assert attachment_is_extractable("application/octet-stream", "page.html") is True
+
+
+def test_extract_html_attachment_strips_tags() -> None:
+    raw = b"<html><body><p>Hello</p></body></html>"
+    text = extract_attachment_text(raw, mime="application/octet-stream", filename="x.html")
+    assert "Hello" in text
+    assert "<p>" not in text
+
+
 def test_attachment_kind_csv_by_extension() -> None:
     assert attachment_kind("application/octet-stream", "data.CSV") == "csv"
+    assert attachment_kind("application/x-yaml", "docker-compose.yml") == "text"
+    assert attachment_kind("application/octet-stream", "stack.yaml") == "text"
     assert attachment_is_extractable("application/pdf", "x.pdf") is True
     assert attachment_kind("image/jpeg", "scan.jpg") == "image"
     assert attachment_kind("image/heic", "IMG_0001.HEIC") == "image"
@@ -35,7 +49,8 @@ def test_attachment_kind_csv_by_extension() -> None:
 def test_attachment_skip_reason_pdf() -> None:
     assert attachment_skip_reason("application/pdf", 100, "a.pdf") is None
     assert attachment_skip_reason("application/pdf", 100) is None
-    assert attachment_skip_reason("application/zip", 100, "a.zip") == "binary"
+    assert attachment_kind("application/zip", "bundle.zip") == "zip"
+    assert attachment_skip_reason("application/zip", 100, "a.zip") == "zip_skipped"
 
 
 def test_extract_csv() -> None:

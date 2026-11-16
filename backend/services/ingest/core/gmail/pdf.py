@@ -5,7 +5,7 @@ from __future__ import annotations
 from backend.services.ingest.core.gmail.ocr import rapid_ocr_engine, rapid_ocr_lines
 
 _PAGE_MIN_CHARS = 40
-_PDF_OCR_DPI = 300
+_PDF_OCR_DPI = 200
 
 
 def pdf_image_count(doc) -> int:

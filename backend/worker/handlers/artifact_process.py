@@ -12,6 +12,7 @@ from backend.services.retrieval.core.embed import embed_texts
 from backend.services.memories.core.persist import add_new_memories_from_artifact
 from backend.services.memories.core.rules import extract_memory_rules
 from backend.services.tensions.core.detect import run_tension_detection
+from backend.worker.outbox_say import outbox_say
 
 
 async def handle_artifact_process(session: AsyncSession, payload: dict) -> None:
@@ -23,15 +24,18 @@ async def handle_artifact_process(session: AsyncSession, payload: dict) -> None:
     settings = get_settings()
     config = get_config()
     gateway = build_llm_gateway(settings) if config.is_enabled("llm") else None
+    label = (artifact.title or artifact.external_id or str(artifact_id))[:64]
 
     result = await session.execute(
         select(ArtifactChunk).where(ArtifactChunk.artifact_id == artifact_id).order_by(ArtifactChunk.ord)
     )
     chunks = list(result.scalars().all())
     full_text = "\n\n".join(c.text for c in chunks)
+    outbox_say(f"{label} · {len(chunks)} chunks")
 
-    if config.is_enabled("retrieval"):
+    if config.is_enabled("retrieval") and chunks:
         texts = [c.text for c in chunks]
+        outbox_say(f"{label} · embedding ({settings.embedding_model})")
         try:
             vectors = embed_texts(texts, settings.embedding_model)
             for chunk, vector in zip(chunks, vectors, strict=True):
@@ -42,8 +46,9 @@ async def handle_artifact_process(session: AsyncSession, payload: dict) -> None:
                         embedding=vector,
                     )
                 )
-        except RuntimeError:
-            pass
+            outbox_say(f"{label} · {len(vectors)} vectors saved")
+        except RuntimeError as exc:
+            outbox_say(f"{label} · embed skipped: {exc}")
 
     for draft in await extract_commitments(full_text, gateway=gateway):
         session.add(
@@ -69,4 +74,3 @@ async def handle_artifact_process(session: AsyncSession, payload: dict) -> None:
             )
     if config.is_enabled("tensions"):
         await run_tension_detection(session, artifact.user_id)
-    await session.flush()

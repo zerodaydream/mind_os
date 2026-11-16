@@ -14,9 +14,9 @@ from backend.services.integrations.core.gmail.sync import (
     sync_gmail_inbox,
 )
 from backend.worker.bootstrap import bootstrap
-from backend.worker.consumer import drain_outbox
+from cli.outbox import drain_outbox_cli
 
-_GMAIL_ATTACHMENT_PROBE_QUERY = f"{DEFAULT_GMAIL_FULL_INGEST_QUERY} has:attachment"
+_GMAIL_ATTACHMENT_PROBE_QUERY = DEFAULT_GMAIL_FULL_INGEST_QUERY
 
 
 async def run_gmail_full_ingest(*, process: bool, query: str | None, limit: int) -> int:
@@ -83,8 +83,8 @@ async def run_gmail_full_ingest(*, process: bool, query: str | None, limit: int)
             exit_code = 1
 
     if process and exit_code == 0:
-        term.step("Worker", "processing outbox…")
-        n = await drain_outbox()
-        term.step("Artifacts", f"processed {n} event(s)", ok=True)
-
-    return exit_code
+        try:
+            n = await drain_outbox_cli()
+        except Exception:
+            return 1
+        term.step("Outbox", f"done · {n} event(s)", ok=True)

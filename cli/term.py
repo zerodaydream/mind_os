@@ -22,7 +22,7 @@ _curses_session_active = False
 
 _MENU_VALUES = [
     ("chat", "Chat with your indexed context"),
-    ("sync", "Sync filtered Gmail"),
+    ("sync", "Sync new Gmail (full ingest rules)"),
     ("sync:process", "Sync Gmail + process outbox"),
     ("status", "Show DB · Gmail · artifact counts"),
     ("exit", "Exit mindos"),

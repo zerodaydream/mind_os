@@ -50,9 +50,18 @@ def attachment_kind(mime: str, filename: str) -> str | None:
         return "xls"
     if mime == _LEGACY_WORD_MIME or ext == ".doc":
         return "doc"
-    if mime.startswith("text/"):
+    if mime.startswith("text/") or mime == "application/xhtml+xml":
         return "text"
-    if mime in ("application/json", "application/xml"):
+    if mime in ("application/json", "application/xml", "application/x-yaml", "application/yaml") or ext in {
+        ".yml",
+        ".yaml",
+        ".html",
+        ".htm",
+        ".xml",
+        ".json",
+        ".md",
+        ".txt",
+    }:
         return "text"
     if mime in _IMAGE_MIMES or ext in _IMAGE_EXTS:
         return "image"
@@ -60,17 +69,24 @@ def attachment_kind(mime: str, filename: str) -> str | None:
         return "audio"
     if mime.startswith("video/"):
         return "video"
+    if mime in ("application/zip", "application/x-zip-compressed") or ext in {".zip", ".zipx"}:
+        return "zip"
     return None
 
 
 def attachment_is_extractable(mime: str, filename: str) -> bool:
     kind = attachment_kind(mime, filename)
-    return kind is not None and kind not in {"doc"}
+    return kind is not None and kind not in {"doc", "zip"}
 
 
 def attachment_skip_reason(mime: str, size: int, filename: str = "") -> str | None:
     if size > ATTACHMENT_MAX_BYTES:
         return "too_large"
+    kind = attachment_kind(mime, filename)
+    if kind == "doc":
+        return "legacy_doc"
+    if kind == "zip":
+        return "zip_skipped"  # shortcut: recursive unpack later
     if attachment_is_extractable(mime, filename):
         return None
     return "binary"

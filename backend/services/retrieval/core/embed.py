@@ -1,46 +1,67 @@
-import math
+_embedder: object | None = None
+_embedder_model: str | None = None
 
-_google_client: object | None = None
+
+def _quiet_onnx_runtime() -> None:
+    try:
+        import onnxruntime as ort
+
+        ort.set_default_logger_severity(3)  # errors only; ORT CoreML fallback is noisy
+    except ImportError:
+        pass
 
 
-def _normalize(vector: list[float]) -> list[float]:
-    norm = math.sqrt(sum(x * x for x in vector))
-    if norm <= 0:
-        return vector
-    return [x / norm for x in vector]
+def _onnx_providers(model_id: str) -> list[str]:
+    try:
+        import onnxruntime as ort
+    except ImportError:
+        return ["CPUExecutionProvider"]
+    # shortcut: BGE ONNX is fast on CPU; CoreML compile often slower on laptop for these models
+    if "bge" in model_id.lower():
+        return ["CPUExecutionProvider"]
+    avail = set(ort.get_available_providers())
+    if "CoreMLExecutionProvider" in avail:
+        return ["CoreMLExecutionProvider", "CPUExecutionProvider"]
+    return ["CPUExecutionProvider"]
+
+
+def _embed_input(model_id: str, text: str, *, is_query: bool) -> str:
+    mid = model_id.lower()
+    if "bge" in mid and is_query:
+        return f"Represent this sentence for searching relevant passages: {text}"
+    if "nomic" in mid:
+        return f"{'search_query' if is_query else 'search_document'}: {text}"
+    return text
+
+
+def _get_embedder(model_id: str):
+    global _embedder, _embedder_model  # noqa: PLW0603
+    if _embedder is not None and _embedder_model == model_id:
+        return _embedder
+    try:
+        from fastembed import TextEmbedding
+    except ImportError as e:
+        raise RuntimeError("fastembed missing: run uv sync") from e
+    _quiet_onnx_runtime()
+    inst = TextEmbedding(model_name=model_id, providers=_onnx_providers(model_id))
+    _embedder = inst
+    _embedder_model = model_id
+    return inst
+
+
+def embed_token_count(text: str, *, model_id: str, is_query: bool = False) -> int:
+    """Tokenizer-aligned length for the active embedder (chunk sizing)."""
+    if not text:
+        return 0
+    try:
+        model = _get_embedder(model_id)
+        return int(model.token_count(_embed_input(model_id, text, is_query=is_query)))
+    except Exception:
+        return max(1, (len(text) + 3) // 4)
 
 
 def embed_texts(texts: list[str], model_id: str, *, is_query: bool = False) -> list[list[float]]:
-    """Embed texts with the Google Generative AI embedding API."""
-    from google import genai
-    from google.genai import types
-
-    from backend.common.config_loader.settings import get_settings
-    from backend.common.ssl_env import fix_ssl_cert_env
-
-    settings = get_settings()
-    api_key = settings.google_api_key
-    if not api_key.strip():
-        raise RuntimeError("GOOGLE_API_KEY is required for embeddings")
-
-    global _google_client
-    fix_ssl_cert_env()
-    if _google_client is None:
-        _google_client = genai.Client(api_key=api_key)
-    client = _google_client
-    task_type = "RETRIEVAL_QUERY" if is_query else "RETRIEVAL_DOCUMENT"
-    config = types.EmbedContentConfig(
-        task_type=task_type,
-        output_dimensionality=settings.embedding_dimensions,
-    )
-    out: list[list[float]] = []
-    for start in range(0, len(texts), 100):
-        batch = texts[start : start + 100]
-        response = client.models.embed_content(model=model_id, contents=batch, config=config)
-        for emb in response.embeddings or []:
-            values = list(emb.values or [])
-            dim = settings.embedding_dimensions
-            if len(values) != dim:
-                values = values[:dim]
-            out.append(_normalize(values))
-    return out
+    """Local ONNX embeddings via fastembed (no torch / API quota)."""
+    model = _get_embedder(model_id)
+    batch = [_embed_input(model_id, t, is_query=is_query) for t in texts]
+    return [vec.tolist() for vec in model.embed(batch)]

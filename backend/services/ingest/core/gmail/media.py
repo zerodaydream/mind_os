@@ -8,5 +8,5 @@ def extract_media_stub(*, mime: str, filename: str, size: int) -> str:
         f"Media attachment: {filename}\n"
         f"Type: {mime or 'unknown'}\n"
         f"Size: {mib:.2f} MiB\n"
-        f"Note: no transcript; content is stored on Google Drive."
+        f"Note: no transcript (not searchable by content); file on Google Drive."
     )

@@ -35,9 +35,9 @@ class Settings(BaseSettings):
     mindos_default_user_email: str = Field(
         default="local@mindos", validation_alias="MINDOS_DEFAULT_USER_EMAIL"
     )
-    chunker_version: str = Field(default="v1", validation_alias="CHUNKER_VERSION")
+    chunker_version: str = Field(default="v2", validation_alias="CHUNKER_VERSION")
     embedding_model: str = Field(
-        default="gemini-embedding-001",
+        default="BAAI/bge-base-en-v1.5",
         validation_alias="EMBEDDING_MODEL",
     )
     embedding_dimensions: int = Field(default=768, validation_alias="EMBEDDING_DIMENSIONS")

@@ -6,6 +6,23 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.common.database.models import OutboxEvent
 
 
+async def enqueue_artifact_process(session: AsyncSession, artifact_id: str) -> None:
+    """One pending artifact.process job per artifact."""
+    aid = str(artifact_id)
+    exists = await session.execute(
+        select(OutboxEvent.id)
+        .where(
+            OutboxEvent.event_type == "artifact.process",
+            OutboxEvent.status == "pending",
+            OutboxEvent.payload["artifact_id"].as_string() == aid,
+        )
+        .limit(1)
+    )
+    if exists.scalar_one_or_none() is not None:
+        return
+    await enqueue(session, "artifact.process", {"artifact_id": aid})
+
+
 async def enqueue(
     session: AsyncSession,
     event_type: str,

@@ -30,9 +30,11 @@ def extract_attachment_text(raw: bytes, *, mime: str, filename: str) -> str:
         raise AttachmentExtractError("unsupported_type")
     if kind == "doc":
         raise AttachmentExtractError("legacy_doc")
+    if kind == "zip":
+        raise AttachmentExtractError("zip_skipped")
     try:
         if kind == "text":
-            text = text_mod.extract_text_plain(raw)
+            text = text_mod.extract_text_plain(raw, mime=mime, filename=filename)
         elif kind == "pdf":
             text = pdf_mod.extract_pdf(raw)
         elif kind == "docx":

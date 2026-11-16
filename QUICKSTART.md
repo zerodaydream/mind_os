@@ -98,7 +98,7 @@ make teardown    # stop + remove volumes
 
 ## 4. Budget / LLM (when `live`)
 
-Defaults in `.env`: `MINDOS_LLM_DAILY_USD=2.00`, `MINDOS_LLM_MONTHLY_USD=40.00`, `MINDOS_LLM_KILL_SWITCH=0`. Embeddings use **Google** `gemini-embedding-001` via `GOOGLE_API_KEY` (per ingest/search call, cheap at small corpus size).
+Defaults in `.env`: `MINDOS_LLM_DAILY_USD=2.00`, `MINDOS_LLM_MONTHLY_USD=40.00`, `MINDOS_LLM_KILL_SWITCH=0`. Embeddings are **local** (`fastembed` + `BAAI/bge-base-en-v1.5`, 768-dim; override with `EMBEDDING_MODEL`).
 
 ## 5. Troubleshooting
 

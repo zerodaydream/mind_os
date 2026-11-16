@@ -9,7 +9,7 @@ from backend.common.database import lifecycle
 from backend.services.ingest.core.manual import ensure_default_user
 from backend.services.integrations.core.gmail.sync import sync_gmail_inbox
 from backend.worker.bootstrap import bootstrap
-from backend.worker.consumer import drain_outbox
+from cli.outbox import drain_outbox_cli
 
 
 async def _sync_gmail() -> dict:
@@ -34,7 +34,7 @@ async def run_sync(*, gmail_only: bool, process: bool) -> int:
     exit_code = 0
 
     if gmail_only:
-        term.step("Gmail", "filtered job / interview mail + sent")
+        term.step("Gmail", "inbox sync (full ingest rules, new mail since last ingest)")
         try:
             stats = await _sync_gmail()
             term.step(
@@ -62,9 +62,11 @@ async def run_sync(*, gmail_only: bool, process: bool) -> int:
             exit_code = 1
 
     if process and exit_code == 0:
-        term.step("Worker", "processing outbox…")
-        n = await drain_outbox()
-        term.step("Artifacts", f"processed {n} event(s)", ok=True)
+        try:
+            n = await drain_outbox_cli()
+        except Exception:
+            return 1
+        term.step("Outbox", f"done · {n} event(s)", ok=True)
 
     term.note("status · chat — or run bare `mindos` for interactive mode")
     return exit_code

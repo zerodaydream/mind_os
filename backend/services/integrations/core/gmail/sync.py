@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import re
 from datetime import datetime, timedelta, timezone
@@ -7,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.common.config_loader.settings import Settings
 from backend.common.database.models import Artifact, ArtifactChunk, IntegrationAccount, OutboxEvent
-from backend.common.database.outbox import enqueue
+from backend.common.database.outbox import enqueue, enqueue_artifact_process
 from backend.services.ingest.core.manual import ingest_manual_note
 from backend.services.ingest.core.gmail import (
     attachment_drive_name,
@@ -37,7 +38,9 @@ DEFAULT_GMAIL_SYNC_QUERY = (
 )
 
 # Full inbox: promotions tab + marketing with List-Unsubscribe; tune via gmail-ingest --query
-DEFAULT_GMAIL_FULL_INGEST_QUERY = "-category:promotions -label:spam -has:unsubscribe"
+DEFAULT_GMAIL_FULL_INGEST_QUERY = (
+    "-category:promotions -label:spam -has:unsubscribe has:attachment"
+)
 
 _URL = re.compile(r"https?://[^\s<>\"')\]]+", re.I)
 _HREF = re.compile(r"""href\s*=\s*['"]([^'"]+)['"]""", re.I)
@@ -45,7 +48,29 @@ _HREF = re.compile(r"""href\s*=\s*['"]([^'"]+)['"]""", re.I)
 
 def _gmail_list_query(settings: Settings) -> str:
     raw = (settings.gmail_sync_query or "").strip()
-    return raw or DEFAULT_GMAIL_SYNC_QUERY
+    return raw or DEFAULT_GMAIL_FULL_INGEST_QUERY
+
+
+def _gmail_after_clause(latest: datetime | None) -> str:
+    if latest is None:
+        return ""
+    day = latest.astimezone(timezone.utc).date()
+    return f"after:{day.year}/{day.month}/{day.day}"
+
+
+async def _incremental_sync_query(session: AsyncSession, *, user_id, base: str) -> str:
+    from sqlalchemy import func
+
+    latest = (
+        await session.execute(
+            select(func.max(Artifact.occurred_at)).where(
+                Artifact.user_id == user_id,
+                Artifact.source == "gmail",
+            )
+        )
+    ).scalar()
+    tail = _gmail_after_clause(latest)
+    return f"{base} {tail}".strip() if tail else base
 
 
 def _sync_interval_sec(settings: Settings) -> float:
@@ -62,9 +87,9 @@ def _b64url(data: str) -> str:
 
 
 def _strip_html(html: str) -> str:
-    text = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", html, flags=re.I | re.S)
-    text = re.sub(r"<[^>]+>", " ", text)
-    return re.sub(r"\s+", " ", text).strip()
+    from backend.services.ingest.core.gmail.text_plain import strip_html_markup
+
+    return strip_html_markup(html)
 
 
 def _decode_part(part: dict) -> tuple[str | None, str | None]:
@@ -201,6 +226,63 @@ async def gmail_fetch_attachment_bytes(attachment_record: dict) -> bytes:
     return await drive_mcp_download_bytes(file_id)
 
 
+async def _ingest_gmail_attachment(
+    gmail_get,
+    msg_id: str,
+    spec: dict,
+) -> tuple[dict, str | None]:
+    rec: dict = {
+        "filename": spec["filename"],
+        "mime_type": spec["mime_type"],
+        "size": spec["size"],
+        "ingested": False,
+    }
+    reason = attachment_skip_reason(spec["mime_type"], spec["size"], spec["filename"])
+    if reason:
+        rec["reason"] = reason
+        return rec, None
+    try:
+        resp = await gmail_get(
+            "https://gmail.googleapis.com/gmail/v1/users/me/messages/"
+            f"{msg_id}/attachments/{spec['attachment_id']}"
+        )
+        data_b64 = resp.json().get("data", "")
+        raw = base64.urlsafe_b64decode(data_b64 + "=" * (-len(data_b64) % 4))
+        drive_name = attachment_drive_name(msg_id, spec["filename"])
+        mime = spec["mime_type"]
+        filename = spec["filename"]
+
+        async def _drive_upload() -> tuple[str | None, str | None]:
+            try:
+                file_id = await drive_mcp_upload_bytes(
+                    name=drive_name, mime_type=mime, data=raw
+                )
+                return file_id, None
+            except Exception as exc:
+                return None, type(exc).__name__
+
+        drive_out, extract_out = await asyncio.gather(
+            _drive_upload(),
+            asyncio.to_thread(attachment_ingest_body_part, raw, mime=mime, filename=filename),
+        )
+        file_id, drive_err = drive_out
+        body_part, fail = extract_out
+        if file_id:
+            rec["drive_file_id"] = file_id
+            rec["drive_url"] = attachment_drive_view_url(file_id)
+        elif drive_err:
+            rec["drive_upload_error"] = drive_err
+        if body_part:
+            rec["ingested"] = True
+            return rec, body_part
+        if fail:
+            rec["reason"] = fail
+        return rec, None
+    except Exception as exc:
+        rec["reason"] = f"download_failed:{type(exc).__name__}"
+        return rec, None
+
+
 async def gmail_ingest_extras(
     gmail_get,
     msg_id: str,
@@ -209,62 +291,32 @@ async def gmail_ingest_extras(
     show_attachment_progress: bool = False,
 ) -> tuple[list[str], list[dict], str]:
     links = gmail_collect_links(payload)
-    records: list[dict] = []
-    body_parts: list[str] = []
     if not gdrive_mcp_configured():
         raise ValueError(
             "gdrive MCP not configured — set GDRIVE_MCP_OAUTH_PATH in .env and "
             "npx @ibarcarty/mcp-server-google-drive auth"
         )
     specs = gmail_list_attachment_parts(payload)
-    spec_iter = specs
+    sem = asyncio.Semaphore(2)
+
+    async def _one(spec: dict) -> tuple[dict, str | None]:
+        async with sem:
+            return await _ingest_gmail_attachment(gmail_get, msg_id, spec)
+
+    tasks = [_one(spec) for spec in specs]
     if show_attachment_progress and specs:
-        from tqdm import tqdm
+        from tqdm.asyncio import tqdm_asyncio
 
-        spec_iter = tqdm(specs, desc="attachments", unit="file")
+        pairs = await tqdm_asyncio.gather(*tasks, desc="attachments", unit="file")
+    else:
+        pairs = await asyncio.gather(*tasks)
 
-    for spec in spec_iter:
-        rec: dict = {
-            "filename": spec["filename"],
-            "mime_type": spec["mime_type"],
-            "size": spec["size"],
-            "ingested": False,
-        }
-        reason = attachment_skip_reason(spec["mime_type"], spec["size"], spec["filename"])
-        if reason:
-            rec["reason"] = reason
-            records.append(rec)
-            continue
-        try:
-            resp = await gmail_get(
-                "https://gmail.googleapis.com/gmail/v1/users/me/messages/"
-                f"{msg_id}/attachments/{spec['attachment_id']}"
-            )
-            data_b64 = resp.json().get("data", "")
-            raw = base64.urlsafe_b64decode(data_b64 + "=" * (-len(data_b64) % 4))
-            drive_name = attachment_drive_name(msg_id, spec["filename"])
-            try:
-                file_id = await drive_mcp_upload_bytes(
-                    name=drive_name,
-                    mime_type=spec["mime_type"],
-                    data=raw,
-                )
-                rec["drive_file_id"] = file_id
-                rec["drive_url"] = attachment_drive_view_url(file_id)
-            except Exception as exc:
-                rec["drive_upload_error"] = type(exc).__name__
-            body_part, fail = attachment_ingest_body_part(
-                raw, mime=spec["mime_type"], filename=spec["filename"]
-            )
-            if body_part:
-                body_parts.append(body_part)
-                rec["ingested"] = True
-            elif fail:
-                rec["reason"] = fail
-            records.append(rec)
-        except Exception as exc:
-            rec["reason"] = f"download_failed:{type(exc).__name__}"
-            records.append(rec)
+    records: list[dict] = []
+    body_parts: list[str] = []
+    for rec, body_part in pairs:
+        records.append(rec)
+        if body_part:
+            body_parts.append(body_part)
 
     block = gmail_format_extras_block(links, records, body_parts)
     return links, records, block
@@ -348,7 +400,7 @@ async def _backfill_gmail_artifact(
     ch = chunk.scalar_one_or_none()
     if ch is not None:
         ch.text = _merge_chunk_headers(ch.text or "", header_block)
-    await enqueue(session, "artifact.process", {"artifact_id": str(art.id)})
+    await enqueue_artifact_process(session, str(art.id))
     return True
 
 
@@ -429,6 +481,9 @@ async def sync_gmail_inbox(
         limit = max_messages
         use_cap = True
     list_query = (query or "").strip() or _gmail_list_query(settings)
+    custom_query = bool((query or "").strip() or (settings.gmail_sync_query or "").strip())
+    if not custom_query:
+        list_query = await _incremental_sync_query(session, user_id=user.id, base=list_query)
     result = await session.execute(
         select(IntegrationAccount).where(
             IntegrationAccount.user_id == user.id,
@@ -527,7 +582,7 @@ async def sync_gmail_inbox(
                     gmail_get,
                     msg_id,
                     payload,
-                    show_attachment_progress=use_cap and 0 < limit <= 5,
+                    show_attachment_progress=use_cap and 0 < limit <= 20,
                 )
                 meta_fields, occurred = gmail_artifact_metadata(meta, headers_map)
                 if links:
