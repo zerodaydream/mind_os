@@ -8,6 +8,8 @@ from pathlib import Path
 # Gmail caps attachments at 25 MiB per message (Workspace may differ).
 ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024
 GMAIL_ATTACHMENT_MAX_BYTES = ATTACHMENT_MAX_BYTES
+# Bump when attachment extract, MIME policy, or chunk boundary rules change.
+INGEST_POLICY_VERSION = "2026-11-16"
 
 _CSV_MIMES = frozenset({"text/csv", "application/csv"})
 _XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"

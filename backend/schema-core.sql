@@ -44,10 +44,12 @@ CREATE TABLE artifact_chunks (
     artifact_id     UUID NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,
     ord             INT NOT NULL,
     text            TEXT NOT NULL,
+    text_tsv        TSVECTOR GENERATED ALWAYS AS (to_tsvector('english', coalesce(text, ''))) STORED,
     token_count     INT,
     chunker_version TEXT NOT NULL,
     UNIQUE (artifact_id, ord)
 );
+CREATE INDEX artifact_chunks_text_tsv_idx ON artifact_chunks USING GIN (text_tsv);
 
 CREATE TABLE chunk_embeddings (
     chunk_id        UUID PRIMARY KEY REFERENCES artifact_chunks(id) ON DELETE CASCADE,
@@ -57,6 +59,8 @@ CREATE TABLE chunk_embeddings (
 );
 CREATE INDEX chunk_embeddings_hnsw ON chunk_embeddings
     USING hnsw (embedding vector_cosine_ops);
+
+-- entities / edges: schema reserved; no application writes yet (2026-03).
 
 CREATE TABLE entities (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),

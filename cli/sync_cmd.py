@@ -16,11 +16,31 @@ async def _sync_gmail() -> dict:
     settings = get_settings()
     if lifecycle._session_factory is None:
         raise RuntimeError("database not initialized")
+    merged = {"ingested": 0, "skipped": 0, "scanned": 0, "query": "", "capped": False}
+    page_token: str | None = None
+    resume_after: str | None = None
     async with lifecycle._session_factory() as session:
         user = await ensure_default_user(session, settings)
-        stats = await sync_gmail_inbox(session, user=user, settings=settings)
-        await session.commit()
-        return stats
+        for _ in range(20):
+            stats = await sync_gmail_inbox(
+                session,
+                user=user,
+                settings=settings,
+                page_token=page_token,
+                after_msg_id=resume_after,
+            )
+            for key in ("ingested", "skipped", "scanned"):
+                merged[key] += int(stats.get(key) or 0)
+            merged["query"] = stats.get("query") or merged["query"]
+            merged["capped"] = bool(stats.get("capped"))
+            page_token = stats.get("next_page_token")
+            resume_after = stats.get("resume_after_msg_id")
+            await session.commit()
+            if not merged["capped"]:
+                break
+            if not page_token and not resume_after:
+                break
+        return merged
 
 
 async def run_sync(*, gmail_only: bool, process: bool) -> int:
@@ -47,6 +67,11 @@ async def run_sync(*, gmail_only: bool, process: bool) -> int:
             query = stats.get("query")
             if query:
                 term.note(f"Gmail query: {query}")
+            if stats.get("capped"):
+                term.note(
+                    "More Gmail matches remain; raised cap with another page "
+                    "(or run mindos gmail-ingest --limit 0 for full backfill)."
+                )
         except ValueError as exc:
             term.step("Gmail", str(exc), ok=False)
             exit_code = 1

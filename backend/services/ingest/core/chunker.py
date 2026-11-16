@@ -5,12 +5,19 @@ from backend.common.config_loader.settings import get_settings
 _CHUNK_TOKEN_BUDGET = 508  # bge truncates at 512; leave headroom for tokenizer specials
 _CHUNK_OVERLAP_TOKENS = 40
 _ATTACHMENT_HEAD = "### Attachment:"
+_tok_cache: dict[tuple[str, str], int] = {}
 
 
 def _tok(text: str, model_id: str) -> int:
     from backend.services.retrieval.core.embed import embed_token_count
 
-    return embed_token_count(text, model_id=model_id, is_query=False)
+    key = (model_id, text)
+    hit = _tok_cache.get(key)
+    if hit is not None:
+        return hit
+    count = embed_token_count(text, model_id=model_id, is_query=False)
+    _tok_cache[key] = count
+    return count
 
 
 def _fit_end(text: str, *, start: int, model_id: str) -> int:
@@ -117,6 +124,7 @@ def chunk_text(
     version: str = "v1",
     embedding_model: str | None = None,
 ) -> list[tuple[int, str]]:
+    _tok_cache.clear()
     model_id = embedding_model or get_settings().embedding_model
     ver = (version or "v1").strip().lower()
     if ver == "v2":

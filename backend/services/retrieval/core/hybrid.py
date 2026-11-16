@@ -1,5 +1,7 @@
 """Combine keyword search and embedding similarity at chunk granularity."""
 
+import re
+
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -11,9 +13,23 @@ _HYBRID_KEYWORD_WEIGHT = 0.3
 _HYBRID_VECTOR_WEIGHT = 0.7
 _CANDIDATE_MULT = 4
 _SNIPPET_CHARS = 500
+_WORD = re.compile(r"[a-z0-9]+", re.I)
 
 
-def _merge_chunk_hits(keyword: list[dict], vector: list[dict], *, limit: int) -> list[dict]:
+def _title_rank_boost(query: str, title: str | None) -> float:
+    q_words = {w.lower() for w in _WORD.findall(query) if len(w) >= 3}
+    if not q_words or not title:
+        return 1.0
+    t_words = {w.lower() for w in _WORD.findall(title)}
+    hits = len(q_words & t_words)
+    if hits == 0:
+        return 1.0
+    return 1.0 + min(0.25, 0.08 * hits)
+
+
+def _merge_chunk_hits(
+    keyword: list[dict], vector: list[dict], *, limit: int, query: str = ""
+) -> list[dict]:
     by_id: dict[str, dict] = {}
     max_keyword = max((float(r["rank"]) for r in keyword), default=0.0) or 1.0
     for r in keyword:
@@ -50,6 +66,7 @@ def _merge_chunk_hits(keyword: list[dict], vector: list[dict], *, limit: int) ->
             _HYBRID_KEYWORD_WEIGHT * (row["keyword_rank"] / max_keyword)
             + _HYBRID_VECTOR_WEIGHT * row["vec_rank"]
         )
+        score *= _title_rank_boost(query, row.get("title"))
         out.append({**row, "rank": score})
     out.sort(key=lambda x: x["rank"], reverse=True)
     return out[:limit]
@@ -130,4 +147,4 @@ async def hybrid_search_artifacts(
     )
     if not vector:
         return keyword_hits[:limit]
-    return _merge_chunk_hits(keyword_hits, vector, limit=limit)
+    return _merge_chunk_hits(keyword_hits, vector, limit=limit, query=query)

@@ -473,15 +473,22 @@ async def maybe_refresh_mail_index(
     if ingested > 0:
         think_text = f"{think_text}\n\n_Indexing new mail for search…_"
         emit_partial(on_partial, think_text, phase="think")
-        try:
-            processed = await drain_outbox(max_events=80)
-        except Exception:
-            actions.append("Outbox processing failed — some new mail may not be searchable yet.")
-            processed = -1
-        else:
+    try:
+        total = 0
+        while total < 500:
+            n = await drain_outbox(max_events=80)
+            if n == 0:
+                break
+            total += n
+        processed = total
+    except Exception:
+        actions.append("Outbox processing failed — some new mail may not be searchable yet.")
+        processed = -1
+    else:
+        if processed:
             actions.append(f"Indexed {processed} outbox event(s) for search.")
     stats_block = format_gmail_sync_thinking(
-        stats, processed=processed if ingested > 0 else None
+        stats, processed=processed if processed else None
     )
     think_text = f"{think_text}\n\n{stats_block}"
     emit_partial(on_partial, think_text, phase="think")

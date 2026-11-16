@@ -53,11 +53,8 @@ def embed_token_count(text: str, *, model_id: str, is_query: bool = False) -> in
     """Tokenizer-aligned length for the active embedder (chunk sizing)."""
     if not text:
         return 0
-    try:
-        model = _get_embedder(model_id)
-        return int(model.token_count(_embed_input(model_id, text, is_query=is_query)))
-    except Exception:
-        return max(1, (len(text) + 3) // 4)
+    model = _get_embedder(model_id)
+    return int(model.token_count(_embed_input(model_id, text, is_query=is_query)))
 
 
 def embed_texts(texts: list[str], model_id: str, *, is_query: bool = False) -> list[list[float]]:

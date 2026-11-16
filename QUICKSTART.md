@@ -108,3 +108,5 @@ Defaults in `.env`: `MINDOS_LLM_DAILY_USD=2.00`, `MINDOS_LLM_MONTHLY_USD=40.00`,
 | `role "mindos" does not exist` on migrate | Host `alembic` hit **local** Postgres on 5432, not Docker — use `DATABASE_URL=...@localhost:5433/mindos` (compose maps **5433→5432**) |
 | Port 5432 in use | Default Docker publish is **5433** on the host (see `docker-compose.yml`) |
 | Tests flaky on env | `get_settings()` is cached; tests clear cache in `conftest.py` |
+| Large Gmail backlog | Default `mindos sync` scans up to `GMAIL_SYNC_MAX_MESSAGES` (200) per page batch; it continues pages while more match. Full backfill: `mindos gmail-ingest --limit 0` |
+| Chunk keyword search slow / error `text_tsv` | Run `uv run alembic upgrade head` (migration `20261116_0005`) |

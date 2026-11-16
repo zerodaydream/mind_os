@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import hashlib
 import re
 from datetime import datetime, timedelta, timezone
 import httpx
@@ -9,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.common.config_loader.settings import Settings
 from backend.common.database.models import Artifact, ArtifactChunk, IntegrationAccount, OutboxEvent
 from backend.common.database.outbox import enqueue, enqueue_artifact_process
+from backend.services.ingest.core.gmail.policy import INGEST_POLICY_VERSION
 from backend.services.ingest.core.manual import ingest_manual_note
 from backend.services.ingest.core.gmail import (
     attachment_drive_name,
@@ -28,14 +30,6 @@ from backend.services.integrations.core.google.oauth import (
     refresh_access_token,
 )
 from backend.services.integrations.core.google.token_store import decrypt_tokens, encrypt_tokens
-
-# shortcut: static keywords, tune via GMAIL_SYNC_QUERY in .env for your hiring stack
-DEFAULT_GMAIL_SYNC_QUERY = (
-    "-category:promotions -category:social -label:spam "
-    "(in:sent OR subject:(interview OR application OR applied OR recruiter OR hiring OR offer "
-    'OR screening OR "job application" OR indeed OR linkedin) '
-    "OR from:(indeed.com OR linkedin.com OR greenhouse.io OR lever.co OR workday.com))"
-)
 
 # Full inbox: promotions tab + marketing with List-Unsubscribe; tune via gmail-ingest --query
 DEFAULT_GMAIL_FULL_INGEST_QUERY = (
@@ -348,6 +342,168 @@ def gmail_message_text(payload: dict) -> str:
     return ""
 
 
+def _gmail_batch_start(batch: list[str], after_msg_id: str | None) -> int:
+    if not after_msg_id:
+        return 0
+    try:
+        return batch.index(after_msg_id) + 1
+    except ValueError:
+        return 0
+
+
+async def _gmail_artifact_row(
+    session: AsyncSession, user_id, msg_id: str
+) -> Artifact | None:
+    row = await session.execute(
+        select(Artifact).where(
+            Artifact.user_id == user_id,
+            Artifact.source == "gmail",
+            Artifact.external_id == msg_id,
+        )
+    )
+    return row.scalar_one_or_none()
+
+
+def _gmail_chunk_versions_stale(versions: list[str], settings: Settings) -> bool:
+    if not versions:
+        return True
+    want = settings.chunker_version
+    return any(v != want for v in versions)
+
+
+def _gmail_fast_index_stale(
+    art: Artifact, settings: Settings, chunk_versions: list[str]
+) -> bool:
+    meta = art.metadata_ or {}
+    if meta.get("ingest_policy_version") != INGEST_POLICY_VERSION:
+        return True
+    if _gmail_chunk_versions_stale(chunk_versions, settings):
+        return True
+    atts = meta.get("attachments") or []
+    return any(isinstance(a, dict) and not a.get("ingested") for a in atts)
+
+
+def _gmail_should_verify_body(art: Artifact) -> bool:
+    return bool((art.metadata_ or {}).get("attachments"))
+
+
+async def _fetch_gmail_ingest_payload(
+    gmail_get,
+    msg_id: str,
+    *,
+    show_attachment_progress: bool,
+) -> dict | None:
+    try:
+        meta = (
+            await gmail_get(
+                f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{msg_id}",
+                params={"format": "full"},
+            )
+        ).json()
+    except Exception:
+        return None
+    headers_map = {
+        h["name"]: h["value"] for h in meta.get("payload", {}).get("headers", [])
+    }
+    subject = headers_map.get("Subject", "(no subject)")
+    payload = meta.get("payload", {})
+    body_text = gmail_message_text(payload) or meta.get("snippet", "")
+    links, attachments, extras_block = await gmail_ingest_extras(
+        gmail_get,
+        msg_id,
+        payload,
+        show_attachment_progress=show_attachment_progress,
+    )
+    meta_fields, occurred = gmail_artifact_metadata(meta, headers_map)
+    meta_fields["ingest_policy_version"] = INGEST_POLICY_VERSION
+    if links:
+        meta_fields["links"] = links
+    if attachments:
+        meta_fields["attachments"] = attachments
+    date_line = meta_fields.get("mail_at") or headers_map.get("Date")
+    body = f"{gmail_header_block(headers_map, date_line=date_line)}\n\n{body_text}"
+    if extras_block:
+        body = f"{body}\n\n{extras_block}"
+    return {
+        "subject": subject,
+        "body": body,
+        "meta_fields": meta_fields,
+        "occurred": occurred,
+    }
+
+
+async def _replace_gmail_artifact(
+    session: AsyncSession,
+    *,
+    user,
+    settings: Settings,
+    msg_id: str,
+    payload: dict,
+) -> Artifact:
+    await _delete_gmail_artifact(session, user.id, msg_id)
+    return await ingest_manual_note(
+        session,
+        user=user,
+        title=payload["subject"],
+        body=payload["body"],
+        settings=settings,
+        source="gmail",
+        external_id=msg_id,
+        metadata=payload["meta_fields"],
+        occurred_at=payload["occurred"],
+    )
+
+
+async def _handle_skipped_gmail_message(
+    session: AsyncSession,
+    *,
+    user,
+    settings: Settings,
+    msg_id: str,
+    gmail_get,
+    show_attachment_progress: bool,
+) -> str:
+    """Return ``ingested`` after replace, else ``skipped`` (artifact kept on fetch failure)."""
+    art = await _gmail_artifact_row(session, user.id, msg_id)
+    if art is None:
+        return "skipped"
+    rows = await session.execute(
+        select(ArtifactChunk.chunker_version).where(ArtifactChunk.artifact_id == art.id)
+    )
+    versions = list(rows.scalars().all())
+    fast_stale = _gmail_fast_index_stale(art, settings, versions)
+    if fast_stale or _gmail_should_verify_body(art):
+        bundle = await _fetch_gmail_ingest_payload(
+            gmail_get, msg_id, show_attachment_progress=show_attachment_progress
+        )
+        if bundle is None:
+            return "skipped"
+        new_hash = hashlib.sha256(bundle["body"].encode()).hexdigest()
+        if fast_stale or new_hash != art.content_hash:
+            await _replace_gmail_artifact(
+                session, user=user, settings=settings, msg_id=msg_id, payload=bundle
+            )
+            return "ingested"
+    await _backfill_gmail_artifact(session, user.id, msg_id, gmail_get)
+    return "skipped"
+
+
+async def _delete_gmail_artifact(session: AsyncSession, user_id, msg_id: str) -> bool:
+    row = await session.execute(
+        select(Artifact).where(
+            Artifact.user_id == user_id,
+            Artifact.source == "gmail",
+            Artifact.external_id == msg_id,
+        )
+    )
+    art = row.scalar_one_or_none()
+    if art is None:
+        return False
+    await session.delete(art)
+    await session.flush()
+    return True
+
+
 def _gmail_needs_backfill(art: Artifact, meta: dict) -> bool:
     return (
         "to" not in meta
@@ -470,6 +626,8 @@ async def sync_gmail_inbox(
     settings: Settings,
     max_messages: int | None = None,
     query: str | None = None,
+    page_token: str | None = None,
+    after_msg_id: str | None = None,
 ) -> dict:
     if max_messages is None:
         limit = settings.gmail_sync_max_messages
@@ -523,8 +681,12 @@ async def sync_gmail_inbox(
             resp.raise_for_status()
             return resp
 
-        page_token: str | None = None
+        list_page_token: str | None = page_token
         saw_messages = False
+        capped = False
+        next_page_token: str | None = None
+        resume_after_msg_id: str | None = None
+        list_after_msg_id: str | None = after_msg_id
         while True:
             if use_cap and scanned >= limit:
                 break
@@ -532,8 +694,8 @@ async def sync_gmail_inbox(
             if use_cap:
                 page_size = min(50, limit - scanned)
             params: dict = {"maxResults": page_size, "q": list_query}
-            if page_token:
-                params["pageToken"] = page_token
+            if list_page_token:
+                params["pageToken"] = list_page_token
             listed = await gmail_get(
                 "https://gmail.googleapis.com/gmail/v1/users/me/messages",
                 params=params,
@@ -543,9 +705,19 @@ async def sync_gmail_inbox(
             if not batch:
                 if not saw_messages:
                     await session.flush()
-                    return {"ingested": 0, "skipped": 0, "scanned": 0, "query": list_query}
+                    return {
+                        "ingested": 0,
+                        "skipped": 0,
+                        "scanned": 0,
+                        "query": list_query,
+                        "capped": False,
+                        "next_page_token": None,
+                        "resume_after_msg_id": None,
+                    }
                 break
             saw_messages = True
+            batch = batch[_gmail_batch_start(batch, list_after_msg_id) :]
+            list_after_msg_id = None
 
             known = await session.execute(
                 select(Artifact.external_id).where(
@@ -556,65 +728,63 @@ async def sync_gmail_inbox(
             )
             skip = set(known.scalars().all())
 
+            show_att = use_cap and 0 < limit <= 20
+            last_done_msg_id: str | None = None
             for msg_id in batch:
                 if use_cap and scanned >= limit:
+                    resume_after_msg_id = last_done_msg_id
+                    next_page_token = list_page_token
+                    capped = True
                     break
                 scanned += 1
                 if msg_id in skip:
-                    skipped += 1
-                    await _backfill_gmail_artifact(session, user.id, msg_id, gmail_get)
-                    if message_bar is not None:
-                        message_bar.update(1)
-                        message_bar.set_postfix_str(f"ing={ingested} skip={skipped}")
-                    continue
-
-                meta = (await gmail_get(
-                    f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{msg_id}",
-                    params={"format": "full"},
-                )).json()
-                headers_map = {
-                    h["name"]: h["value"] for h in meta.get("payload", {}).get("headers", [])
-                }
-                subject = headers_map.get("Subject", "(no subject)")
-                payload = meta.get("payload", {})
-                body_text = gmail_message_text(payload) or meta.get("snippet", "")
-                links, attachments, extras_block = await gmail_ingest_extras(
-                    gmail_get,
-                    msg_id,
-                    payload,
-                    show_attachment_progress=use_cap and 0 < limit <= 20,
-                )
-                meta_fields, occurred = gmail_artifact_metadata(meta, headers_map)
-                if links:
-                    meta_fields["links"] = links
-                if attachments:
-                    meta_fields["attachments"] = attachments
-                date_line = meta_fields.get("mail_at") or headers_map.get("Date")
-                body = f"{gmail_header_block(headers_map, date_line=date_line)}\n\n{body_text}"
-                if extras_block:
-                    body = f"{body}\n\n{extras_block}"
-
-                artifact = await ingest_manual_note(
-                    session,
-                    user=user,
-                    title=subject,
-                    body=body,
-                    settings=settings,
-                    source="gmail",
-                    external_id=msg_id,
-                    metadata=meta_fields,
-                    occurred_at=occurred,
-                )
-                await enqueue(session, "artifact.process", {"artifact_id": str(artifact.id)})
-                ingested += 1
+                    outcome = await _handle_skipped_gmail_message(
+                        session,
+                        user=user,
+                        settings=settings,
+                        msg_id=msg_id,
+                        gmail_get=gmail_get,
+                        show_attachment_progress=show_att,
+                    )
+                    if outcome == "ingested":
+                        ingested += 1
+                    else:
+                        skipped += 1
+                else:
+                    bundle = await _fetch_gmail_ingest_payload(
+                        gmail_get,
+                        msg_id,
+                        show_attachment_progress=show_att,
+                    )
+                    if bundle is None:
+                        skipped += 1
+                    else:
+                        await ingest_manual_note(
+                            session,
+                            user=user,
+                            title=bundle["subject"],
+                            body=bundle["body"],
+                            settings=settings,
+                            source="gmail",
+                            external_id=msg_id,
+                            metadata=bundle["meta_fields"],
+                            occurred_at=bundle["occurred"],
+                        )
+                        ingested += 1
+                last_done_msg_id = msg_id
                 if message_bar is not None:
                     message_bar.update(1)
                     message_bar.set_postfix_str(f"ing={ingested} skip={skipped}")
+            else:
+                resume_after_msg_id = None
 
             if use_cap and scanned >= limit:
+                if resume_after_msg_id is None:
+                    next_page_token = page.get("nextPageToken")
+                    capped = bool(next_page_token)
                 break
-            page_token = page.get("nextPageToken")
-            if not page_token:
+            list_page_token = page.get("nextPageToken")
+            if not list_page_token:
                 break
             if not use_cap:
                 await session.commit()
@@ -622,4 +792,12 @@ async def sync_gmail_inbox(
     if message_bar is not None:
         message_bar.close()
     await session.flush()
-    return {"ingested": ingested, "skipped": skipped, "scanned": scanned, "query": list_query}
+    return {
+        "ingested": ingested,
+        "skipped": skipped,
+        "scanned": scanned,
+        "query": list_query,
+        "capped": capped,
+        "next_page_token": next_page_token,
+        "resume_after_msg_id": resume_after_msg_id,
+    }
