@@ -90,7 +90,7 @@ class ChunkEmbedding(Base):
         ForeignKey("artifact_chunks.id", ondelete="CASCADE"), primary_key=True
     )
     embedding_model: Mapped[str] = mapped_column(Text, nullable=False)
-    embedding: Mapped[list[float]] = mapped_column(Vector(384), nullable=False)
+    embedding: Mapped[list[float]] = mapped_column(Vector(768), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     chunk: Mapped[ArtifactChunk] = relationship(back_populates="embedding")

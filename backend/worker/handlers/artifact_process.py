@@ -35,7 +35,7 @@ async def handle_artifact_process(session: AsyncSession, payload: dict) -> None:
         try:
             vectors = embed_texts(texts, settings.embedding_model)
             for chunk, vector in zip(chunks, vectors, strict=True):
-                session.merge(
+                await session.merge(
                     ChunkEmbedding(
                         chunk_id=chunk.id,
                         embedding_model=settings.embedding_model,

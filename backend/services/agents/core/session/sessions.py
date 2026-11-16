@@ -108,10 +108,10 @@ async def delete_session(
 async def recent_messages(
     session: AsyncSession, *, session_id: uuid.UUID, limit: int = 12
 ) -> list[dict]:
+    """Last N messages as role/content dicts (oldest first)."""
     rows = await session.execute(
         select(ChatMessage)
         .where(ChatMessage.session_id == session_id)
-    """Last N messages as role/content dicts (oldest first)."""
         .order_by(ChatMessage.created_at.desc())
         .limit(limit)
     )

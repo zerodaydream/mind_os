@@ -52,7 +52,7 @@ CREATE TABLE artifact_chunks (
 CREATE TABLE chunk_embeddings (
     chunk_id        UUID PRIMARY KEY REFERENCES artifact_chunks(id) ON DELETE CASCADE,
     embedding_model TEXT NOT NULL,
-    embedding       vector(384),   -- bge-small 384-dim
+    embedding       vector(768),
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX chunk_embeddings_hnsw ON chunk_embeddings

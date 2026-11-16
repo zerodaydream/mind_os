@@ -36,7 +36,11 @@ class Settings(BaseSettings):
         default="local@mindos", validation_alias="MINDOS_DEFAULT_USER_EMAIL"
     )
     chunker_version: str = Field(default="v1", validation_alias="CHUNKER_VERSION")
-    embedding_model: str = Field(default="BAAI/bge-small-en-v1.5", validation_alias="EMBEDDING_MODEL")
+    embedding_model: str = Field(
+        default="gemini-embedding-001",
+        validation_alias="EMBEDDING_MODEL",
+    )
+    embedding_dimensions: int = Field(default=768, validation_alias="EMBEDDING_DIMENSIONS")
     google_oauth_client_id: str = Field(default="", validation_alias="GOOGLE_OAUTH_CLIENT_ID")
     google_oauth_client_secret: str = Field(default="", validation_alias="GOOGLE_OAUTH_CLIENT_SECRET")
     google_oauth_redirect_uri: str = Field(

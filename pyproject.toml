@@ -20,6 +20,16 @@ dependencies = [
     "rich>=13.0.0",
     "prompt-toolkit>=3.0.0",
     "langsmith>=0.3.0",
+    "python-docx>=1.1.0",
+    "openpyxl>=3.1.0",
+    "xlrd>=2.0.0",
+    "pymupdf>=2.1",
+    "pymupdf4llm>=2.1",
+    "tqdm>=4.66.0",
+    "rapidocr-onnxruntime>=1.4.4",
+    "langchain-mcp-adapters>=0.3.2",
+    "mcp>=1.30.0",
+    "pillow-heif>=1.8.1",
 ]
 
 [project.optional-dependencies]
@@ -31,7 +41,7 @@ agents = [
     "langchain-mcp-adapters>=0.3.2",
     "mcp>=1.30.0",
 ]
-embed = ["sentence-transformers>=3.0.0"]
+ocr = ["rapidocr-onnxruntime>=1.4.4"]
 llm = [
     "anthropic>=0.40.0",
     "openai>=1.55.0",

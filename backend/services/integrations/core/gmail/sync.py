@@ -1,7 +1,6 @@
 import base64
 import re
 from datetime import datetime, timedelta, timezone
-
 import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,6 +9,19 @@ from backend.common.config_loader.settings import Settings
 from backend.common.database.models import Artifact, ArtifactChunk, IntegrationAccount, OutboxEvent
 from backend.common.database.outbox import enqueue
 from backend.services.ingest.core.manual import ingest_manual_note
+from backend.services.ingest.core.gmail import (
+    attachment_drive_name,
+    attachment_drive_view_url,
+    attachment_ingest_body_part,
+    attachment_skip_reason,
+    gmail_format_extras_block,
+    gmail_list_attachment_parts,
+)
+from backend.services.integrations.mcp.drive_store import (
+    drive_mcp_download_bytes,
+    drive_mcp_upload_bytes,
+    gdrive_mcp_configured,
+)
 from backend.services.integrations.core.google.oauth import (
     access_token_expired,
     refresh_access_token,
@@ -23,6 +35,12 @@ DEFAULT_GMAIL_SYNC_QUERY = (
     'OR screening OR "job application" OR indeed OR linkedin) '
     "OR from:(indeed.com OR linkedin.com OR greenhouse.io OR lever.co OR workday.com))"
 )
+
+# Full inbox: promotions tab + marketing with List-Unsubscribe; tune via gmail-ingest --query
+DEFAULT_GMAIL_FULL_INGEST_QUERY = "-category:promotions -label:spam -has:unsubscribe"
+
+_URL = re.compile(r"https?://[^\s<>\"')\]]+", re.I)
+_HREF = re.compile(r"""href\s*=\s*['"]([^'"]+)['"]""", re.I)
 
 
 def _gmail_list_query(settings: Settings) -> str:
@@ -135,6 +153,121 @@ def _merge_chunk_headers(chunk_text: str, header_block: str) -> str:
         tail = parts[1] if len(parts) > 1 else ""
         return f"{header_block}\n\n{tail}" if tail else header_block
     return f"{header_block}\n\n{chunk_text}"
+
+
+def extract_urls_from_text(text: str) -> list[str]:
+    if not text:
+        return []
+    return _URL.findall(text)
+
+
+def extract_urls_from_html(html: str) -> list[str]:
+    if not html:
+        return []
+    urls = list(extract_urls_from_text(html))
+    for match in _HREF.finditer(html):
+        href = match.group(1).strip()
+        if href.startswith(("http://", "https://")):
+            urls.append(href)
+    return urls
+
+
+def _dedupe_urls(urls: list[str]) -> list[str]:
+    return list(dict.fromkeys(u.rstrip(".,;") for u in urls if u))
+
+
+def gmail_collect_links(payload: dict) -> list[str]:
+    found: list[str] = []
+
+    def walk(node: dict) -> None:
+        plain, html = _decode_part(node)
+        if plain:
+            found.extend(extract_urls_from_text(plain))
+        if html:
+            found.extend(extract_urls_from_html(html))
+        for part in node.get("parts") or []:
+            walk(part)
+
+    if payload:
+        walk(payload)
+    return _dedupe_urls(found)
+
+
+async def gmail_fetch_attachment_bytes(attachment_record: dict) -> bytes:
+    """Load raw bytes for a stored attachment (Drive file id in artifact metadata)."""
+    file_id = attachment_record.get("drive_file_id")
+    if not file_id:
+        raise ValueError("attachment missing drive_file_id")
+    return await drive_mcp_download_bytes(file_id)
+
+
+async def gmail_ingest_extras(
+    gmail_get,
+    msg_id: str,
+    payload: dict,
+    *,
+    show_attachment_progress: bool = False,
+) -> tuple[list[str], list[dict], str]:
+    links = gmail_collect_links(payload)
+    records: list[dict] = []
+    body_parts: list[str] = []
+    if not gdrive_mcp_configured():
+        raise ValueError(
+            "gdrive MCP not configured — set GDRIVE_MCP_OAUTH_PATH in .env and "
+            "npx @ibarcarty/mcp-server-google-drive auth"
+        )
+    specs = gmail_list_attachment_parts(payload)
+    spec_iter = specs
+    if show_attachment_progress and specs:
+        from tqdm import tqdm
+
+        spec_iter = tqdm(specs, desc="attachments", unit="file")
+
+    for spec in spec_iter:
+        rec: dict = {
+            "filename": spec["filename"],
+            "mime_type": spec["mime_type"],
+            "size": spec["size"],
+            "ingested": False,
+        }
+        reason = attachment_skip_reason(spec["mime_type"], spec["size"], spec["filename"])
+        if reason:
+            rec["reason"] = reason
+            records.append(rec)
+            continue
+        try:
+            resp = await gmail_get(
+                "https://gmail.googleapis.com/gmail/v1/users/me/messages/"
+                f"{msg_id}/attachments/{spec['attachment_id']}"
+            )
+            data_b64 = resp.json().get("data", "")
+            raw = base64.urlsafe_b64decode(data_b64 + "=" * (-len(data_b64) % 4))
+            drive_name = attachment_drive_name(msg_id, spec["filename"])
+            try:
+                file_id = await drive_mcp_upload_bytes(
+                    name=drive_name,
+                    mime_type=spec["mime_type"],
+                    data=raw,
+                )
+                rec["drive_file_id"] = file_id
+                rec["drive_url"] = attachment_drive_view_url(file_id)
+            except Exception as exc:
+                rec["drive_upload_error"] = type(exc).__name__
+            body_part, fail = attachment_ingest_body_part(
+                raw, mime=spec["mime_type"], filename=spec["filename"]
+            )
+            if body_part:
+                body_parts.append(body_part)
+                rec["ingested"] = True
+            elif fail:
+                rec["reason"] = fail
+            records.append(rec)
+        except Exception as exc:
+            rec["reason"] = f"download_failed:{type(exc).__name__}"
+            records.append(rec)
+
+    block = gmail_format_extras_block(links, records, body_parts)
+    return links, records, block
 
 
 def gmail_message_text(payload: dict) -> str:
@@ -284,9 +417,18 @@ async def sync_gmail_inbox(
     user,
     settings: Settings,
     max_messages: int | None = None,
+    query: str | None = None,
 ) -> dict:
-    limit = max_messages if max_messages is not None else settings.gmail_sync_max_messages
-    query = _gmail_list_query(settings)
+    if max_messages is None:
+        limit = settings.gmail_sync_max_messages
+        use_cap = True
+    elif max_messages <= 0:
+        limit = 0
+        use_cap = False
+    else:
+        limit = max_messages
+        use_cap = True
+    list_query = (query or "").strip() or _gmail_list_query(settings)
     result = await session.execute(
         select(IntegrationAccount).where(
             IntegrationAccount.user_id == user.id,
@@ -303,26 +445,38 @@ async def sync_gmail_inbox(
     ingested = 0
     skipped = 0
     scanned = 0
+    message_bar = None
+    if use_cap and limit > 0:
+        from tqdm import tqdm
+
+        message_bar = tqdm(total=limit, unit="msg", desc="Gmail", leave=True)
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         nonlocal_token = {"value": token}
 
+        async def refresh_google_auth() -> None:
+            nonlocal_token["value"] = await ensure_google_access_token(
+                session, account, settings, force_refresh=True
+            )
+            headers["Authorization"] = f"Bearer {nonlocal_token['value']}"
+
         async def gmail_get(url: str, *, params: dict | None = None) -> httpx.Response:
             resp = await client.get(url, params=params, headers=headers)
             if resp.status_code == 401:
-                nonlocal_token["value"] = await ensure_google_access_token(
-                    session, account, settings, force_refresh=True
-                )
-                headers["Authorization"] = f"Bearer {nonlocal_token['value']}"
+                await refresh_google_auth()
                 resp = await client.get(url, params=params, headers=headers)
             resp.raise_for_status()
             return resp
 
-        msg_ids: list[str] = []
         page_token: str | None = None
-        while len(msg_ids) < limit:
-            page_size = min(50, limit - len(msg_ids))
-            params: dict = {"maxResults": page_size, "q": query}
+        saw_messages = False
+        while True:
+            if use_cap and scanned >= limit:
+                break
+            page_size = 50
+            if use_cap:
+                page_size = min(50, limit - scanned)
+            params: dict = {"maxResults": page_size, "q": list_query}
             if page_token:
                 params["pageToken"] = page_token
             listed = await gmail_get(
@@ -331,55 +485,86 @@ async def sync_gmail_inbox(
             )
             page = listed.json()
             batch = [m["id"] for m in page.get("messages", [])]
-            msg_ids.extend(batch)
-            page_token = page.get("nextPageToken")
-            if not batch or not page_token:
+            if not batch:
+                if not saw_messages:
+                    await session.flush()
+                    return {"ingested": 0, "skipped": 0, "scanned": 0, "query": list_query}
                 break
+            saw_messages = True
 
-        if not msg_ids:
-            await session.flush()
-            return {"ingested": 0, "skipped": 0, "scanned": 0, "query": query}
-
-        known = await session.execute(
-            select(Artifact.external_id).where(
-                Artifact.user_id == user.id,
-                Artifact.source == "gmail",
-                Artifact.external_id.in_(msg_ids),
+            known = await session.execute(
+                select(Artifact.external_id).where(
+                    Artifact.user_id == user.id,
+                    Artifact.source == "gmail",
+                    Artifact.external_id.in_(batch),
+                )
             )
-        )
-        skip = set(known.scalars().all())
+            skip = set(known.scalars().all())
 
-        for msg_id in msg_ids:
-            scanned += 1
-            if msg_id in skip:
-                skipped += 1
-                await _backfill_gmail_artifact(session, user.id, msg_id, gmail_get)
-                continue
+            for msg_id in batch:
+                if use_cap and scanned >= limit:
+                    break
+                scanned += 1
+                if msg_id in skip:
+                    skipped += 1
+                    await _backfill_gmail_artifact(session, user.id, msg_id, gmail_get)
+                    if message_bar is not None:
+                        message_bar.update(1)
+                        message_bar.set_postfix_str(f"ing={ingested} skip={skipped}")
+                    continue
 
-            meta = (await gmail_get(
-                f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{msg_id}",
-                params={"format": "full"},
-            )).json()
-            headers_map = {h["name"]: h["value"] for h in meta.get("payload", {}).get("headers", [])}
-            subject = headers_map.get("Subject", "(no subject)")
-            body_text = gmail_message_text(meta.get("payload", {})) or meta.get("snippet", "")
-            meta_fields, occurred = gmail_artifact_metadata(meta, headers_map)
-            date_line = meta_fields.get("mail_at") or headers_map.get("Date")
-            body = f"{gmail_header_block(headers_map, date_line=date_line)}\n\n{body_text}"
+                meta = (await gmail_get(
+                    f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{msg_id}",
+                    params={"format": "full"},
+                )).json()
+                headers_map = {
+                    h["name"]: h["value"] for h in meta.get("payload", {}).get("headers", [])
+                }
+                subject = headers_map.get("Subject", "(no subject)")
+                payload = meta.get("payload", {})
+                body_text = gmail_message_text(payload) or meta.get("snippet", "")
+                links, attachments, extras_block = await gmail_ingest_extras(
+                    gmail_get,
+                    msg_id,
+                    payload,
+                    show_attachment_progress=use_cap and 0 < limit <= 5,
+                )
+                meta_fields, occurred = gmail_artifact_metadata(meta, headers_map)
+                if links:
+                    meta_fields["links"] = links
+                if attachments:
+                    meta_fields["attachments"] = attachments
+                date_line = meta_fields.get("mail_at") or headers_map.get("Date")
+                body = f"{gmail_header_block(headers_map, date_line=date_line)}\n\n{body_text}"
+                if extras_block:
+                    body = f"{body}\n\n{extras_block}"
 
-            artifact = await ingest_manual_note(
-                session,
-                user=user,
-                title=subject,
-                body=body,
-                settings=settings,
-                source="gmail",
-                external_id=msg_id,
-                metadata=meta_fields,
-                occurred_at=occurred,
-            )
-            await enqueue(session, "artifact.process", {"artifact_id": str(artifact.id)})
-            ingested += 1
+                artifact = await ingest_manual_note(
+                    session,
+                    user=user,
+                    title=subject,
+                    body=body,
+                    settings=settings,
+                    source="gmail",
+                    external_id=msg_id,
+                    metadata=meta_fields,
+                    occurred_at=occurred,
+                )
+                await enqueue(session, "artifact.process", {"artifact_id": str(artifact.id)})
+                ingested += 1
+                if message_bar is not None:
+                    message_bar.update(1)
+                    message_bar.set_postfix_str(f"ing={ingested} skip={skipped}")
 
+            if use_cap and scanned >= limit:
+                break
+            page_token = page.get("nextPageToken")
+            if not page_token:
+                break
+            if not use_cap:
+                await session.commit()
+
+    if message_bar is not None:
+        message_bar.close()
     await session.flush()
-    return {"ingested": ingested, "skipped": skipped, "scanned": scanned, "query": query}
+    return {"ingested": ingested, "skipped": skipped, "scanned": scanned, "query": list_query}

@@ -13,6 +13,7 @@ from cli.env import bootstrap_env
 from cli.chat_cmd import cmd_chat
 from cli.repl import run_repl
 from cli.status import cmd_status
+from cli.gmail_ingest_cmd import run_gmail_full_ingest
 from cli.sync_cmd import run_sync
 from backend.common.config_loader.settings import reload_settings
 
@@ -35,6 +36,27 @@ def build_parser() -> argparse.ArgumentParser:
     sync_p.add_argument("--gmail", action="store_true")
     sync_p.add_argument("--process", action="store_true")
     sub.add_parser("status", help="Show connection and artifact counts")
+    ingest_p = sub.add_parser(
+        "gmail-ingest",
+        help="Backfill Gmail (excludes Promotions tab and List-Unsubscribe mail)",
+    )
+    ingest_p.add_argument(
+        "--query",
+        type=str,
+        default=None,
+        help="Gmail search query override (default: no promotions / spam / unsubscribe)",
+    )
+    ingest_p.add_argument(
+        "--limit",
+        type=int,
+        default=0,
+        help="Stop after N messages (1 = single-mail smoke test with tqdm)",
+    )
+    ingest_p.add_argument(
+        "--process",
+        action="store_true",
+        help="After ingest, drain the outbox once (embeddings / commitments)",
+    )
     chat_p = sub.add_parser("chat", help="Interactive chat over local context")
     chat_p.add_argument("--session", type=str, default=None, help="Resume a chat session UUID")
     return p
@@ -47,6 +69,15 @@ def main() -> None:
     args = build_parser().parse_args()
     if getattr(args, "command", None) == "status":
         raise SystemExit(cmd_status())
+    if getattr(args, "command", None) == "gmail-ingest":
+        code = run_async(
+            run_gmail_full_ingest(
+                process=getattr(args, "process", False),
+                query=getattr(args, "query", None),
+                limit=int(getattr(args, "limit", 0) or 0),
+            )
+        )
+        raise SystemExit(code)
     if getattr(args, "command", None) == "chat":
         sid = None
         raw = getattr(args, "session", None)

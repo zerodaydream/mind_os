@@ -102,7 +102,7 @@ async def hybrid_search_artifacts(
         session, user_id=user_id, query=query, limit=limit, source=source
     )
     try:
-        qvec = embed_texts([query], settings.embedding_model)[0]
+        qvec = embed_texts([query], settings.embedding_model, is_query=True)[0]
     except RuntimeError:
         return keyword_hits
     vector = await _search_artifacts_vector(

@@ -8,6 +8,7 @@ Local-only MVP. Consumer ChatGPT/Claude subscriptions do **not** include API bil
 - Python 3.12+ (uv installs via `.python-version` if missing)
 - Docker (for Postgres + api + worker)
 - **Lean:** 8 GB RAM, ~25 GB disk
+- **Scanned PDF attachments:** `uv sync` installs `rapidocr-onnxruntime` (no system Tesseract).
 
 ## 1. Environment
 
@@ -97,7 +98,7 @@ make teardown    # stop + remove volumes
 
 ## 4. Budget / LLM (when `live`)
 
-Defaults in `.env`: `MINDOS_LLM_DAILY_USD=2.00`, `MINDOS_LLM_MONTHLY_USD=40.00`, `MINDOS_LLM_KILL_SWITCH=0`. Embeddings planned as **local** (sentence-transformers); not billed via API.
+Defaults in `.env`: `MINDOS_LLM_DAILY_USD=2.00`, `MINDOS_LLM_MONTHLY_USD=40.00`, `MINDOS_LLM_KILL_SWITCH=0`. Embeddings use **Google** `gemini-embedding-001` via `GOOGLE_API_KEY` (per ingest/search call, cheap at small corpus size).
 
 ## 5. Troubleshooting
 

@@ -25,6 +25,19 @@
       "command": "npx",
       "args": ["-y", "@zhafron/mcp-web-search"],
       "guidance": "Backend for mindos_summarize_url (PDF/HTML pagination). Do not call fetch_* directly for user summarize requests—use mindos_summarize_url instead. search_web only for open-web queries without a URL."
+    },
+    {
+      "name": "gdrive",
+      "enabled": true,
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@ibarcarty/mcp-server-google-drive"],
+      "requires_env": ["GDRIVE_MCP_OAUTH_PATH", "GDRIVE_MCP_TOKEN_PATH"],
+      "env": {
+        "GDRIVE_MCP_OAUTH_PATH": "$GDRIVE_MCP_OAUTH_PATH",
+        "GDRIVE_MCP_TOKEN_PATH": "$GDRIVE_MCP_TOKEN_PATH"
+      },
+      "guidance": "Gmail attachment binary store (drive_create_file / drive_read_file). Auth once: npx @ibarcarty/mcp-server-google-drive auth"
     }
   ]
 }

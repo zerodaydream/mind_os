@@ -1,6 +1,6 @@
 # Ship checklist
 
-- [ ] `uv sync --group dev` (add `--extra embed` / `--extra agents` if needed)
+- [ ] `uv sync --group dev` (add `--extra agents` if needed)
 - [ ] `uv run alembic upgrade head` against Docker Postgres (`5433`)
 - [ ] `make test` green
 - [ ] `backend/config.json` services match deployment
