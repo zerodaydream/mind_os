@@ -799,6 +799,10 @@ async def sync_gmail_inbox(
                         )
                         ingested += 1
                 last_done_msg_id = msg_id
+                if not use_cap and scanned % 10 == 0:
+                    _gmail_sync_note(
+                        f"ingested {ingested} · skipped {skipped} · scanned {scanned}"
+                    )
                 if message_bar is not None:
                     message_bar.update(1)
                     message_bar.set_postfix_str(f"ing={ingested} skip={skipped}")
@@ -815,9 +819,6 @@ async def sync_gmail_inbox(
                 break
             if not use_cap:
                 await session.commit()
-                _gmail_sync_note(
-                    f"page · ingested {ingested} · skipped {skipped} · scanned {scanned}"
-                )
 
     if message_bar is not None:
         message_bar.close()

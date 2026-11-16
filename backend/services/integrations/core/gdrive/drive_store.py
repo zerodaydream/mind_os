@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import time
@@ -10,8 +11,16 @@ from urllib.parse import quote
 
 import httpx
 
-_ingest_folder_id: str | None = None
+_cached_ingest_root_id: str | None = None
+_ingest_type_folder_ids: dict[str, str] = {}
+_ingest_root_lock = asyncio.Lock()
+_ingest_type_lock = asyncio.Lock()
 _DEFAULT_INGEST_FOLDER = "MindOS Gmail Attachments"
+
+
+def _attachment_type_folder(filename: str) -> str:
+    ext = Path(filename).suffix.lower().lstrip(".")
+    return ext if ext else "other"
 
 
 def _env(primary: str, legacy: str) -> str:
@@ -84,41 +93,152 @@ def _bearer_token() -> str:
 
 
 async def _ingest_folder_id() -> str:
-    global _ingest_folder_id  # noqa: PLW0603
-    if _ingest_folder_id:
-        return _ingest_folder_id
+    global _cached_ingest_root_id  # noqa: PLW0603
+    if _cached_ingest_root_id:
+        return _cached_ingest_root_id
+    async with _ingest_root_lock:
+        if _cached_ingest_root_id:
+            return _cached_ingest_root_id
+        name = _ingest_folder_display_name()
+        safe = name.replace("\\", "\\\\").replace("'", "\\'")
+        q = quote(
+            " and ".join(
+                (
+                    f"name = '{safe}'",
+                    "mimeType = 'application/vnd.google-apps.folder'",
+                    "'root' in parents",
+                    "trashed = false",
+                )
+            )
+        )
+        token = _bearer_token()
+        headers = {"Authorization": f"Bearer {token}"}
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            listed = await client.get(
+                f"https://www.googleapis.com/drive/v3/files?q={q}&fields=files(id)&pageSize=1",
+                headers=headers,
+            )
+            listed.raise_for_status()
+            files = listed.json().get("files") or []
+            if files:
+                _cached_ingest_root_id = str(files[0]["id"])
+                return _cached_ingest_root_id
+            created = await client.post(
+                "https://www.googleapis.com/drive/v3/files",
+                headers={**headers, "Content-Type": "application/json"},
+                json={"name": name, "mimeType": "application/vnd.google-apps.folder"},
+            )
+            created.raise_for_status()
+            fid = created.json().get("id")
+            if not fid:
+                raise ValueError("drive folder create missing id")
+            _cached_ingest_root_id = str(fid)
+            return _cached_ingest_root_id
+
+
+async def _ingest_type_folder_id(parent_id: str, type_key: str) -> str:
+    global _ingest_type_folder_ids  # noqa: PLW0603
+    cached = _ingest_type_folder_ids.get(type_key)
+    if cached:
+        return cached
+    async with _ingest_type_lock:
+        cached = _ingest_type_folder_ids.get(type_key)
+        if cached:
+            return cached
+        safe = type_key.replace("\\", "\\\\").replace("'", "\\'")
+        q = quote(
+            " and ".join(
+                (
+                    f"name = '{safe}'",
+                    "mimeType = 'application/vnd.google-apps.folder'",
+                    f"'{parent_id}' in parents",
+                    "trashed = false",
+                )
+            )
+        )
+        token = _bearer_token()
+        headers = {"Authorization": f"Bearer {token}"}
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            listed = await client.get(
+                f"https://www.googleapis.com/drive/v3/files?q={q}&fields=files(id)&pageSize=1",
+                headers=headers,
+            )
+            listed.raise_for_status()
+            files = listed.json().get("files") or []
+            if files:
+                fid = str(files[0]["id"])
+            else:
+                created = await client.post(
+                    "https://www.googleapis.com/drive/v3/files",
+                    headers={**headers, "Content-Type": "application/json"},
+                    json={
+                        "name": type_key,
+                        "mimeType": "application/vnd.google-apps.folder",
+                        "parents": [parent_id],
+                    },
+                )
+                created.raise_for_status()
+                raw_id = created.json().get("id")
+                if not raw_id:
+                    raise ValueError("drive type folder create missing id")
+                fid = str(raw_id)
+        _ingest_type_folder_ids[type_key] = fid
+        return fid
+
+
+async def trash_gdrive_ingest_roots() -> int:
+    """Trash every My Drive root folder matching ``GDRIVE_INGEST_FOLDER`` (subtree included)."""
+    if not gdrive_ingest_configured():
+        return 0
+    global _cached_ingest_root_id, _ingest_type_folder_ids  # noqa: PLW0603
     name = _ingest_folder_display_name()
     safe = name.replace("\\", "\\\\").replace("'", "\\'")
-    q = quote(
-        f"name = '{safe}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
+    q = " and ".join(
+        (
+            f"name = '{safe}'",
+            "mimeType = 'application/vnd.google-apps.folder'",
+            "'root' in parents",
+            "trashed = false",
+        )
     )
     token = _bearer_token()
     headers = {"Authorization": f"Bearer {token}"}
+    removed = 0
     async with httpx.AsyncClient(timeout=60.0) as client:
-        listed = await client.get(
-            f"https://www.googleapis.com/drive/v3/files?q={q}&fields=files(id)&pageSize=1",
-            headers=headers,
-        )
-        listed.raise_for_status()
-        files = listed.json().get("files") or []
-        if files:
-            _ingest_folder_id = str(files[0]["id"])
-            return _ingest_folder_id
-        created = await client.post(
-            "https://www.googleapis.com/drive/v3/files",
-            headers={**headers, "Content-Type": "application/json"},
-            json={"name": name, "mimeType": "application/vnd.google-apps.folder"},
-        )
-        created.raise_for_status()
-        fid = created.json().get("id")
-        if not fid:
-            raise ValueError("drive folder create missing id")
-        _ingest_folder_id = str(fid)
-        return _ingest_folder_id
+        page_token: str | None = None
+        while True:
+            params: dict = {"q": q, "fields": "nextPageToken,files(id)", "pageSize": 50}
+            if page_token:
+                params["pageToken"] = page_token
+            listed = await client.get(
+                "https://www.googleapis.com/drive/v3/files",
+                params=params,
+                headers=headers,
+            )
+            listed.raise_for_status()
+            body = listed.json()
+            for item in body.get("files") or []:
+                fid = item.get("id")
+                if not fid:
+                    continue
+                resp = await client.delete(
+                    f"https://www.googleapis.com/drive/v3/files/{fid}",
+                    headers=headers,
+                )
+                resp.raise_for_status()
+                removed += 1
+            page_token = body.get("nextPageToken")
+            if not page_token:
+                break
+    _cached_ingest_root_id = None
+    _ingest_type_folder_ids.clear()
+    return removed
 
 
 async def drive_upload_bytes(*, name: str, mime_type: str, data: bytes) -> str:
-    parent = await _ingest_folder_id()
+    root = await _ingest_folder_id()
+    type_key = _attachment_type_folder(name)
+    parent = await _ingest_type_folder_id(root, type_key)
     boundary = "mindos_drive_boundary"
     meta = json.dumps(
         {

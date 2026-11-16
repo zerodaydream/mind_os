@@ -1,5 +1,6 @@
 from backend.services.integrations.core.gdrive.drive_store import (
     _DEFAULT_INGEST_FOLDER,
+    _attachment_type_folder,
     _ingest_folder_display_name,
 )
 

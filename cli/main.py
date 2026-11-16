@@ -13,6 +13,7 @@ from cli.env import bootstrap_env
 from cli.chat_cmd import cmd_chat
 from cli.repl import run_repl
 from cli.status import cmd_status
+from cli.cleanup_cmd import run_cleanup
 from cli.gmail_ingest_cmd import run_gmail_full_ingest
 from cli.sync_cmd import run_sync
 from backend.common.config_loader.settings import reload_settings
@@ -36,6 +37,10 @@ def build_parser() -> argparse.ArgumentParser:
     sync_p.add_argument("--gmail", action="store_true")
     sync_p.add_argument("--process", action="store_true")
     sub.add_parser("status", help="Show connection and artifact counts")
+    sub.add_parser(
+        "cleanup",
+        help="Trash GDrive ingest folders; delete all artifacts, chunks, vault files",
+    )
     ingest_p = sub.add_parser(
         "gmail-ingest",
         help="Backfill Gmail (excludes Promotions tab and List-Unsubscribe mail)",
@@ -69,6 +74,8 @@ def main() -> None:
     args = build_parser().parse_args()
     if getattr(args, "command", None) == "status":
         raise SystemExit(cmd_status())
+    if getattr(args, "command", None) == "cleanup":
+        raise SystemExit(run_async(run_cleanup()))
     if getattr(args, "command", None) == "gmail-ingest":
         code = run_async(
             run_gmail_full_ingest(
