@@ -16,9 +16,9 @@ from cli import tui_theme, voice_stt
 _MD_TAG = "\x00md:"
 _MD_NL = "\x1e"
 
-_sink: list[str] | None = None
-_tui_stdscr = None
-_persistent_tui = False
+_action_output_lines: list[str] | None = None
+_curses_main_window = None
+_curses_session_active = False
 
 _MENU_VALUES = [
     ("chat", "Chat with your indexed context"),
@@ -30,27 +30,27 @@ _MENU_VALUES = [
 
 
 def action_begin() -> None:
-    global _sink
-    _sink = []
+    global _action_output_lines
+    _action_output_lines = []
 
 
 def action_end(*, show: bool | None = None) -> list[str]:
-    global _sink
-    lines = list(_sink or [])
-    _sink = None
+    global _action_output_lines
+    lines = list(_action_output_lines or [])
+    _action_output_lines = None
     if show is None:
-        show = not _persistent_tui
+        show = not _curses_session_active
     if show and lines and sys.stdout.isatty():
         show_log(lines, footer="Enter → menu")
-    elif _persistent_tui and _tui_stdscr is not None and lines:
-        _show_sink(_tui_stdscr, lines)
+    elif _curses_session_active and _curses_main_window is not None and lines:
+        _show_action_output_lines(_curses_main_window, lines)
     return lines
 
 
 def tui_flush() -> None:
     lines = action_end(show=False)
-    if lines and _tui_stdscr is not None:
-        _show_sink(_tui_stdscr, lines)
+    if lines and _curses_main_window is not None:
+        _show_action_output_lines(_curses_main_window, lines)
 
 
 def tui_busy(
@@ -62,7 +62,7 @@ def tui_busy(
 ):
     """Spinner while a blocking CLI action runs."""
     lines = list(labels) if labels else [label]
-    stdscr = _tui_stdscr
+    stdscr = _curses_main_window
     if stdscr is None:
         if _RICH and _CONSOLE:
             with _CONSOLE.status(f"[bold yellow]{lines[0]}[/]", spinner="dots"):
@@ -108,16 +108,16 @@ def tui_busy(
 
 
 def in_menu_session() -> bool:
-    return _sink is not None
+    return _action_output_lines is not None
 
 
 def in_tui() -> bool:
-    return _persistent_tui and _tui_stdscr is not None
+    return _curses_session_active and _curses_main_window is not None
 
 
-def _record(line: str) -> None:
-    if _sink is not None:
-        _sink.append(line)
+def _append_to_action_sink(line: str) -> None:
+    if _action_output_lines is not None:
+        _action_output_lines.append(line)
 
 try:
     from rich.console import Console
@@ -237,7 +237,7 @@ def _curses_success_attr() -> int:
     return curses.A_BOLD
 
 
-def _split_sink(lines: list[str]) -> list[tuple[str, str]]:
+def _split_action_output_lines(lines: list[str]) -> list[tuple[str, str]]:
     chunks: list[tuple[str, str]] = []
     plain: list[str] = []
     for line in lines:
@@ -297,8 +297,8 @@ def _rich_markdown_view(stdscr, body: str) -> None:
             pass
 
 
-def _show_sink(stdscr, lines: list[str]) -> None:
-    for kind, content in _split_sink(lines):
+def _show_action_output_lines(stdscr, lines: list[str]) -> None:
+    for kind, content in _split_action_output_lines(lines):
         if kind == "md" and content.strip():
             _rich_markdown_view(stdscr, content)
         elif kind == "plain" and content.strip():
@@ -360,8 +360,8 @@ def show_log(lines: list[str], *, footer: str = "Enter → menu") -> None:
         for line in lines:
             sys.stdout.write(line + "\n")
         return
-    if _tui_stdscr is not None:
-        _show_sink(_tui_stdscr, lines)
+    if _curses_main_window is not None:
+        _show_action_output_lines(_curses_main_window, lines)
         return
 
     def _run(stdscr: curses.window) -> None:
@@ -407,8 +407,8 @@ def _menu_input_draw(stdscr, prompt: str) -> str:
 def menu_input(prompt: str) -> str:
     import curses
 
-    if _tui_stdscr is not None:
-        return _menu_input_draw(_tui_stdscr, prompt)
+    if _curses_main_window is not None:
+        return _menu_input_draw(_curses_main_window, prompt)
     if not sys.stdin.isatty():
         return prompt_line(prompt)
 
@@ -422,7 +422,7 @@ def menu_input(prompt: str) -> str:
 
 
 def prompt_line(prompt: str) -> str:
-    if _RICH and _CONSOLE and _sink is None:
+    if _RICH and _CONSOLE and _action_output_lines is None:
         return _CONSOLE.input(f"[bold cyan]{prompt}[/] ").strip()
     sys.stdout.write(prompt)
     sys.stdout.flush()
@@ -432,8 +432,8 @@ def prompt_line(prompt: str) -> str:
 def banner() -> None:
     title = "mindos"
     subtitle = "local context · gmail · notes"
-    if _sink is not None:
-        _record(f"{title}  {subtitle}")
+    if _action_output_lines is not None:
+        _append_to_action_sink(f"{title}  {subtitle}")
         return
     if _RICH and _CONSOLE:
         _CONSOLE.print(
@@ -452,11 +452,11 @@ def banner() -> None:
 
 
 def step(label: str, detail: str = "", *, ok: bool | None = None) -> None:
-    if _sink is not None:
+    if _action_output_lines is not None:
         mark = "✓" if ok is True else "✗" if ok is False else "·"
         extra = f"  {detail}" if detail else ""
         lbl = f"{label}  " if label else ""
-        _record(f"  {mark}  {lbl}{extra}".rstrip())
+        _append_to_action_sink(f"  {mark}  {lbl}{extra}".rstrip())
         return
     if _RICH and _CONSOLE:
         if ok is True:
@@ -480,9 +480,9 @@ def think_status(text: str) -> None:
     t = (text or "").strip()
     if not t:
         return
-    if _sink is not None:
+    if _action_output_lines is not None:
         for line in t.splitlines():
-            _record(line)
+            _append_to_action_sink(line)
         return
     for line in t.splitlines():
         sys.stdout.write(f"  {_C.dim}{line}{_C.reset}\n")
@@ -490,9 +490,9 @@ def think_status(text: str) -> None:
 
 
 def note(text: str) -> None:
-    if _sink is not None:
+    if _action_output_lines is not None:
         for line in text.splitlines() or [text]:
-            _record(line)
+            _append_to_action_sink(line)
         return
     if _RICH and _CONSOLE:
         _CONSOLE.print(Panel(text, border_style="dim", padding=(0, 1)))
@@ -502,9 +502,9 @@ def note(text: str) -> None:
 
 def note_md(text: str) -> None:
     """Record markdown for Rich rendering in the TUI."""
-    if _sink is not None:
+    if _action_output_lines is not None:
         encoded = text.replace("\n", _MD_NL)
-        _record(f"{_MD_TAG}{encoded}")
+        _append_to_action_sink(f"{_MD_TAG}{encoded}")
         return
     if _RICH and _CONSOLE:
         from rich.markdown import Markdown
@@ -515,8 +515,8 @@ def note_md(text: str) -> None:
 
 
 def error(text: str) -> None:
-    if _sink is not None:
-        _record(f"error: {text}")
+    if _action_output_lines is not None:
+        _append_to_action_sink(f"error: {text}")
         return
     if _RICH and _CONSOLE:
         _CONSOLE.print(f"[err]error:[/] {text}")
@@ -919,20 +919,26 @@ def run_interactive(
     handler,
 ) -> int:
     """Single TUI session: menu → output → menu (no terminal flash)."""
-    global _persistent_tui, _tui_stdscr
+    global _curses_session_active, _curses_main_window
 
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
-        return _repl_plain(subtitle, handler)
+        return _run_interactive_text_fallback(subtitle, handler)
 
     import curses
 
     base_header = ["↑ / ↓ move  ·  Enter run  ·  Esc cancel selection"]
 
     def _app(stdscr: curses.window) -> int:
-        global _tui_stdscr
-        _tui_stdscr = stdscr
+        global _curses_main_window
+        _curses_main_window = stdscr
         show_subtitle = bool(subtitle)
         while True:
+            try:
+                from cli.chat_cmd import start_chat_warmup
+
+                start_chat_warmup()
+            except Exception:
+                pass
             hdr = [subtitle] if show_subtitle and subtitle else []
             choice = _menu_draw(
                 stdscr,
@@ -954,19 +960,19 @@ def run_interactive(
             if not keep:
                 return 0
 
-    _persistent_tui = True
+    _curses_session_active = True
     try:
         return curses.wrapper(_app)
     except Exception:
-        _persistent_tui = False
-        _tui_stdscr = None
-        return _repl_plain(subtitle, handler)
+        _curses_session_active = False
+        _curses_main_window = None
+        return _run_interactive_text_fallback(subtitle, handler)
     finally:
-        _persistent_tui = False
-        _tui_stdscr = None
+        _curses_session_active = False
+        _curses_main_window = None
 
 
-def _repl_plain(subtitle: str, handler) -> int:
+def _run_interactive_text_fallback(subtitle: str, handler) -> int:
     menu_subtitle = subtitle
     while True:
         try:
@@ -1113,7 +1119,7 @@ def _thinking_chat_lines(text: str, width: int) -> list[tuple[str, str]]:
             m = re.match(r"^(\s*)([-*]|\d+\.)\s+(.*)$", raw.rstrip())
             if m:
                 plain = f"{m.group(1)}{m.group(2)} {md_render.strip_inline_md(m.group(3))}"
-        for ln in textwrap.wrap(plain, width=width, break_long_words=False) or [plain]:
+        for ln in _chat_wrap_text(plain, width):
             out.append((style, ln.rstrip()))
         i += 1
     return out or [("body", "(empty)")]
@@ -1158,17 +1164,7 @@ def _markdown_chat_lines(text: str, width: int) -> list[tuple[str, str]]:
         if not text:
             i += 1
             continue
-        break_long = "http" in text or "tinyurl.com" in text
-        if len(text) <= width:
-            wrapped = [text]
-        else:
-            wrapped = textwrap.wrap(
-                text,
-                width=width,
-                break_long_words=break_long,
-                break_on_hyphens=False,
-            ) or [text]
-        for ln in wrapped:
+        for ln in _chat_wrap_text(text, width):
             out.append((style, ln.rstrip()))
         i += 1
     return out or [("body", "(empty)")]
@@ -1224,6 +1220,51 @@ def _chat_role_prefix(role: str, *, wide: bool = True) -> str:
 
 _CHAT_INPUT_PREFIX = _chat_role_prefix("you", wide=False)
 _CHAT_ROLE_COL = len(_chat_role_prefix("thinking"))
+_CHAT_COMPACT_INNER_W = 72
+
+
+def _chat_compact(inner_w: int) -> bool:
+    return inner_w < _CHAT_COMPACT_INNER_W
+
+
+def _chat_wrap_width(inner_w: int, prefix: str) -> int:
+    return max(8, inner_w - len(prefix))
+
+
+def _chat_break_long_words(text: str, width: int) -> bool:
+    if "http" in text or "://" in text:
+        return True
+    # paths and underscore-heavy tokens (common in file names)
+    if "/" in text or "\\" in text:
+        return True
+    return any(len(part) > width for part in text.split())
+
+
+def _chat_wrap_text(text: str, width: int) -> list[str]:
+    width = max(8, width)
+    if not text:
+        return []
+    if len(text) <= width:
+        return [text]
+    chunks = textwrap.wrap(
+        text,
+        width=width,
+        break_long_words=_chat_break_long_words(text, width),
+        break_on_hyphens=False,
+    )
+    return chunks if chunks else [text[:width]]
+
+
+def _chat_nav_hint(inner_w: int) -> str:
+    tiers = (
+        " Tab → Main Menu/History  | Tab while typing → browse  |  Ctrl+G voice | ←/→ Navigate ",
+        " Tab → menus/history · Ctrl+G voice · ←/→ scroll ",
+        " Tab · Ctrl+G · ←/→ ",
+    )
+    for hint in tiers:
+        if len(hint) <= inner_w:
+            return hint
+    return tiers[-1][:inner_w]
 
 
 def _chat_save_term():
@@ -1429,13 +1470,7 @@ _CARET_SENTINEL = "\x00"
 def _chat_wrap_line(line: str, wrap_w: int) -> list[str]:
     if not line:
         return [""]
-    chunks = textwrap.wrap(
-        line,
-        width=wrap_w,
-        break_long_words=True,
-        break_on_hyphens=False,
-    )
-    return chunks if chunks else [""]
+    return _chat_wrap_text(line, wrap_w) if line.strip() else [""]
 
 
 def _chat_wrap_line_with_caret(
@@ -1509,7 +1544,7 @@ def chat_conversation(
     """Continuous assistant chat; top bar Back / History (←/→, Enter on empty input)."""
     import curses as c
 
-    stdscr = _tui_stdscr
+    stdscr = _curses_main_window
     if stdscr is None:
         return
 
@@ -1704,12 +1739,13 @@ def _chat_conversation_loop(
 
     def _flat_history(inner_w: int) -> list[tuple[int, str] | tuple[int, str, int]]:
         out: list[tuple[int, str] | tuple[int, str, int]] = []
+        compact = _chat_compact(inner_w)
         for role, text in history:
-            prefix = _chat_role_prefix(role)
-            wrap_w = max(20, inner_w - len(prefix) - 2)
+            prefix = _chat_role_prefix(role, wide=not compact)
+            wrap_w = _chat_wrap_width(inner_w, prefix)
             cont_pad = " " * len(prefix)
             if role == "you":
-                for i, ln in enumerate(textwrap.wrap(text, width=wrap_w) or ["(empty)"]):
+                for i, ln in enumerate(_chat_wrap_text(text, wrap_w) or ["(empty)"]):
                     pad = prefix if i == 0 else cont_pad
                     out.append((user_attr, f"{pad}{ln}"))
                 continue
@@ -1736,7 +1772,7 @@ def _chat_conversation_loop(
     ) -> list[tuple[int, str] | tuple[int, str, int]]:
         nonlocal _render_sig, _rendered_lines
         think = thinking_line or ""
-        sig = (len(history), inner_w, think, think_live, think_pulse)
+        sig = (len(history), inner_w, think, think_live, think_pulse, _chat_compact(inner_w))
         if sig != _render_sig:
             _rendered_lines = _flat_history(inner_w)
             if thinking_line:
@@ -1749,7 +1785,8 @@ def _chat_conversation_loop(
         _ = w
         box_bottom = h - 1
         transcript_top = 5
-        text_w = max(8, inner_w - 2)
+        box_w = inner_w
+        text_w = max(8, box_w - 2)
         max_input_rows = max(1, box_bottom - transcript_top - 1)
         input_lines = chat_input_lines(
             buf, cursor, text_w, show_cursor=False, prefix=_CHAT_INPUT_PREFIX
@@ -1998,9 +2035,7 @@ def _chat_conversation_loop(
                 pass
             tab_x += len(segment) + tab_gap
         hint_attr = tab_norm
-        hint1 = (
-            " Tab → Main Menu/History  | Tab while typing → browse  |  Ctrl+G voice | ←/→ Navigate "
-        )
+        hint1 = _chat_nav_hint(inner_w)
         try:
             stdscr.addstr(1, pad, tui_theme.rule(inner_w)[:inner_w], normal)
             stdscr.addstr(2, pad, hint1[:inner_w], hint_attr)
@@ -2023,16 +2058,15 @@ def _chat_conversation_loop(
             except c.error:
                 pass
 
-        prefix = _CHAT_INPUT_PREFIX
         input_lines = chat_input_lines(
-            buf, cursor, text_w, prefix=prefix, show_cursor=show_cursor
+            buf, cursor, text_w, prefix=_CHAT_INPUT_PREFIX, show_cursor=show_cursor
         )
 
         max_input_rows = max(1, box_bottom - transcript_top - 1)
         if len(input_lines) > max_input_rows:
             drop = len(input_lines) - max_input_rows + 1
             input_lines = [
-                f"{' ' * len(prefix)}… +{drop} line(s) above"
+                f"{' ' * len(_CHAT_INPUT_PREFIX)}… +{drop} line(s) above"
             ] + input_lines[-(max_input_rows - 1) :]
         input_start = box_bottom - len(input_lines)
         input_box_top = input_start - 1

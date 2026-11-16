@@ -24,7 +24,7 @@ def tracing_active() -> bool:
 
 
 def begin_turn_trace() -> str:
-    """Per chat turn — suffix all LangSmith run names in this request."""
+    """Per chat turn — stored in LangSmith metadata (mindos_turn_trace_id), not run names."""
     trace_id = uuid.uuid4().hex[:10]
     _turn_trace_token.set(trace_id)
     return trace_id
@@ -35,10 +35,8 @@ def turn_trace_id() -> str | None:
 
 
 def unique_run_name(base: str) -> str:
-    tid = turn_trace_id()
-    if not tid:
-        return base
-    return f"{base}_{tid}"
+    """Stable run/tool labels in LangSmith and the chat UI; disambiguate turns via metadata."""
+    return base
 
 
 def flush_traces() -> None:

@@ -46,3 +46,18 @@ def test_surface_tool_outputs_skips_duplicate_link() -> None:
         ]
     }
     assert _surface_tool_outputs(body, result) == body
+
+
+def test_surface_tool_outputs_ignores_convx_install_url() -> None:
+    tool = (
+        "Backends detected. For rare pairs, install "
+        "https://github.com/JSBtechnologies/convx"
+    )
+    body = "The MP3 is already at ~/Downloads/song.mp3."
+    result = {
+        "messages": [
+            {"type": "tool", "content": tool},
+            {"type": "ai", "content": body},
+        ]
+    }
+    assert _surface_tool_outputs(body, result) == body

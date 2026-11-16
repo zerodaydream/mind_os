@@ -7,6 +7,18 @@
       "guidance": "User mail, calendar, commitments, and indexed notes. mindos_search for inbox/notes; mindos_calendar_* for schedule; mindos_summarize_url for any summarize-this-link/PDF request (one tool call, one final answer); mindos_gmail_sync → mindos_process_outbox when search is empty."
     },
     {
+      "name": "filesystem",
+      "enabled": true,
+      "transport": "builtin",
+      "guidance": "mindos_fs_locate once for natural find/count/list (folder + name from user words). mindos_fs_find only for explicit globs. No root=/. Destructive: preview then confirmed=True."
+    },
+    {
+      "name": "convert",
+      "enabled": true,
+      "transport": "builtin",
+      "guidance": "Local conversion; source unchanged. mindos_fs_locate or mindos_convert_file (paths from user words). Batch: mindos_convert_batch previews then confirmed=True."
+    },
+    {
       "name": "fetch",
       "enabled": true,
       "transport": "stdio",

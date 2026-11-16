@@ -22,3 +22,12 @@ def test_long_source_line_wraps_not_truncates():
     lines = _markdown_chat_lines(long, width=60)
     assert len(lines) > 1
     assert "…" not in "".join(ln for _, ln in lines)
+
+
+def test_long_file_path_wraps_not_hard_cut():
+    path = "/Users/me/Downloads/Halsey_-_I_Never_Loved_You_Official_Music_Video.m4v"
+    body = f"Saved to {path}"
+    lines = _markdown_chat_lines(body, width=50)
+    joined = "".join(ln for _, ln in lines)
+    assert "Official" in joined
+    assert path not in joined or len(lines) > 1

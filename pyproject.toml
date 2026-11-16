@@ -47,6 +47,7 @@ cli = [
     "langchain-mcp-adapters>=0.3.2",
     "mcp>=1.30.0",
     "moonshine-voice>=0.1.6",
+    "imageio-ffmpeg>=0.8.1",
 ]
 
 

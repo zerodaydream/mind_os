@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 import uuid
 import warnings
 from collections.abc import Callable
@@ -8,7 +9,12 @@ from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from cli import term, voice_stt
-from cli.async_util import run_async, start_repl_loop, stop_repl_loop
+from cli.async_util import (
+    run_async,
+    shared_event_loop_is_running,
+    start_shared_event_loop,
+    stop_shared_event_loop,
+)
 from cli.env import bootstrap_env
 from backend.common.config_loader import get_config
 from backend.common.config_loader.settings import get_settings, reload_settings
@@ -21,8 +27,14 @@ from backend.services.ingest.core.manual import ensure_default_user
 from backend.worker.bootstrap import bootstrap, worker_services
 from backend.services.integrations.core.calendar.timezone import detect_client_iana_timezone
 
+_chat_warmup_lock = threading.Lock()
+_chat_warmup_thread: threading.Thread | None = None
+_chat_warmup_result: (
+    tuple[dict, object | None, list[tuple[str, str]], str] | None
+) = None
 
-def _rel_time(dt: datetime | None) -> str:
+
+def format_relative_timestamp(dt: datetime | None) -> str:
     if dt is None:
         return ""
     if dt.tzinfo is None:
@@ -37,7 +49,7 @@ def _rel_time(dt: datetime | None) -> str:
     return f"{secs // 86400}d ago"
 
 
-async def _turn(
+async def run_agent_turn(
     session: AsyncSession,
     message: str,
     gateway,
@@ -60,7 +72,7 @@ async def _turn(
     )
 
 
-async def _answer_for(
+async def fetch_chat_reply(
     message: str,
     gateway,
     session_id: uuid.UUID | None,
@@ -72,7 +84,7 @@ async def _answer_for(
         raise RuntimeError("database not initialized — check DATABASE_URL and Postgres")
     try:
         async with lifecycle._session_factory() as session:
-            out = await _turn(
+            out = await run_agent_turn(
                 session, message, gateway, session_id,
                 on_partial=on_partial, client_tz=client_tz,
             )
@@ -95,7 +107,7 @@ async def _answer_for(
     return answer, uuid.UUID(out["session_id"])
 
 
-async def _history_rows() -> list[tuple[str, str, str]]:
+async def list_chat_sessions_for_picker() -> list[tuple[str, str, str]]:
     """Return (session_id, title, meta) for the TUI history picker."""
     if lifecycle._session_factory is None:
         return [("__new__", "New chat", "")]
@@ -105,13 +117,13 @@ async def _history_rows() -> list[tuple[str, str, str]]:
         rows = await list_sessions(session, user_id=user.id, limit=40)
     values: list[tuple[str, str, str]] = [("__new__", "New chat", "fresh session")]
     for r in rows:
-        when = _rel_time(r.get("updated_at"))
+        when = format_relative_timestamp(r.get("updated_at"))
         meta = f"{r['n_msgs']} msgs · {when}".strip(" ·")
         values.append((str(r["id"]), (r["title"] or "Untitled")[:48], meta))
     return values
 
 
-async def _remove_session(session_id: uuid.UUID) -> bool:
+async def delete_chat_session(session_id: uuid.UUID) -> bool:
     if lifecycle._session_factory is None:
         return False
     settings = get_settings()
@@ -123,7 +135,7 @@ async def _remove_session(session_id: uuid.UUID) -> bool:
         return ok
 
 
-async def _load_session(
+async def load_chat_history(
     session_id: uuid.UUID,
 ) -> tuple[list[tuple[str, str]], uuid.UUID, str] | None:
     if lifecycle._session_factory is None:
@@ -143,26 +155,16 @@ async def _load_session(
 
 
 _CHAT_LOADING_LABELS = (
-    "Bootstrapping",
-    "Indexifying",
-    "Retrievifying",
-    "Inboxinating",
-    "Vectorizing",
-    "Calendaring",
-    "Deepifying",
-    "Toolbinding",
-    "Contextualizing",
-    "Hybridizing",
-    "Reconciling",
-    "Sessionizing",
-    "Gatewaying",
-    "Almostifying",
-    "Ostensibly finishing",
+    "Loading chats",
+    "Almost done",
+    "Welcome back!"
 )
 
 
-def _bootstrap_chat(
+def prepare_chat_session_state(
     session_id: uuid.UUID | None,
+    *,
+    warm_voice: bool | None = None,
 ) -> tuple[dict, object | None, list[tuple[str, str]], str]:
     bootstrap_env()
     settings = reload_settings()
@@ -175,25 +177,84 @@ def _bootstrap_chat(
                 "From the repo root run: uv run mindos chat  (or: .venv/bin/mindos chat). "
                 "Do not use a global `mindos` on PATH unless you reinstall it from this repo."
             )
-    bootstrap()
+    if worker_services() is None:
+        bootstrap()
     services = worker_services()
     gateway = services.llm if services else None
     state: dict = {"session_id": session_id}
     session_label = "New Chat"
     if session_id is not None:
-        loaded = run_async(_load_session(session_id))
+        loaded = run_async(load_chat_history(session_id))
         initial_history = loaded[0] if loaded else []
         if loaded:
             state["session_id"] = loaded[1]
             session_label = loaded[2]
     else:
         initial_history = []
-    if term.in_tui() and voice_stt.stt_status()[0]:
+    if warm_voice is None:
+        warm_voice = term.in_tui()
+    if warm_voice and voice_stt.stt_status()[0]:
         try:
             voice_stt.warm()
         except Exception:
             pass
     return state, gateway, initial_history, session_label
+
+
+def start_chat_warmup() -> None:
+    """Warm chat (STT, settings, LLM gateway) while the main menu is idle."""
+    cfg = get_config()
+    if not cfg.is_enabled("agents") or not cfg.is_enabled("retrieval"):
+        return
+    global _chat_warmup_thread
+    with _chat_warmup_lock:
+        if _chat_warmup_result is not None:
+            return
+        if _chat_warmup_thread is not None and _chat_warmup_thread.is_alive():
+            return
+
+        def _run_warmup() -> None:
+            global _chat_warmup_result
+            try:
+                _chat_warmup_result = prepare_chat_session_state(None, warm_voice=True)
+            except Exception:
+                pass
+
+        _chat_warmup_thread = threading.Thread(
+            target=_run_warmup, name="mindos-chat-warmup", daemon=True
+        )
+        _chat_warmup_thread.start()
+
+
+def _take_chat_warmup_result() -> tuple[dict, object | None, list[tuple[str, str]], str] | None:
+    global _chat_warmup_result
+    with _chat_warmup_lock:
+        if _chat_warmup_result is None:
+            return None
+        ready = _chat_warmup_result
+        _chat_warmup_result = None
+        return ready
+
+
+def resolve_chat_session_state(
+    session_id: uuid.UUID | None,
+) -> tuple[dict, object | None, list[tuple[str, str]], str]:
+    if session_id is not None:
+        return prepare_chat_session_state(session_id)
+    ready = _take_chat_warmup_result()
+    if ready is not None:
+        return ready
+    with _chat_warmup_lock:
+        t = _chat_warmup_thread
+    if t is not None and t.is_alive():
+
+        def _wait_for_warmup() -> tuple[dict, object | None, list[tuple[str, str]], str]:
+            t.join()
+            hit = _take_chat_warmup_result()
+            return hit if hit is not None else prepare_chat_session_state(None)
+
+        return _wait_for_warmup()
+    return prepare_chat_session_state(None)
 
 
 def cmd_chat(*, session_id: uuid.UUID | None = None) -> int:
@@ -208,18 +269,36 @@ def cmd_chat(*, session_id: uuid.UUID | None = None) -> int:
         term.error("retrieval disabled in backend/config.json")
         term.action_end()
         return 1
-    start_repl_loop()
+    chat_owns_event_loop = not shared_event_loop_is_running()
+    if chat_owns_event_loop:
+        start_shared_event_loop()
     try:
         if term.in_tui():
-            state, gateway, initial_history, session_label = term.tui_busy(
-                lambda: _bootstrap_chat(session_id),
-                labels=_CHAT_LOADING_LABELS,
-                label_interval_s=1.5,
-            )
+            ready = _take_chat_warmup_result()
+            if ready is not None:
+                state, gateway, initial_history, session_label = ready
+            else:
+                with _chat_warmup_lock:
+                    pending = (
+                        _chat_warmup_thread is not None and _chat_warmup_thread.is_alive()
+                    )
+                if pending:
+                    state, gateway, initial_history, session_label = term.tui_busy(
+                        lambda: resolve_chat_session_state(session_id),
+                        labels=_CHAT_LOADING_LABELS,
+                        label_interval_s=1.5,
+                    )
+                else:
+                    state, gateway, initial_history, session_label = (
+                        resolve_chat_session_state(session_id)
+                    )
         else:
-            state, gateway, initial_history, session_label = _bootstrap_chat(session_id)
+            state, gateway, initial_history, session_label = resolve_chat_session_state(
+                session_id
+            )
     except Exception:
-        stop_repl_loop()
+        if chat_owns_event_loop:
+            stop_shared_event_loop()
         raise
 
     client_tz = detect_client_iana_timezone()
@@ -228,7 +307,7 @@ def cmd_chat(*, session_id: uuid.UUID | None = None) -> int:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", SyntaxWarning)
             ans, sid = run_async(
-                _answer_for(
+                fetch_chat_reply(
                     msg,
                     gateway,
                     state["session_id"],
@@ -239,7 +318,7 @@ def cmd_chat(*, session_id: uuid.UUID | None = None) -> int:
         state["session_id"] = sid
         return ans
     def list_history() -> list[tuple[str, str, str]]:
-        return run_async(_history_rows())
+        return run_async(list_chat_sessions_for_picker())
 
     def load_history(sid: str) -> tuple[list[tuple[str, str]], str] | None:
         if sid == "__new__":
@@ -249,7 +328,7 @@ def cmd_chat(*, session_id: uuid.UUID | None = None) -> int:
             uid = uuid.UUID(sid)
         except ValueError:
             return None
-        loaded = run_async(_load_session(uid))
+        loaded = run_async(load_chat_history(uid))
         if loaded is None:
             return None
         hist, chat_id, title = loaded
@@ -263,7 +342,7 @@ def cmd_chat(*, session_id: uuid.UUID | None = None) -> int:
             uid = uuid.UUID(sid)
         except ValueError:
             return False
-        ok = run_async(_remove_session(uid))
+        ok = run_async(delete_chat_session(uid))
         if ok and state.get("session_id") == uid:
             state["session_id"] = None
         return ok
@@ -298,7 +377,7 @@ def cmd_chat(*, session_id: uuid.UUID | None = None) -> int:
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore", SyntaxWarning)
                     ans, sid = run_async(
-                        _answer_for(
+                        fetch_chat_reply(
                             message,
                             gateway,
                             state["session_id"],
@@ -315,4 +394,7 @@ def cmd_chat(*, session_id: uuid.UUID | None = None) -> int:
                 return 1
         return 0
     finally:
-        stop_repl_loop()
+        if chat_owns_event_loop:
+            stop_shared_event_loop()
+        elif term.in_tui():
+            start_chat_warmup()

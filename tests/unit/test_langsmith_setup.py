@@ -9,10 +9,10 @@ from backend.common.langsmith_setup import (
 )
 
 
-def test_unique_run_name_per_turn():
-    tid = begin_turn_trace()
-    assert unique_run_name("mindos_handle_turn") == f"mindos_handle_turn_{tid}"
-    assert unique_run_name("mindos_llm_stream").endswith(tid)
+def test_unique_run_name_stable_per_turn():
+    begin_turn_trace()
+    assert unique_run_name("mindos_handle_turn") == "mindos_handle_turn"
+    assert unique_run_name("mindos_convert_file") == "mindos_convert_file"
 
 
 def test_configure_langsmith_sets_env(monkeypatch):

@@ -2,6 +2,10 @@
 
 Project-specific guidance for AI coding agents.
 
+## Python naming
+
+Follow [docs/NAMING.md](docs/NAMING.md): public names are full words with a domain noun (`shared_event_loop`, `chat_warmup`); booleans use `is_*` / `has_*`; module state describes what it holds, not vague flags (`_chat_warmup_result`, not `_prefetch_ready`). New CLI/backend code must match; rename legacy symbols when you touch them.
+
 <!-- ASTRYX:START -->
 Astryx v0.7.14 · 174 components
 CLI: run every command as `astryx <cmd>` (shown below as `astryx ...`).

@@ -1,3 +1,5 @@
+"""Reuse one asyncio event loop for the interactive CLI REPL and nested commands."""
+
 from __future__ import annotations
 
 import asyncio
@@ -6,10 +8,15 @@ from typing import Any, TypeVar
 
 T = TypeVar("T")
 
-_repl_loop: asyncio.AbstractEventLoop | None = None
+_shared_event_loop: asyncio.AbstractEventLoop | None = None
 
 
-def _sync_drop_engine() -> None:
+def shared_event_loop_is_running() -> bool:
+    """True when the REPL (or a parent command) already owns the shared loop."""
+    return _shared_event_loop is not None and not _shared_event_loop.is_closed()
+
+
+def _dispose_db_engine_sync() -> None:
     """Drop a pool bound to a dead loop without awaiting async close."""
     from backend.common.database import lifecycle
 
@@ -23,7 +30,7 @@ def _sync_drop_engine() -> None:
     lifecycle._session_factory = None
 
 
-async def _prepare() -> None:
+async def _ensure_cli_backend_ready() -> None:
     from backend.common.ssl_env import fix_ssl_cert_env
     from backend.common.database import lifecycle
     from backend.worker.bootstrap import bootstrap
@@ -33,19 +40,19 @@ async def _prepare() -> None:
         bootstrap()
 
 
-def start_repl_loop() -> None:
-    global _repl_loop
-    _sync_drop_engine()
+def start_shared_event_loop() -> None:
+    global _shared_event_loop
+    _dispose_db_engine_sync()
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    _repl_loop = loop
-    loop.run_until_complete(_prepare())
+    _shared_event_loop = loop
+    loop.run_until_complete(_ensure_cli_backend_ready())
 
 
-def stop_repl_loop() -> None:
-    global _repl_loop
-    if _repl_loop is None or _repl_loop.is_closed():
-        _repl_loop = None
+def stop_shared_event_loop() -> None:
+    global _shared_event_loop
+    if _shared_event_loop is None or _shared_event_loop.is_closed():
+        _shared_event_loop = None
         return
 
     async def _shutdown() -> None:
@@ -54,26 +61,26 @@ def stop_repl_loop() -> None:
         await dispose_db()
 
     try:
-        _repl_loop.run_until_complete(_shutdown())
+        _shared_event_loop.run_until_complete(_shutdown())
     except Exception:
-        _sync_drop_engine()
+        _dispose_db_engine_sync()
     finally:
-        _repl_loop.close()
-        _repl_loop = None
+        _shared_event_loop.close()
+        _shared_event_loop = None
 
 
 def run_async(coro: Coroutine[Any, Any, T]) -> T:
     async def _run() -> T:
-        await _prepare()
+        await _ensure_cli_backend_ready()
         return await coro
 
-    if _repl_loop is not None and not _repl_loop.is_closed():
-        return _repl_loop.run_until_complete(_run())
+    if _shared_event_loop is not None and not _shared_event_loop.is_closed():
+        return _shared_event_loop.run_until_complete(_run())
 
-    _sync_drop_engine()
+    _dispose_db_engine_sync()
 
     async def _one_shot() -> T:
-        await _prepare()
+        await _ensure_cli_backend_ready()
         try:
             return await coro
         finally:

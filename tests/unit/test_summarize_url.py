@@ -13,6 +13,14 @@ def test_parse_fetch_payload_pagination() -> None:
     assert nxt2 is None
 
 
+def test_tool_think_strips_turn_trace_suffix() -> None:
+    line = _tool_think_line(
+        "mindos_convert_file_8dcad8f2c0",
+        {"to_format": "mp3"},
+    )
+    assert line == "Converting file to mp3…"
+
+
 def test_tool_think_summarize() -> None:
     line = _tool_think_line(
         "mindos_summarize_url",

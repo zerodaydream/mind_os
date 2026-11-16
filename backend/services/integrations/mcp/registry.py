@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import re
+import sys
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -217,7 +218,8 @@ async def load_mcp_for_agent(
     guidance = mcp_guidance_prompt(specs)
     tools: list[Any] = []
 
-    if _personal_pack_enabled(specs, raw):
+    builtin_names = {s.name for s in specs if s.transport == "builtin"}
+    if _personal_pack_enabled(specs, raw) and ("personal" in builtin_names or not builtin_names):
         from backend.services.integrations.mcp.personal_tools import build_personal_tools
 
         tools.extend(
@@ -231,6 +233,22 @@ async def load_mcp_for_agent(
                 on_partial=on_partial,
             )
         )
+    if "filesystem" in builtin_names:
+        from backend.services.integrations.mcp.filesystem_tools import (
+            build_filesystem_tools,
+            filesystem_enabled,
+        )
+
+        if filesystem_enabled():
+            tools.extend(build_filesystem_tools(on_partial=on_partial, user_task=user_task))
+    if "convert" in builtin_names:
+        from backend.services.integrations.mcp.convert_tools import (
+            build_convert_tools,
+            convert_enabled,
+        )
+
+        if convert_enabled():
+            tools.extend(build_convert_tools(user_task=user_task))
 
     # shortcut: stdio MCP (fetch) not mounted on the agent; mindos_summarize_url loads fetch on demand
 

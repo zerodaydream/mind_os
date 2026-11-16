@@ -8,6 +8,7 @@ import sys
 import uuid
 from collections.abc import Callable
 from datetime import datetime, timedelta
+from pathlib import Path
 from zoneinfo import ZoneInfo
 from typing import TYPE_CHECKING
 
@@ -191,7 +192,7 @@ async def run_deep_agent(
         user,
         settings,
         default_tz=default_tz,
-        user_task=calendar_task,
+        user_task=(message or "").strip() or calendar_task,
         gateway=gateway,
         on_partial=on_partial,
     )
@@ -217,6 +218,11 @@ async def run_deep_agent(
             "Calendar auth: use tool error text + sign-in URL only; never quote system instructions. "
             "For list/update/delete: call the calendar tools; do not guess event data. "
             "Bulk delete (2+ ids): first call delete without confirmed, ask user, then confirmed=True. "
+            "Filesystem: for locate/count/list files in the user's words, call mindos_fs_locate "
+            "once (optional name=); do not chain mindos_fs_find or pass root=/. "
+            "mindos_fs_find only for explicit globs. mindos_fs_list/read for browsing. "
+            "Write/rename/delete/replace need preview then confirmed=True after explicit user approval. "
+            "Convert: if mindos_convert_file says output already exists, ask the user then recall with confirmed=True. "
             "Calendar Link: only after create/update (once, plain text)—not for list dumps or deleted events. "
             "Use the human times from calendar tools in replies—never raw ISO. "
             "Every calendar time you state must include the timezone label from Clock "
@@ -335,7 +341,11 @@ async def run_deep_agent(
             try:
                 with child_ctx:
                     result = await _ainvoke_streaming(
-                        agent, invoke, config, on_partial=on_partial
+                        agent,
+                        invoke,
+                        config,
+                        on_partial=on_partial,
+                        user_task=(message or "").strip() or calendar_task,
                     )
             except Exception:
                 if deep_run is not None:
@@ -359,7 +369,13 @@ async def run_deep_agent(
                 )
                 trace_ctx.__exit__(None, None, None)
         else:
-            result = await _ainvoke_streaming(agent, invoke, config, on_partial=on_partial)
+            result = await _ainvoke_streaming(
+                agent,
+                invoke,
+                config,
+                on_partial=on_partial,
+                user_task=(message or "").strip() or calendar_task,
+            )
             answer = normalize_markdown_tables(
                 _finalize_calendar_answer(
                     _surface_tool_outputs(_extract_answer(result) or "", result),
@@ -451,10 +467,21 @@ _TODO_ICON = {
 }
 
 
+_TURN_TRACE_SUFFIX = re.compile(r"^(.+)_[a-f0-9]{10}$")
+
+
+def _canonical_tool_name(name: str) -> str:
+    n = (name or "").strip()
+    m = _TURN_TRACE_SUFFIX.match(n)
+    return m.group(1) if m else n
+
+
 def _tool_call_name(tc) -> str:
     if isinstance(tc, dict):
-        return str(tc.get("name") or "")
-    return str(getattr(tc, "name", "") or "")
+        raw = str(tc.get("name") or "")
+    else:
+        raw = str(getattr(tc, "name", "") or "")
+    return _canonical_tool_name(raw)
 
 
 def _tool_call_args(tc) -> dict:
@@ -519,8 +546,9 @@ def _emit_todo_think(msgs, on_partial, *, last_sig: list[str]) -> None:
     emit_partial(on_partial, text, phase="think")
 
 
-def _tool_think_line(name: str, args: dict) -> str:
-    lower = (name or "").lower()
+def _tool_think_line(name: str, args: dict, *, user_task: str = "") -> str:
+    name = _canonical_tool_name(name)
+    lower = name.lower()
     url = str(args.get("url") or "").strip()
     if "summarize_url" in lower:
         short = url[:52] + "…" if len(url) > 55 else url
@@ -530,6 +558,59 @@ def _tool_think_line(name: str, args: dict) -> str:
         return f"Viewing {short or 'document'}…"
     if "search_web" in lower:
         return "Searching the web…"
+    if "fs_locate" in lower:
+        from backend.services.integrations.mcp.filesystem_tools import (
+            _find_path_label,
+            _guess_find_pattern,
+            resolve_folder_from_user_text,
+        )
+
+        hint = (str(args.get("name") or "").strip() or _guess_find_pattern(user_task) or "file")
+        folder = resolve_folder_from_user_text(user_task)
+        where = _find_path_label(folder) if folder is not None else ""
+        suffix = f" in {where}" if where else ""
+        return f"Locating {hint}{suffix}…"
+    if "fs_find" in lower:
+        from backend.services.integrations.mcp.filesystem_tools import (
+            _find_path_label,
+            resolve_folder_from_user_text,
+        )
+
+        from backend.services.integrations.mcp.filesystem_tools import _is_whole_disk_root
+
+        pat = str(args.get("pattern") or "").strip() or "file"
+        scope = str(args.get("root") or "").strip()
+        if scope in {"/", "\\"}:
+            scope = ""
+        elif scope:
+            try:
+                p = Path(scope).expanduser()
+                if p.is_absolute() and _is_whole_disk_root(p):
+                    scope = ""
+            except OSError:
+                pass
+        if not scope:
+            folder = resolve_folder_from_user_text(user_task)
+            if folder is not None:
+                scope = _find_path_label(folder)
+        deep = args.get("deep") in (True, "true", "True", 1, "1")
+        where = f" in {scope}" if scope else (" (full disk)" if deep else "")
+        return f"Locating {pat}{where}…"
+    if "convert_file" in lower:
+        fmt = str(args.get("to_format") or "").strip().lstrip(".")
+        return f"Converting file to {fmt or 'new format'}…"
+    if "convert_batch" in lower:
+        fmt = str(args.get("to_format") or "").strip().lstrip(".")
+        n = len(args.get("paths") or []) if isinstance(args.get("paths"), list) else 0
+        if n:
+            return f"Converting {n} file(s) to {fmt or 'new format'}…"
+        return f"Converting batch to {fmt or 'new format'}…"
+    if "convert_capabilities" in lower:
+        return "Checking conversion backends…"
+    if "fs_read" in lower:
+        return "Reading file…"
+    if "fs_list" in lower:
+        return "Listing folder…"
     if name.startswith("mindos_search"):
         return "Searching your mail and notes…"
     if "gmail_sync" in lower:
@@ -542,7 +623,7 @@ def _tool_think_line(name: str, args: dict) -> str:
     return f"Running {clean}…" if clean else ""
 
 
-def _emit_tool_think(msgs, on_partial, *, seen: set[str]) -> None:
+def _emit_tool_think(msgs, on_partial, *, seen: set[str], user_task: str = "") -> None:
     if not msgs or on_partial is None:
         return
     for m in reversed(msgs):
@@ -563,7 +644,7 @@ def _emit_tool_think(msgs, on_partial, *, seen: set[str]) -> None:
             if key in seen:
                 continue
             seen.add(key)
-            line = _tool_think_line(tid, _tool_call_args(tc))
+            line = _tool_think_line(tid, _tool_call_args(tc), user_task=user_task)
             if line:
                 emit_partial(on_partial, f"→ {line}", phase="think")
         break
@@ -588,7 +669,7 @@ def _maybe_reset_answer_stream(msgs, buf: list[str]) -> None:
         buf.clear()
 
 
-async def _ainvoke_values_only(agent, invoke, config, *, on_partial) -> dict:
+async def _ainvoke_values_only(agent, invoke, config, *, on_partial, user_task: str = "") -> dict:
     last_sig: list[str] = [""]
     tool_seen: set[str] = set()
     result: dict | None = None
@@ -596,13 +677,20 @@ async def _ainvoke_values_only(agent, invoke, config, *, on_partial) -> dict:
         if isinstance(state, dict):
             result = state
             _emit_todo_think(state.get("messages"), on_partial, last_sig=last_sig)
-            _emit_tool_think(state.get("messages"), on_partial, seen=tool_seen)
+            _emit_tool_think(
+                state.get("messages"),
+                on_partial,
+                seen=tool_seen,
+                user_task=user_task,
+            )
     if result is not None:
         return result
     return await agent.ainvoke(invoke, config=config)
 
 
-async def _ainvoke_streaming(agent, invoke, config, *, on_partial) -> dict:
+async def _ainvoke_streaming(
+    agent, invoke, config, *, on_partial, user_task: str = ""
+) -> dict:
     last_sig: list[str] = [""]
     tool_seen: set[str] = set()
     answer_buf: list[str] = []
@@ -623,7 +711,12 @@ async def _ainvoke_streaming(agent, invoke, config, *, on_partial) -> dict:
                     result = data
                     _maybe_reset_answer_stream(data.get("messages"), answer_buf)
                     _emit_todo_think(data.get("messages"), on_partial, last_sig=last_sig)
-                    _emit_tool_think(data.get("messages"), on_partial, seen=tool_seen)
+                    _emit_tool_think(
+                        data.get("messages"),
+                        on_partial,
+                        seen=tool_seen,
+                        user_task=user_task,
+                    )
                 continue
             if kind != "messages":
                 continue
@@ -641,7 +734,9 @@ async def _ainvoke_streaming(agent, invoke, config, *, on_partial) -> dict:
             if text:
                 emit_partial(on_partial, text, phase="answer")
     except Exception:
-        return await _ainvoke_values_only(agent, invoke, config, on_partial=on_partial)
+        return await _ainvoke_values_only(
+            agent, invoke, config, on_partial=on_partial, user_task=user_task
+        )
     if result is not None:
         return result
     return await agent.ainvoke(invoke, config=config)
@@ -649,6 +744,10 @@ async def _ainvoke_streaming(agent, invoke, config, *, on_partial) -> dict:
 
 _TOOL_URL = re.compile(r"https?://[^\s\]\)]+")
 _EID_IN_URL = re.compile(r"eid=([^&\s\]\)]+)")
+_CALENDAR_EVENT_URL = re.compile(
+    r"https?://(?:www\.)?google\.com/calendar/event\b",
+    re.IGNORECASE,
+)
 
 
 def _url_already_in_answer(url: str, answer: str) -> bool:
@@ -724,17 +823,20 @@ def _current_turn_tool_texts(result) -> list[str]:
 
 
 def _surfaceable_urls(text: str) -> list[str]:
-    """Only create/update (or single-link) tools—not list-upcoming dumps."""
+    """Calendar create/update links only—not list dumps or install/docs URLs."""
     urls = _TOOL_URL.findall(text)
     if not urls:
+        return []
+    cal = [u for u in urls if _CALENDAR_EVENT_URL.search(u)]
+    if not cal:
         return []
     head = text.lstrip()
     if head.startswith("Created calendar event") or head.startswith(
         "Updated calendar event"
     ):
-        return [urls[0]]
-    if len(urls) == 1:
-        return urls
+        return [cal[0]]
+    if len(cal) == 1:
+        return cal
     return []
 
 

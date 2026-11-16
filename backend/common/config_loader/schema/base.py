@@ -24,6 +24,12 @@ class ConfigResponse(BaseModel):
     def is_enabled(self, name: str) -> bool:
         return name in self.enabled_names()
 
+    def service_settings(self, name: str) -> dict[str, Any]:
+        for entry in self.services:
+            if entry.name == name:
+                return dict(entry.settings or {})
+        return {}
+
     @model_validator(mode="before")
     @classmethod
     def _from_legacy_bools(cls, data: Any) -> Any:
