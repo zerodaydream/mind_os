@@ -48,22 +48,33 @@ async def run_gmail_full_ingest(*, process: bool, query: str | None, limit: int)
     async with lifecycle._session_factory() as session:
         user = await ensure_default_user(session, settings)
         try:
-            stats = await sync_gmail_inbox(
-                session,
-                user=user,
-                settings=settings,
-                max_messages=limit if limit > 0 else 0,
-                query=list_query,
-            )
+            page_token: str | None = None
+            est = None
+            while True:
+                stats = await sync_gmail_inbox(
+                    session,
+                    user=user,
+                    settings=settings,
+                    max_messages=limit if limit > 0 else 0,
+                    query=list_query,
+                    page_token=page_token,
+                    single_list_page=limit == 0,
+                )
+                total_ingested += int(stats.get("ingested") or 0)
+                total_skipped += int(stats.get("skipped") or 0)
+                total_scanned += int(stats.get("scanned") or 0)
+                if est is None:
+                    est = stats.get("result_size_estimate")
+                page_token = stats.get("next_page_token")
+                if limit != 0 or not page_token:
+                    break
             await session.commit()
-            total_ingested = int(stats.get("ingested") or 0)
-            total_skipped = int(stats.get("skipped") or 0)
-            total_scanned = int(stats.get("scanned") or 0)
+            est_bit = f" · ~{est} matched" if isinstance(est, int) and est >= 0 else ""
             elapsed = time.perf_counter() - started
             term.step(
                 "Gmail",
                 f"ingested {total_ingested} · skipped {total_skipped} · "
-                f"scanned {total_scanned} · {elapsed:.1f}s",
+                f"scanned {total_scanned}{est_bit} · {elapsed:.1f}s",
                 ok=total_ingested > 0 or total_skipped > 0,
             )
             if limit == 1 and total_ingested == 0 and total_skipped == 1:

@@ -30,6 +30,7 @@ from backend.services.ingest.core.gmail import (
 )
 from backend.services.integrations.core.gdrive.drive_store import (
     drive_download_bytes,
+    drive_trash_file,
     drive_upload_bytes,
     gdrive_ingest_configured,
 )
@@ -331,6 +332,10 @@ async def gmail_ingest_extras(
             name = rec.get("filename") or "attachment"
             _gmail_sync_note(f"{label} · {name}: {err}")
 
+    if records:
+        n_ok = sum(1 for r in records if r.get("ingested"))
+        _gmail_sync_note(f"{label} · attachments {n_ok}/{len(records)} ingested")
+
     block = gmail_format_extras_block(links, records, body_parts)
     return links, records, block
 
@@ -510,15 +515,25 @@ async def _handle_skipped_gmail_message(
 
 async def _delete_gmail_artifact(session: AsyncSession, user_id, msg_id: str) -> bool:
     row = await session.execute(
-        select(Artifact.id).where(
+        select(Artifact).where(
             Artifact.user_id == user_id,
             Artifact.source == "gmail",
             Artifact.external_id == msg_id,
         )
     )
-    art_id = row.scalar_one_or_none()
-    if art_id is None:
+    art = row.scalar_one_or_none()
+    if art is None:
         return False
+    art_id = art.id
+    if gdrive_ingest_configured():
+        for rec in (art.metadata_ or {}).get("attachments") or []:
+            fid = rec.get("drive_file_id")
+            if not fid:
+                continue
+            try:
+                await drive_trash_file(str(fid))
+            except Exception:
+                pass
     chunk_ids = select(ArtifactChunk.id).where(ArtifactChunk.artifact_id == art_id)
     await session.execute(
         update(Commitment)
@@ -655,6 +670,7 @@ async def sync_gmail_inbox(
     query: str | None = None,
     page_token: str | None = None,
     after_msg_id: str | None = None,
+    single_list_page: bool = False,
 ) -> dict:
     if max_messages is None:
         limit = settings.gmail_sync_max_messages
@@ -834,11 +850,14 @@ async def sync_gmail_inbox(
                     capped = bool(next_page_token)
                 break
             list_page_token = page.get("nextPageToken")
+            next_page_token = list_page_token
             if not list_page_token:
                 break
             if not use_cap:
                 await session.commit()
                 _gmail_sync_note(f"checkpoint · scanned {scanned} · ingested {ingested}")
+            if single_list_page:
+                break
 
     if message_bar is not None:
         message_bar.close()

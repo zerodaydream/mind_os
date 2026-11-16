@@ -235,10 +235,50 @@ async def trash_gdrive_ingest_roots() -> int:
     return removed
 
 
+def _drive_name_query(parent_id: str, name: str) -> str:
+    safe = name.replace("\\", "\\\\").replace("'", "\\'")
+    return " and ".join(
+        (
+            f"name = '{safe}'",
+            f"'{parent_id}' in parents",
+            "trashed = false",
+        )
+    )
+
+
+async def _drive_file_id_in_parent(parent_id: str, name: str) -> str | None:
+    q = quote(_drive_name_query(parent_id, name))
+    token = _bearer_token()
+    headers = {"Authorization": f"Bearer {token}"}
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        listed = await client.get(
+            f"https://www.googleapis.com/drive/v3/files?q={q}&fields=files(id)&pageSize=1",
+            headers=headers,
+        )
+        listed.raise_for_status()
+        files = listed.json().get("files") or []
+        if files:
+            return str(files[0]["id"])
+    return None
+
+
+async def drive_trash_file(file_id: str) -> None:
+    token = _bearer_token()
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        resp = await client.delete(
+            f"https://www.googleapis.com/drive/v3/files/{file_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        resp.raise_for_status()
+
+
 async def drive_upload_bytes(*, name: str, mime_type: str, data: bytes) -> str:
     root = await _ingest_folder_id()
     type_key = _attachment_type_folder(name)
     parent = await _ingest_type_folder_id(root, type_key)
+    existing = await _drive_file_id_in_parent(parent, name)
+    if existing:
+        return existing
     boundary = "mindos_drive_boundary"
     meta = json.dumps(
         {
