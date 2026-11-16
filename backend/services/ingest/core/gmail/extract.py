@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 
 from backend.services.ingest.core.gmail import csv as csv_mod
+from backend.services.ingest.core.gmail import eml as eml_mod
 from backend.services.ingest.core.gmail import docx as docx_mod
 from backend.services.ingest.core.gmail import image as image_mod
 from backend.services.ingest.core.gmail import media as media_mod
@@ -33,7 +34,9 @@ def extract_attachment_text(raw: bytes, *, mime: str, filename: str) -> str:
     if kind == "zip":
         raise AttachmentExtractError("zip_skipped")
     try:
-        if kind == "text":
+        if kind == "eml":
+            text = eml_mod.extract_eml(raw)
+        elif kind == "text":
             text = text_mod.extract_text_plain(raw, mime=mime, filename=filename)
         elif kind == "pdf":
             text = pdf_mod.extract_pdf(raw)

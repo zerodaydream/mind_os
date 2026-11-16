@@ -52,6 +52,8 @@ def attachment_kind(mime: str, filename: str) -> str | None:
         return "xls"
     if mime == _LEGACY_WORD_MIME or ext == ".doc":
         return "doc"
+    if mime in ("message/rfc822", "application/vnd.ms-outlook") or ext == ".eml":
+        return "eml"
     if mime.startswith("text/") or mime == "application/xhtml+xml":
         return "text"
     if mime in ("application/json", "application/xml", "application/x-yaml", "application/yaml") or ext in {

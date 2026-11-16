@@ -42,7 +42,7 @@ async def run_gmail_full_ingest(*, process: bool, query: str | None, limit: int)
     if limit == 1:
         term.note("tqdm bars: one message + per-attachment extract/download")
     elif limit == 0:
-        term.note("No message cap; commits after each API page. Safe to interrupt and re-run.")
+        term.note("tqdm progress bar; commits each API page. Safe to interrupt and re-run.")
 
     started = time.perf_counter()
     async with lifecycle._session_factory() as session:

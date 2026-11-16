@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from backend.services.ingest.core.gmail.errors import AttachmentExtractError
 from backend.services.ingest.core.gmail.ocr import rapid_ocr_engine, rapid_ocr_lines
 
 _PAGE_MIN_CHARS = 40

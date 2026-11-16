@@ -20,6 +20,24 @@ pytest.importorskip("docx")
 pytest.importorskip("openpyxl")
 
 
+def test_attachment_kind_eml() -> None:
+    assert attachment_kind("message/rfc822", "invite.eml") == "eml"
+    assert attachment_kind("application/octet-stream", "mail.eml") == "eml"
+
+
+def test_extract_eml_plain() -> None:
+    raw = b"""From: a@example.com
+To: b@example.com
+Subject: Hello E2B
+Content-Type: text/plain; charset=utf-8
+
+Body line one.
+"""
+    text = extract_attachment_text(raw, mime="message/rfc822", filename="x.eml")
+    assert "Hello E2B" in text
+    assert "Body line one" in text
+
+
 def test_attachment_kind_html_by_extension() -> None:
     assert attachment_kind("application/octet-stream", "page.html") == "text"
     assert attachment_is_extractable("application/octet-stream", "page.html") is True
@@ -118,6 +136,18 @@ def test_extract_pdf_text() -> None:
 def test_extract_media_stub() -> None:
     text = extract_attachment_text(b"\x00", mime="audio/mpeg", filename="voice.mp3")
     assert "voice.mp3" in text and "Media attachment" in text
+
+
+def test_extract_pdf_password_protected() -> None:
+    import pymupdf
+
+    doc = pymupdf.open()
+    doc.new_page().insert_text((72, 72), "secret doc")
+    bio = BytesIO()
+    doc.save(bio, encryption=pymupdf.PDF_ENCRYPT_AES_256, user_pw="secret")
+    doc.close()
+    with pytest.raises(AttachmentExtractError, match="password_protected"):
+        extract_attachment_text(bio.getvalue(), mime="application/pdf", filename="locked.pdf")
 
 
 def test_extract_pdf_blank_page_raises_empty() -> None:

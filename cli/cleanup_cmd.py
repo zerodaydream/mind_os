@@ -9,7 +9,7 @@ from sqlalchemy import delete, text, update
 from cli import term
 from backend.common.config_loader.settings import get_settings
 from backend.common.database import lifecycle
-from backend.common.database.models import Artifact, Commitment, OutboxEvent
+from backend.common.database.models import Commitment, OutboxEvent
 from backend.services.integrations.core.gdrive.drive_store import (
     gdrive_ingest_configured,
     trash_gdrive_ingest_roots,
@@ -46,11 +46,14 @@ async def run_cleanup() -> int:
             term.step("GDrive", f"trashed {gdrive_roots} ingest folder(s)", ok=True)
         except Exception as exc:
             term.step("GDrive", str(exc), ok=False)
-            return 1
+            term.note("Continuing with local wipe.")
     else:
         term.note("GDrive not configured; skipped Drive folder trash")
 
+    term.note("Stop ingest if cleanup hangs (idle DB transactions hold locks).")
+    term.step("Database", "TRUNCATE artifacts CASCADE (chunks, embeddings)…")
     async with lifecycle._session_factory() as session:
+        art_count = await session.scalar(text("SELECT count(*) FROM artifacts")) or 0
         await session.execute(
             update(Commitment)
             .where(Commitment.source_chunk_id.is_not(None))
@@ -62,9 +65,10 @@ async def run_cleanup() -> int:
         outbox = await session.execute(
             delete(OutboxEvent).where(OutboxEvent.event_type == "artifact.process")
         )
-        arts = await session.execute(delete(Artifact))
+        # shortcut: CASCADE also truncates chunk-linked rows on this schema; upgrade to selective delete if needed
+        await session.execute(text("TRUNCATE artifacts RESTART IDENTITY CASCADE"))
         await session.commit()
-        n_arts = int(arts.rowcount or 0)
+        n_arts = int(art_count)
         n_outbox = int(outbox.rowcount or 0)
 
     vault_files = clear_vault_dir(settings.mindos_vault_path)

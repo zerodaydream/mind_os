@@ -686,7 +686,10 @@ async def sync_gmail_inbox(
     skipped = 0
     scanned = 0
     message_bar = None
-    if use_cap and limit > 0:
+    last_subject = ""
+    if not use_cap:
+        _gmail_sync_note("starting ingestion")
+    elif use_cap and limit > 0:
         from tqdm import tqdm
 
         message_bar = tqdm(total=limit, unit="msg", desc="Gmail", leave=True)
@@ -714,6 +717,7 @@ async def sync_gmail_inbox(
         next_page_token: str | None = None
         resume_after_msg_id: str | None = None
         list_after_msg_id: str | None = after_msg_id
+        total_estimate: int | None = None
         while True:
             if use_cap and scanned >= limit:
                 break
@@ -723,11 +727,19 @@ async def sync_gmail_inbox(
             params: dict = {"maxResults": page_size, "q": list_query}
             if list_page_token:
                 params["pageToken"] = list_page_token
+            if not saw_messages:
+                _gmail_sync_note("listing messages…")
             listed = await gmail_get(
                 "https://gmail.googleapis.com/gmail/v1/users/me/messages",
                 params=params,
             )
             page = listed.json()
+            if total_estimate is None:
+                est = page.get("resultSizeEstimate")
+                if isinstance(est, int) and est >= 0:
+                    total_estimate = est
+                    if not use_cap:
+                        _gmail_sync_note(f"~{est} messages match query (Gmail estimate)")
             batch = [m["id"] for m in page.get("messages", [])]
             if not batch:
                 if not saw_messages:
@@ -737,12 +749,19 @@ async def sync_gmail_inbox(
                         "skipped": 0,
                         "scanned": 0,
                         "query": list_query,
+                        "result_size_estimate": total_estimate,
                         "capped": False,
                         "next_page_token": None,
                         "resume_after_msg_id": None,
                     }
                 break
             saw_messages = True
+            if not use_cap and message_bar is None:
+                from tqdm import tqdm
+
+                bar_total = total_estimate if total_estimate and total_estimate > 0 else None
+                message_bar = tqdm(total=bar_total, unit="msg", desc="Gmail", leave=True)
+                _gmail_sync_note("processing messages…")
             batch = batch[_gmail_batch_start(batch, list_after_msg_id) :]
             list_after_msg_id = None
 
@@ -778,6 +797,8 @@ async def sync_gmail_inbox(
                     else:
                         skipped += 1
                 else:
+                    if message_bar is not None:
+                        message_bar.set_postfix_str("fetching…", refresh=True)
                     bundle = await _fetch_gmail_ingest_payload(
                         gmail_get,
                         msg_id,
@@ -786,6 +807,7 @@ async def sync_gmail_inbox(
                     if bundle is None:
                         skipped += 1
                     else:
+                        last_subject = (bundle.get("subject") or msg_id)[:44]
                         await ingest_manual_note(
                             session,
                             user=user,
@@ -799,13 +821,10 @@ async def sync_gmail_inbox(
                         )
                         ingested += 1
                 last_done_msg_id = msg_id
-                if not use_cap and scanned % 10 == 0:
-                    _gmail_sync_note(
-                        f"ingested {ingested} · skipped {skipped} · scanned {scanned}"
-                    )
                 if message_bar is not None:
                     message_bar.update(1)
-                    message_bar.set_postfix_str(f"ing={ingested} skip={skipped}")
+                    tail = f" · {last_subject}" if last_subject else ""
+                    message_bar.set_postfix_str(f"ing={ingested} skip={skipped}{tail}")
             else:
                 resume_after_msg_id = None
 
@@ -819,6 +838,7 @@ async def sync_gmail_inbox(
                 break
             if not use_cap:
                 await session.commit()
+                _gmail_sync_note(f"checkpoint · scanned {scanned} · ingested {ingested}")
 
     if message_bar is not None:
         message_bar.close()
@@ -828,6 +848,7 @@ async def sync_gmail_inbox(
         "skipped": skipped,
         "scanned": scanned,
         "query": list_query,
+        "result_size_estimate": total_estimate,
         "capped": capped,
         "next_page_token": next_page_token,
         "resume_after_msg_id": resume_after_msg_id,
