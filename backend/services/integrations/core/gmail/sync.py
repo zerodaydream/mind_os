@@ -2,13 +2,21 @@ import asyncio
 import base64
 import hashlib
 import re
+import sys
 from datetime import datetime, timedelta, timezone
 import httpx
-from sqlalchemy import select
+from sqlalchemy import delete as sql_delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.common.config_loader.settings import Settings
-from backend.common.database.models import Artifact, ArtifactChunk, IntegrationAccount, OutboxEvent
+from backend.common.database.models import (
+    Artifact,
+    ArtifactChunk,
+    ChunkEmbedding,
+    Commitment,
+    IntegrationAccount,
+    OutboxEvent,
+)
 from backend.common.database.outbox import enqueue, enqueue_artifact_process
 from backend.services.ingest.core.gmail.policy import INGEST_POLICY_VERSION
 from backend.services.ingest.core.manual import ingest_manual_note
@@ -20,10 +28,10 @@ from backend.services.ingest.core.gmail import (
     gmail_format_extras_block,
     gmail_list_attachment_parts,
 )
-from backend.services.integrations.mcp.drive_store import (
-    drive_mcp_download_bytes,
-    drive_mcp_upload_bytes,
-    gdrive_mcp_configured,
+from backend.services.integrations.core.gdrive.drive_store import (
+    drive_download_bytes,
+    drive_upload_bytes,
+    gdrive_ingest_configured,
 )
 from backend.services.integrations.core.google.oauth import (
     access_token_expired,
@@ -37,6 +45,11 @@ DEFAULT_GMAIL_FULL_INGEST_QUERY = (
 )
 
 _URL = re.compile(r"https?://[^\s<>\"')\]]+", re.I)
+
+
+def _gmail_sync_note(line: str) -> None:
+    sys.stderr.write(f"  · Gmail  {line}\n")
+    sys.stderr.flush()
 _HREF = re.compile(r"""href\s*=\s*['"]([^'"]+)['"]""", re.I)
 
 
@@ -217,7 +230,7 @@ async def gmail_fetch_attachment_bytes(attachment_record: dict) -> bytes:
     file_id = attachment_record.get("drive_file_id")
     if not file_id:
         raise ValueError("attachment missing drive_file_id")
-    return await drive_mcp_download_bytes(file_id)
+    return await drive_download_bytes(file_id)
 
 
 async def _ingest_gmail_attachment(
@@ -248,7 +261,7 @@ async def _ingest_gmail_attachment(
 
         async def _drive_upload() -> tuple[str | None, str | None]:
             try:
-                file_id = await drive_mcp_upload_bytes(
+                file_id = await drive_upload_bytes(
                     name=drive_name, mime_type=mime, data=raw
                 )
                 return file_id, None
@@ -283,12 +296,13 @@ async def gmail_ingest_extras(
     payload: dict,
     *,
     show_attachment_progress: bool = False,
+    subject: str | None = None,
 ) -> tuple[list[str], list[dict], str]:
     links = gmail_collect_links(payload)
-    if not gdrive_mcp_configured():
+    if not gdrive_ingest_configured():
         raise ValueError(
-            "gdrive MCP not configured — set GDRIVE_MCP_OAUTH_PATH in .env and "
-            "npx @ibarcarty/mcp-server-google-drive auth"
+            "GDrive not configured for attachments — set "
+            "GDRIVE_OAUTH_PATH and GDRIVE_TOKEN_PATH in .env"
         )
     specs = gmail_list_attachment_parts(payload)
     sem = asyncio.Semaphore(2)
@@ -307,10 +321,15 @@ async def gmail_ingest_extras(
 
     records: list[dict] = []
     body_parts: list[str] = []
+    label = (subject or msg_id)[:56]
     for rec, body_part in pairs:
         records.append(rec)
         if body_part:
             body_parts.append(body_part)
+        err = rec.get("drive_upload_error") or rec.get("reason")
+        if err:
+            name = rec.get("filename") or "attachment"
+            _gmail_sync_note(f"{label} · {name}: {err}")
 
     block = gmail_format_extras_block(links, records, body_parts)
     return links, records, block
@@ -413,6 +432,7 @@ async def _fetch_gmail_ingest_payload(
         msg_id,
         payload,
         show_attachment_progress=show_attachment_progress,
+        subject=subject,
     )
     meta_fields, occurred = gmail_artifact_metadata(meta, headers_map)
     meta_fields["ingest_policy_version"] = INGEST_POLICY_VERSION
@@ -490,16 +510,23 @@ async def _handle_skipped_gmail_message(
 
 async def _delete_gmail_artifact(session: AsyncSession, user_id, msg_id: str) -> bool:
     row = await session.execute(
-        select(Artifact).where(
+        select(Artifact.id).where(
             Artifact.user_id == user_id,
             Artifact.source == "gmail",
             Artifact.external_id == msg_id,
         )
     )
-    art = row.scalar_one_or_none()
-    if art is None:
+    art_id = row.scalar_one_or_none()
+    if art_id is None:
         return False
-    await session.delete(art)
+    chunk_ids = select(ArtifactChunk.id).where(ArtifactChunk.artifact_id == art_id)
+    await session.execute(
+        update(Commitment)
+        .where(Commitment.source_chunk_id.in_(chunk_ids))
+        .values(source_chunk_id=None)
+    )
+    await session.execute(sql_delete(ChunkEmbedding).where(ChunkEmbedding.chunk_id.in_(chunk_ids)))
+    await session.execute(sql_delete(Artifact).where(Artifact.id == art_id))
     await session.flush()
     return True
 
@@ -788,6 +815,9 @@ async def sync_gmail_inbox(
                 break
             if not use_cap:
                 await session.commit()
+                _gmail_sync_note(
+                    f"page · ingested {ingested} · skipped {skipped} · scanned {scanned}"
+                )
 
     if message_bar is not None:
         message_bar.close()

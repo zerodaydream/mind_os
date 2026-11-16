@@ -110,3 +110,4 @@ Defaults in `.env`: `MINDOS_LLM_DAILY_USD=2.00`, `MINDOS_LLM_MONTHLY_USD=40.00`,
 | Tests flaky on env | `get_settings()` is cached; tests clear cache in `conftest.py` |
 | Large Gmail backlog | Default `mindos sync` scans up to `GMAIL_SYNC_MAX_MESSAGES` (200) per page batch; it continues pages while more match. Full backfill: `mindos gmail-ingest --limit 0` |
 | Chunk keyword search slow / error `text_tsv` | Run `uv run alembic upgrade head` (migration `20261116_0005`) |
+| Gmail attachments on GDrive | GDrive REST (`integrations/core/gdrive/drive_store.py`); folder **MindOS Gmail Attachments** (`GDRIVE_INGEST_FOLDER`); `GDRIVE_OAUTH_PATH` / `GDRIVE_TOKEN_PATH` (legacy `GDRIVE_MCP_*` still read) |

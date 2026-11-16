@@ -79,7 +79,9 @@ class ArtifactChunk(Base):
     chunker_version: Mapped[str] = mapped_column(Text, nullable=False)
 
     artifact: Mapped[Artifact] = relationship(back_populates="chunks")
-    embedding: Mapped["ChunkEmbedding | None"] = relationship(back_populates="chunk", uselist=False)
+    embedding: Mapped["ChunkEmbedding | None"] = relationship(
+        back_populates="chunk", uselist=False, cascade="all, delete-orphan"
+    )
 
 
 class ChunkEmbedding(Base):
