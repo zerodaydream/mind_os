@@ -10,7 +10,7 @@
       "name": "filesystem",
       "enabled": true,
       "transport": "builtin",
-      "guidance": "Local disk only—not Gmail/Drive ingested mail. For attachments, recipients, or mail thread names use personal mindos_search first. mindos_fs_locate for on-disk paths under allowed roots; mindos_fs_find only for explicit globs. No root=/. Destructive: preview then confirmed=True."
+      "guidance": "Local disk only—not Gmail/Drive ingested mail. Use mindos_search first for mail/Drive. Default search is MINDOS_HOME (project), not whole ~. For personal files: mindos_fs_list(\"~\") then glob/grep with root=~/Downloads|Desktop|Documents; deep=True only if they want a wide scan. Configure agents.filesystem.search_paths for your usual folders. Destructive: preview then confirmed=True."
     },
     {
       "name": "convert",

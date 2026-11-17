@@ -24,6 +24,8 @@ _TOOL_STATUS: dict[str, str] = {
     "mindos_convert_batch": "Converting files",
     "mindos_fs_roots": "Listing workspace folders",
     "mindos_fs_list": "Listing folder contents",
+    "mindos_fs_grep": "Grepping file contents",
+    "mindos_fs_glob": "Finding files by pattern",
     "mindos_fs_locate": "Searching for files",
     "mindos_fs_find": "Searching files on disk",
     "mindos_fs_read": "Reading file",

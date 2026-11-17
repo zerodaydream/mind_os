@@ -333,7 +333,8 @@ def build_convert_tools(*, user_task: str = ""):
             "For rare pairs, install https://github.com/JSBtechnologies/convx (`convx mcp` is also valid as a separate MCP).",
             "Outputs are new files beside the source (or output_dir); if the default output path exists, "
             "mindos_convert_file previews and asks before writing stem (1).ext. "
-            "mindos_fs_find → mindos_convert_file or mindos_convert_batch; rerun with confirmed=True after user OK.",
+            "mindos_fs_glob or mindos_fs_locate → mindos_convert_file or mindos_convert_batch; "
+            "rerun with confirmed=True after user OK.",
         ]
         return "\n".join(lines)
 

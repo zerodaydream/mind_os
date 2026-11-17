@@ -7,22 +7,22 @@ import os
 import re
 import shutil
 import stat
-import subprocess
-import sys
-from collections.abc import Callable
 from pathlib import Path
 
 from backend.common.langsmith_setup import trace_tool
-from backend.services.agents.core.render.partial import PartialFn, emit_partial
+from backend.services.agents.core.render.partial import PartialFn
 from backend.services.graph.core.deep_session import mindos_home
+from backend.services.integrations.mcp.fs_ripgrep import (
+    _MAX_SCAN_BASES,
+    rg_grep,
+    rg_list_files,
+)
 
 _MAX_READ_BYTES = 120_000
 _MAX_FIND = 80
+_MAX_GLOB = 80
+_MAX_GREP_LINES = 200
 _MAX_LIST = 200
-_SPOTLIGHT_TIMEOUT_SEC = 20
-_SKIP_WALK_DIRNAMES = frozenset(
-    {"node_modules", ".git", "__pycache__", ".venv", "venv", ".npm", "Pods"}
-)
 _PREVIEW_CONFIRM = (
     "Ask the user to confirm this change, then call again with confirmed=True."
 )
@@ -134,121 +134,6 @@ def _is_bare_stem_query(pattern: str) -> bool:
     return _is_simple_filename(pat) and "." not in pat and "*" not in pat
 
 
-def _stem_matches_filename(filename: str, query: str) -> bool:
-    stem = Path(filename).stem.casefold()
-    q = query.casefold()
-    if stem == q:
-        return True
-    return stem.startswith(q) and len(stem) > len(q) and stem[len(q)] in " (._-"
-
-
-def _walk_collect_files(
-    bases: list[Path],
-    *,
-    limit: int,
-    accept_name: Callable[[str], bool],
-) -> list[str]:
-    hits: list[str] = []
-    for base in bases:
-        if not base.is_dir():
-            continue
-        try:
-            for dirpath, dirnames, filenames in os.walk(
-                base, topdown=True, followlinks=False
-            ):
-                dirnames[:] = [d for d in dirnames if d not in _SKIP_WALK_DIRNAMES]
-                for fn in filenames:
-                    if not accept_name(fn):
-                        continue
-                    resolved = _resolve_allowed(str(Path(dirpath) / fn))
-                    if isinstance(resolved, Path) and resolved.is_file():
-                        s = str(resolved)
-                        if s not in hits:
-                            hits.append(s)
-                    if len(hits) >= limit:
-                        return hits
-        except OSError:
-            continue
-    return hits
-
-
-def _python_find_in_dir(
-    base: Path,
-    raw_pat: str,
-    glob_pat: str,
-    *,
-    stem_query: bool,
-    exact_simple: bool,
-    scoped: bool,
-    hits: list[str],
-    limit: int,
-) -> None:
-    """Pathlib iterdir/glob in one folder; walk only when searching a wide tree."""
-
-    def add(path: Path) -> bool:
-        resolved = _resolve_allowed(str(path))
-        if not isinstance(resolved, Path) or not resolved.is_file():
-            return len(hits) >= limit
-        line = str(resolved)
-        if line not in hits:
-            hits.append(line)
-        return len(hits) >= limit
-
-    if not base.is_dir():
-        return
-
-    if stem_query:
-        if scoped:
-            try:
-                for p in base.rglob("*"):
-                    if p.is_file() and _stem_matches_filename(p.name, raw_pat) and add(p):
-                        return
-            except OSError:
-                return
-        for line in _walk_collect_files(
-            [base],
-            limit=limit,
-            accept_name=lambda fn: _stem_matches_filename(fn, raw_pat),
-        ):
-            if line not in hits:
-                hits.append(line)
-            if len(hits) >= limit:
-                return
-        return
-
-    if exact_simple:
-        if scoped:
-            try:
-                direct = base / raw_pat
-                if direct.is_file():
-                    add(direct)
-                    return
-                for p in base.iterdir():
-                    if p.is_file() and p.name.casefold() == raw_pat.casefold() and add(p):
-                        return
-            except OSError:
-                return
-        want = raw_pat.casefold()
-        for line in _walk_collect_files(
-            [base],
-            limit=limit,
-            accept_name=lambda fn, w=want: fn.casefold() == w,
-        ):
-            if line not in hits:
-                hits.append(line)
-            if len(hits) >= limit:
-                return
-        return
-
-    pat = glob_pat[3:] if scoped and glob_pat.startswith("**/") else glob_pat
-    try:
-        for p in base.glob(pat):
-            if p.is_file() and add(p):
-                return
-    except OSError:
-        return
-
-
 def _prepare_find_pattern(pattern: str) -> str:
     pat = (pattern or "").strip()
     if not pat:
@@ -276,6 +161,11 @@ def _fast_search_dirs() -> list[Path]:
                     out.append(p)
         if out:
             return out
+    # Default: workspace (MINDOS_HOME/cwd), not all of ~ — personal files need explicit path or search_paths.
+    project = mindos_home()
+    resolved = _resolve_allowed(str(project))
+    if isinstance(resolved, Path) and resolved.is_dir():
+        return [resolved]
     home = Path.home()
     return [home] if home.is_dir() else []
 
@@ -300,78 +190,6 @@ def _walk_search_roots(roots: list[Path]) -> list[Path]:
                 seen.add(key)
                 out.append(root)
     return out or roots
-
-
-def _collect_spotlight_lines(stdout: str, *, limit: int, hits: list[Path]) -> None:
-    for line in stdout.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        resolved = _resolve_allowed(line)
-        if not isinstance(resolved, Path) or not resolved.is_file():
-            continue
-        if resolved in hits:
-            continue
-        hits.append(resolved)
-        if len(hits) >= limit:
-            return
-
-
-def _run_mdfind_queries(queries: list[list[str]], *, limit: int) -> list[Path]:
-    hits: list[Path] = []
-    for cmd in queries:
-        if len(hits) >= limit:
-            break
-        try:
-            proc = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=_SPOTLIGHT_TIMEOUT_SEC,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            continue
-        if proc.returncode != 0:
-            continue
-        _collect_spotlight_lines(proc.stdout, limit=limit, hits=hits)
-    return hits
-
-
-def _spotlight_paths(name: str, *, limit: int) -> list[Path]:
-    if sys.platform != "darwin":
-        return []
-    safe = name.replace("\\", "\\\\").replace('"', '\\"')
-    queries: list[list[str]] = [
-        ["mdfind", f'kMDItemFSName == "{safe}"c'],
-        ["mdfind", "-name", name],
-    ]
-    return _run_mdfind_queries(queries, limit=limit)
-
-
-def _mdfind_scoped(
-    base: Path,
-    raw_pat: str,
-    *,
-    stem_query: bool,
-    limit: int,
-) -> list[Path]:
-    """Spotlight limited to one folder (macOS); falls back to Python when index is stale."""
-    if sys.platform != "darwin" or not base.is_dir():
-        return []
-    onlyin = str(base)
-    if stem_query:
-        safe = raw_pat.replace("\\", "\\\\").replace('"', '\\"')
-        queries = [
-            ["mdfind", "-onlyin", onlyin, f'kMDItemFSName == "*{safe}*"c'],
-            ["mdfind", "-onlyin", onlyin, raw_pat],
-        ]
-    else:
-        safe = raw_pat.replace("\\", "\\\\").replace('"', '\\"')
-        queries = [
-            ["mdfind", "-onlyin", onlyin, f'kMDItemFSName == "{safe}"c'],
-            ["mdfind", "-onlyin", onlyin, "-name", raw_pat],
-        ]
-    return _run_mdfind_queries(queries, limit=limit)
 
 
 _FOLDER_FUZZY_CUTOFF = 0.72
@@ -464,35 +282,6 @@ def resolve_folder_from_user_text(text: str) -> Path | None:
     return None
 
 
-def resolve_path_from_user_task(path: str, user_task: str) -> str:
-    raw = (path or "").strip()
-    if not raw or "/" in raw or raw.startswith("~"):
-        return raw
-    folder = resolve_folder_from_user_text(user_task)
-    if folder is not None:
-        return str(folder / raw)
-    return raw
-
-
-def _is_whole_disk_root(path: Path) -> bool:
-    try:
-        return path.resolve() == Path("/").resolve()
-    except OSError:
-        return False
-
-
-def _find_path_label(path: Path) -> str:
-    try:
-        rel = path.resolve().relative_to(Path.home())
-        if not rel.parts:
-            return "home folder"
-        return f"folder ~/{rel}"
-    except ValueError:
-        if path.resolve() == Path("/").resolve():
-            return "entire disk"
-        return f"folder {path.name or path}"
-
-
 _SKIP_GUESS_NAMES = frozenset(
     {"all", "files", "file", "many", "there", "any", "some", "the", "my", "in"}
 )
@@ -519,26 +308,46 @@ def _guess_find_pattern(user_task: str) -> str | None:
     return None
 
 
-def _find_progress(
-    cb: PartialFn | None,
-    where: str,
-    *,
-    found: bool | None,
-    list_only: bool = False,
-) -> None:
-    if cb is None:
-        return
-    from backend.services.agents.core.render.tool_status import tool_status_line
+def resolve_path_from_user_task(path: str, user_task: str) -> str:
+    raw = (path or "").strip()
+    if not raw or "/" in raw or raw.startswith("~"):
+        return raw
+    folder = resolve_folder_from_user_text(user_task)
+    if folder is not None:
+        return str(folder / raw)
+    return raw
 
-    tool = "mindos_fs_list" if list_only else "mindos_fs_locate"
-    base = tool_status_line(tool)
-    if found is None:
-        where_bit = f" ({where})" if where else ""
-        emit_partial(cb, f"→ {base}{where_bit}…", phase="think")
-    elif found:
-        emit_partial(cb, f"→ Match found{ f' in {where}' if where else ''}", phase="think")
-    else:
-        emit_partial(cb, f"→ No match found{ f' in {where}' if where else ''}", phase="think")
+
+def _default_search_dir() -> Path:
+    fast = _fast_search_dirs()
+    if fast:
+        return fast[0]
+    roots = filesystem_roots()
+    return roots[0] if roots else Path.home()
+
+
+def _resolve_search_dir(path_str: str) -> Path | str:
+    raw = (path_str or "").strip()
+    if not raw or raw in {".", "./"}:
+        return _default_search_dir()
+    resolved = _resolve_allowed(raw)
+    if isinstance(resolved, str):
+        return resolved
+    if resolved.is_file():
+        return resolved.parent
+    if not resolved.is_dir():
+        return f"Not a directory: {resolved}"
+    return resolved
+
+
+def _glob_patterns_for_find(raw_pat: str, glob_pat: str, *, stem_query: bool) -> list[str]:
+    if stem_query:
+        return [f"**/*{raw_pat}*"]
+    if any(c in raw_pat for c in "*?[]"):
+        return [glob_pat]
+    if "/" in raw_pat:
+        return [raw_pat if raw_pat.startswith("**/") else f"**/{raw_pat}"]
+    return [glob_pat]
 
 
 def _fmt_entry(path: Path) -> str:
@@ -574,6 +383,14 @@ def build_filesystem_tools(*, on_partial: PartialFn | None = None, user_task: st
             lines.append(f"… +{len(entries) - cap} more (narrow path or raise max_entries)")
         return "\n".join(lines)
 
+    def _accept_existing_file(path_str: str) -> Path | str:
+        resolved = _resolve_allowed(path_str)
+        if isinstance(resolved, str):
+            return resolved
+        if resolved.is_file():
+            return resolved
+        return "not a file"
+
     async def _run_find(
         pattern: str,
         *,
@@ -589,92 +406,126 @@ def build_filesystem_tools(*, on_partial: PartialFn | None = None, user_task: st
             )
         cap = max(1, min(int(max_results), _MAX_FIND))
         stem_query = _is_bare_stem_query(raw_pat)
-        simple = _is_simple_filename(raw_pat) and not stem_query
         glob_pat = _prepare_find_pattern(raw_pat)
-        inferred_dir = resolve_folder_from_user_text(user_task)
-        root_base: Path | None = None
-        if root.strip() and root.strip() not in {"/", "\\"}:
-            resolved = _resolve_allowed(root.strip())
+        globs = _glob_patterns_for_find(raw_pat, glob_pat, stem_query=stem_query)
+
+        if root.strip() in {"/", "\\"}:
+            return (
+                "Pick a folder (e.g. ~/Downloads), not /. "
+                "Use deep=True only to scan all allowed roots."
+            )
+
+        scan_dirs: list[Path] = []
+        if root.strip():
+            resolved = _resolve_search_dir(root)
             if isinstance(resolved, str):
                 return resolved
-            if not resolved.is_dir():
-                return f"Not a directory: {resolved}"
-            if not _is_whole_disk_root(resolved):
-                root_base = resolved
-        narrow = root_base if root_base is not None else inferred_dir
-        deep = deep and narrow is None
-        deep = deep or (
-            bool(_filesystem_config().get("deep_search_on_miss")) and narrow is None
-        )
-
-        scoped = False
-        if root_base is not None:
-            scan_dirs = [root_base]
-            scoped = True
-        elif inferred_dir is not None:
-            if not inferred_dir.is_dir():
-                return f"Not a directory: {inferred_dir}"
-            scan_dirs = [inferred_dir]
-            scoped = True
+            scan_dirs = [resolved]
         elif deep:
             scan_dirs = _deep_search_dirs()
         else:
             scan_dirs = _fast_search_dirs()
 
-        hits: list[str] = []
-        ping = on_partial
-        if simple and not scoped and sys.platform == "darwin":
-            hits = [str(p) for p in _spotlight_paths(raw_pat, limit=cap)]
+        skipped_roots = 0
+        if len(scan_dirs) > _MAX_SCAN_BASES:
+            skipped_roots = len(scan_dirs) - _MAX_SCAN_BASES
+            scan_dirs = scan_dirs[:_MAX_SCAN_BASES]
 
+        hits: list[str] = []
+        errors: list[str] = []
         for base in scan_dirs:
             if len(hits) >= cap:
                 break
-            label = _find_path_label(base)
-            _find_progress(ping, label, found=None, list_only=scoped)
-            n_before = len(hits)
-            if scoped and sys.platform == "darwin":
-                for p in _mdfind_scoped(
-                    base, raw_pat, stem_query=stem_query, limit=cap - len(hits)
-                ):
-                    line = str(p)
-                    if line not in hits:
-                        hits.append(line)
-                    if len(hits) >= cap:
-                        break
-            if len(hits) < cap:
-                _python_find_in_dir(
-                    base,
-                    raw_pat,
-                    glob_pat,
-                    stem_query=stem_query,
-                    exact_simple=simple,
-                    scoped=scoped,
-                    hits=hits,
-                    limit=cap,
-                )
-            _find_progress(ping, label, found=len(hits) > n_before, list_only=scoped)
-
+            batch, err = rg_list_files(
+                base,
+                globs,
+                limit=cap - len(hits),
+                accept_path=_accept_existing_file,
+            )
+            if err:
+                errors.append(err)
+            for line in batch:
+                if line not in hits:
+                    hits.append(line)
         if not hits:
             searched = ", ".join(str(r) for r in scan_dirs)
-            hint = (
-                " Re-run with deep=True for a slower full-disk scan."
-                if not deep and not root.strip()
-                else " Pass root= to search one folder."
-            )
-            return f"No matches for {raw_pat!r} (searched {searched}).{hint}"
+            hint = " Retry with root= on a subfolder, or deep=True across allowed roots."
+            err_bit = f" ({errors[0]})" if errors else ""
+            return f"No matches for {raw_pat!r} under {searched}.{err_bit}{hint}"
         if len(hits) >= cap:
-            hits.append(f"… stopped at {cap} results; narrow with root= or a tighter pattern.")
+            hits.append(f"… stopped at {cap} results; narrow root= or pattern.")
+        if skipped_roots:
+            hits.append(
+                f"… deep scan capped at {_MAX_SCAN_BASES} roots ({skipped_roots} skipped); pass root=."
+            )
+        return "\n".join(hits)
+
+    async def mindos_fs_grep(
+        pattern: str,
+        path: str = "",
+        glob: str = "",
+        output_mode: str = "content",
+        head_limit: int = _MAX_GREP_LINES,
+        B: int = 0,
+        A: int = 0,
+        C: int = 0,
+        i: bool = False,
+    ) -> str:
+        """Search file contents with ripgrep. Start under path (default home); narrow path/glob and call again."""
+        base = _resolve_search_dir(path)
+        if isinstance(base, str):
+            return base
+        return rg_grep(
+            pattern,
+            base,
+            file_glob=glob,
+            output_mode=output_mode,
+            head_limit=head_limit,
+            context_before=B,
+            context_after=A,
+            context_both=C,
+            ignore_case=i,
+            accept_path=_accept_existing_file,
+        )
+
+    async def mindos_fs_glob(
+        glob_pattern: str,
+        target_directory: str = "",
+        max_results: int = _MAX_GLOB,
+    ) -> str:
+        """List file paths matching a glob (ripgrep --files). Call repeatedly with tighter globs/dirs."""
+        pat = (glob_pattern or "").strip()
+        if not pat:
+            return "glob_pattern is required (e.g. **/*.py or **/budget.xlsx)."
+        cap = max(1, min(int(max_results), _MAX_GLOB))
+        base = _resolve_search_dir(target_directory)
+        if isinstance(base, str):
+            return base
+        patterns = [pat if pat.startswith("**/") or "/" in pat else f"**/{pat}"]
+        hits, err = rg_list_files(
+            base,
+            patterns,
+            limit=cap,
+            accept_path=_accept_existing_file,
+        )
+        if err and not hits:
+            return err
+        if not hits:
+            return f"No files for glob {pat!r} under {base}"
+        if len(hits) >= cap:
+            hits.append(f"… stopped at {cap}; narrow target_directory or glob_pattern.")
         return "\n".join(hits)
 
     async def mindos_fs_locate(
-        name: str = "",
+        name: str,
+        root: str = "",
         max_results: int = 40,
     ) -> str:
-        """Locate files for the user's request (folder + name from their words). One call—do not chain mindos_fs_find."""
-        raw = (name or "").strip() or _guess_find_pattern(user_task) or ""
+        """Find files by name under root. Prefer mindos_fs_glob / mindos_fs_list + mindos_fs_grep for exploration."""
+        raw = (name or "").strip()
         if not raw:
-            return "Could not infer a filename; pass name= (e.g. my_photo or report.pdf)."
-        return await _run_find(raw, max_results=max_results)
+            return "pass name= (e.g. my_photo or report.pdf) and root= when you know the folder."
+        return await _run_find(raw, root=root, max_results=max_results)
 
     async def mindos_fs_find(
         pattern: str,
@@ -682,7 +533,7 @@ def build_filesystem_tools(*, on_partial: PartialFn | None = None, user_task: st
         max_results: int = 40,
         deep: bool = False,
     ) -> str:
-        """Glob or advanced find only. For natural locate/count requests use mindos_fs_locate instead."""
+        """Filename glob under root (default home). Same as locate; use mindos_fs_glob for explicit ** patterns."""
         return await _run_find(pattern, root=root, max_results=max_results, deep=deep)
 
     async def mindos_fs_read(path: str, max_chars: int = 24_000) -> str:
@@ -785,6 +636,8 @@ def build_filesystem_tools(*, on_partial: PartialFn | None = None, user_task: st
     return [
         trace_tool(mindos_fs_roots),
         trace_tool(mindos_fs_list),
+        trace_tool(mindos_fs_grep),
+        trace_tool(mindos_fs_glob),
         trace_tool(mindos_fs_locate),
         trace_tool(mindos_fs_find),
         trace_tool(mindos_fs_read),

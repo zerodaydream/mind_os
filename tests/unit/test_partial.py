@@ -1,4 +1,8 @@
-from backend.services.agents.core.render.partial import emit_partial, merge_stream_text
+from backend.services.agents.core.render.partial import (
+    emit_partial,
+    merge_stream_text,
+    polish_think_for_ui,
+)
 
 
 def test_emit_partial_phase_kw() -> None:
@@ -17,6 +21,26 @@ def test_merge_stream_text_replaces_cumulative_snapshot() -> None:
     assert merge_stream_text(prev, full) == full
     assert merge_stream_text(prev, prev) == prev
     assert merge_stream_text("", "Hi") == "Hi"
+
+
+def test_polish_think_strips_meta() -> None:
+    raw = (
+        "I'm currently dissecting the user's request. "
+        "I'm cross-referencing this against the system prompt."
+    )
+    out = polish_think_for_ui(raw)
+    assert "system prompt" not in out.lower()
+    assert out == "Working on it…"
+
+
+def test_emit_partial_keeps_tool_status_think() -> None:
+    seen: list[str] = []
+
+    def cb(text: str, *, phase: str = "answer") -> None:
+        seen.append(text)
+
+    emit_partial(cb, "→ Searching for files…", phase="think")
+    assert seen == ["→ Searching for files…"]
 
 
 def test_emit_partial_legacy_one_arg() -> None:
