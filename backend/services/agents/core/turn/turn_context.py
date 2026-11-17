@@ -20,6 +20,10 @@ from backend.services.agents.core.render.prompt_budget import (
     clip_text,
 )
 from backend.services.agents.core.render.mail_display import format_mail_display_when
+from backend.services.agents.core.routing.router_llm import (
+    _looks_like_thread_continuation,
+    thread_pending_execute,
+)
 from backend.services.retrieval.core.hybrid import hybrid_search_artifacts
 from backend.services.retrieval.core.search_memories import search_memories_ilike
 
@@ -36,13 +40,40 @@ _MAIL_KEYWORDS = (
     "mail",
     "subject",
     "thread",
-    "indeed",
-    "applied",
-    "application",
-    "job",
-    "jobs",
 )
 _LIST_PHRASES = ("show all", "list all", "all my", "display all", "every ")
+_HTTP_URL = re.compile(r"https?://\S+", re.I)
+_GREETING_START = re.compile(
+    r"^(hi|hello|hey|yo|good\s+(morning|afternoon|evening)|thanks|thank\s+you|bye)\b",
+    re.I,
+)
+_WORKSPACE_WORDS = (
+    "calendar",
+    "meeting",
+    "meetings",
+    "schedule",
+    "reminder",
+    "reminders",
+    "event",
+    "invite",
+    "file",
+    "files",
+    "folder",
+    "download",
+    "pdf",
+    "drive",
+    "workspace",
+    "notes",
+    "mindos",
+    "summarize",
+    "convert",
+    "rename",
+    "delete",
+    "sync",
+    "outbox",
+    "attachment",
+    "web search",
+)
 
 
 def converse_wants_context(message: str) -> bool:
@@ -69,6 +100,42 @@ def converse_wants_context(message: str) -> bool:
     if any(t in lower for t in triggers):
         return True
     return len(lower) > 60
+
+
+def message_in_mindos_scope(
+    message: str,
+    *,
+    history: list[dict] | None = None,
+    turn_context: TurnContext | None = None,
+) -> bool:
+    """False for general-knowledge / random chat with no MindOS workspace tie-in."""
+    msg = (message or "").strip()
+    if not msg:
+        return False
+    if msg.startswith("/"):
+        return True
+    if _GREETING_START.match(msg):
+        return True
+    if _HTTP_URL.search(msg):
+        return True
+    lower = msg.lower()
+    if converse_wants_context(msg):
+        return True
+    if any(w in lower for w in _WORKSPACE_WORDS):
+        return True
+    if history and _looks_like_thread_continuation(msg) and thread_pending_execute(history):
+        return True
+    if turn_context and turn_context.has_context and _mail_followup_topic(msg, history):
+        return True
+    return False
+
+
+def out_of_scope_reply() -> str:
+    return (
+        "Sorry — I can't help with general knowledge or off-topic questions here. "
+        "MindOS is for your mail, calendar, reminders, files, and indexed notes. "
+        "What would you like to look up or do in your workspace?"
+    )
 
 
 _COMMITMENT_WORDS = (

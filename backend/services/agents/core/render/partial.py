@@ -54,6 +54,17 @@ def merge_stream_text(prev: str, piece: str) -> str:
     return f"{prev}{piece}"
 
 
+def emit_canned_stream(cb: PartialFn | None, text: str, *, phase: str = "answer") -> None:
+    """Fixed copy through on_partial so the TUI can typewriter-reveal (see stream_reveal)."""
+    t = (text or "").strip()
+    if cb is None or not t:
+        return
+    try:
+        cb(t, phase=phase, stream_reveal=True)
+    except TypeError:
+        emit_partial(cb, t, phase=phase)
+
+
 def emit_partial(cb: PartialFn | None, text: str, *, phase: str = "answer") -> None:
     """Call streaming callback with optional think vs answer phase."""
     if cb is None:

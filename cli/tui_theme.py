@@ -209,6 +209,34 @@ _BRAND_OS = (
 )
 
 
+def welcome_mark_lines(*, max_w: int = 80) -> list[str]:
+    """Framed new-chat splash (ASCII only; fits narrow terminals)."""
+    title, name = "Welcome back,", "Dhanush!"
+    hints = ("What's on your mind?", "Gmail, reminders, web, file search, file conversion?")
+    cap = _clamp_width(max_w)
+    need = max(len(title), len(name), len("*---*---*"), *(len(h) for h in hints))
+    inner = min(cap - 2, need + 4)
+    g = _G
+    sep = _pad_cell(_center("*---*---*", inner), inner)
+    out = [
+        f"{g['tl']}{g['h'] * inner}{g['tr']}",
+        f"{g['v']}{sep}{g['v']}",
+        f"{g['v']}{_pad_cell(_center(title, inner), inner)}{g['v']}",
+        f"{g['v']}{_pad_cell(_center(name, inner), inner)}{g['v']}",
+    ]
+    for ln in hints:
+        out.append(f"{g['v']}{_pad_cell(_center(ln, inner), inner)}{g['v']}")
+    out.append(f"{g['bl']}{g['h'] * inner}{g['br']}")
+    return out
+
+
+def new_chat_splash_lines(*, width: int) -> list[str]:
+    w = _clamp_width(width)
+    raw = welcome_mark_lines(max_w=w)
+    bx = brand_block_x(w, raw)
+    return [(" " * bx + ln)[:w] for ln in raw]
+
+
 def brand_mark_lines(*, max_w: int = 80) -> list[str]:
     """Block figlet MIND + OS on one row each, side by side."""
     cap = max(24, max_w)

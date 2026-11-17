@@ -20,6 +20,8 @@ DEEP_CHAT_HISTORY_TURNS = 2
 ROUTER_LLM_MAX_CHARS = 1_200
 SYNTH_MAX_OUTPUT_TOKENS = 2_048
 EXTRACT_MAX_OUTPUT_TOKENS = 32
+# Router TASK lines can merge several turns; 32 tokens truncates merged tasks.
+ROUTER_MAX_OUTPUT_TOKENS = 256
 
 
 def clip_text(text: str, max_chars: int, *, min_keep: int | None = None) -> str:

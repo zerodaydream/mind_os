@@ -9,8 +9,8 @@ from backend.services.agents.core.render.prompt_budget import (
     CHAT_HISTORY_MSG_CHARS,
     CHAT_HISTORY_TURNS,
     DEEP_CHAT_HISTORY_TURNS,
-    EXTRACT_MAX_OUTPUT_TOKENS,
     ROUTER_LLM_MAX_CHARS,
+    ROUTER_MAX_OUTPUT_TOKENS,
     clip_text,
 )
 from backend.services.agents.core.routing.router import Intent, classify
@@ -24,8 +24,6 @@ _AMBIGUOUS_ACTION = (
     "gather",
     "sync",
     "read",
-    "applied",
-    "indeed",
     "gmail",
 )
 
@@ -112,8 +110,8 @@ def needs_turn_routing(message: str, intent: Intent, history: list[dict] | None)
         return True
     if not history:
         return False
-    if intent != "converse":
-        return False
+    if _looks_like_thread_continuation(message):
+        return True
     if len(message.strip()) <= _CONTEXTIVE_MAX_CHARS:
         return True
     return thread_pending_execute(history)
@@ -149,6 +147,21 @@ async def refine_intent(gateway, message: str) -> Intent | None:
     return routed[0] if routed else None
 
 
+async def resolve_turn_routing(
+    gateway,
+    message: str,
+    history: list[dict] | None,
+) -> tuple[Intent, str]:
+    """Keyword stub intent plus optional LLM intent and merged TASK for this turn."""
+    intent, body = classify(message)
+    if not needs_turn_routing(body, intent, history):
+        return intent, body
+    routed = await route_turn(gateway, message, history)
+    if routed:
+        return routed
+    return intent, body
+
+
 async def route_turn(
     gateway,
     message: str,
@@ -176,7 +189,7 @@ async def route_turn(
     prompt = "\n".join(parts)
     try:
         res = await gateway.complete(
-            prompt, task=LlmTask.EXTRACT, max_output_tokens=EXTRACT_MAX_OUTPUT_TOKENS
+            prompt, task=LlmTask.EXTRACT, max_output_tokens=ROUTER_MAX_OUTPUT_TOKENS
         )
         return _parse_turn_routing(res.text or "", message)
     except Exception:

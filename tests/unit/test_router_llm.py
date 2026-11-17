@@ -45,6 +45,7 @@ def test_thread_pending_execute_after_scheduling() -> None:
 
 def test_needs_turn_routing_short_reply_with_history() -> None:
     hist = [{"role": "user", "content": "schedule a meeting tomorrow"}]
+    assert needs_turn_routing("yes", "plan", hist) is True
     assert needs_turn_routing("yes", "converse", hist) is True
     assert needs_turn_routing("yes", "converse", None) is False
 

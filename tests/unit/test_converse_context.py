@@ -10,6 +10,13 @@ def test_greeting_skips_indexed_context():
     assert converse_wants_context("Hello!") is False
 
 
+def test_ambiguous_words_do_not_force_mail_prefetch():
+    assert converse_wants_context("Yes, indeed") is False
+    assert converse_wants_context("I applied the fix locally") is False
+    assert converse_wants_context("this web application is slow") is False
+    assert converse_wants_context("good job on the release") is False
+
+
 def test_commitment_question_loads_context():
     assert converse_wants_context("what are my open commitments") is True
 

@@ -11,7 +11,8 @@ from collections.abc import Callable
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.services.agents.core.converse.chat import run_chat
-from backend.services.agents.core.routing.router import classify, url_from_thread
+from backend.services.agents.core.routing.router import url_from_thread
+from backend.services.agents.core.routing.router_llm import resolve_turn_routing
 from backend.services.agents.core.session.sessions import (
     append_message,
     create_session,
@@ -23,10 +24,49 @@ from backend.services.agents.core.session.title import (
     generate_session_title,
     needs_session_title,
 )
+from backend.services.agents.core.render.partial import emit_canned_stream
 from backend.services.agents.core.render.prompt_budget import CHAT_HISTORY_TURNS
-from backend.services.agents.core.turn.turn_context import prefetch_turn_context
+from backend.services.agents.core.turn.turn_context import (
+    message_in_mindos_scope,
+    out_of_scope_reply,
+    prefetch_turn_context,
+)
 from backend.common.langsmith_setup import begin_turn_trace, flush_traces, tracing_active, unique_run_name
 from backend.services.graph.core.deep_agent import run_deep_agent
+
+
+async def _finish_out_of_scope(
+    session,
+    chat,
+    *,
+    user_line: str,
+    intent: str,
+    title_task: asyncio.Task | None,
+    on_partial: Callable[[str], None] | None,
+) -> dict:
+    answer = out_of_scope_reply()
+    emit_canned_stream(on_partial, answer)
+    if title_task is not None:
+        with contextlib.suppress(Exception):
+            await title_task
+    await append_message(
+        session,
+        chat=chat,
+        role="assistant",
+        content=answer,
+        intent=intent,
+        metadata={"mode": "out_of_scope", "sources": []},
+    )
+    return {
+        "message": user_line,
+        "answer": answer,
+        "sources": [],
+        "mode": "out_of_scope",
+        "intent": intent,
+        "session_id": str(chat.id),
+        "thread_id": str(chat.thread_id),
+        "title": display_session_title(chat.title),
+    }
 
 
 async def _synth_plan(
@@ -140,12 +180,12 @@ async def _handle_turn_body(
         chat = await create_session(session, user_id=user.id)
 
     prior_history = await recent_messages(session, session_id=chat.id, limit=CHAT_HISTORY_TURNS)
-    intent, body = classify(message)
+    user_line = message.strip()
+    intent, body = await resolve_turn_routing(gateway, user_line, prior_history)
     source_url = url_from_thread(body, prior_history)
     if source_url and source_url not in body:
         body = f"{body.strip()}\n\nSource URL: {source_url}"
 
-    user_line = message.strip()
     title_task: asyncio.Task | None = None
     if needs_session_title(chat.title) and not prior_history:
         title_task = asyncio.create_task(
@@ -158,9 +198,33 @@ async def _handle_turn_body(
     # drop the message we just appended from history fed into the model
     history = history[:-1] if history and history[-1].get("role") == "user" else history
 
+    if not prior_history and not message_in_mindos_scope(
+        body, history=history, turn_context=None
+    ):
+        return await _finish_out_of_scope(
+            session,
+            chat,
+            user_line=user_line,
+            intent=intent,
+            title_task=title_task,
+            on_partial=on_partial,
+        )
+
     turn_context = await prefetch_turn_context(
         session, user, settings, body, source=source, intent=intent, history=history
     )
+
+    if not message_in_mindos_scope(
+        body, history=history, turn_context=turn_context
+    ):
+        return await _finish_out_of_scope(
+            session,
+            chat,
+            user_line=user_line,
+            intent=intent,
+            title_task=title_task,
+            on_partial=on_partial,
+        )
 
     try:
         out = await run_deep_agent(

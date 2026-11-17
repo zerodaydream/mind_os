@@ -1294,7 +1294,7 @@ def _chat_wrap_text(text: str, width: int) -> list[str]:
 def _chat_nav_hint(inner_w: int, *, turn_active: bool = False) -> str:
     tiers = (
         (
-            " Tab → Back/History/Stop · Stop+Enter halts stream "
+            " Tab → New Chat/History/Back/Stop · Stop+Enter halts stream "
             " | Tab while typing → browse  |  Ctrl+G voice | ←/→ "
             if turn_active
             else " Tab → menus · Ctrl+G voice · Ctrl+D clear draft · ←/→ "
@@ -1609,7 +1609,7 @@ def chat_conversation(
     load_history: Callable[[str], tuple[list[tuple[str, str]], str] | None] | None = None,
     delete_history: Callable[[str], bool] | None = None,
 ) -> None:
-    """Continuous assistant chat; top bar Back / History (←/→, Enter on empty input)."""
+    """Continuous assistant chat; top bar New Chat / History / Back (←/→, Enter on empty input)."""
     import curses as c
 
     stdscr = _curses_main_window
@@ -1705,7 +1705,7 @@ def _chat_conversation_loop(
         "meta": md_meta,
     }
 
-    _TOP_TABS = ("Back", "History")
+    _TOP_TABS = ("New Chat", "History", "Back")
     turn_busy = False
     history: list[tuple[str, str]] = list(initial_history or [])
     session_title_target = (initial_session_title or "New Chat").strip() or "New Chat"
@@ -1807,11 +1807,31 @@ def _chat_conversation_loop(
             _voice_drain_preview()
             _draw(show_cursor=True)
 
+    def _is_fresh_new_chat() -> bool:
+        return (session_title_target or "").strip() == "New Chat"
+
+    def _show_new_chat_splash() -> bool:
+        return _is_fresh_new_chat() and not history and not turn_busy
+
     def _top_tab_labels() -> tuple[str, ...]:
-        return _TOP_TABS + (("Stop",) if turn_busy else ())
+        tabs = _TOP_TABS
+        if _is_fresh_new_chat():
+            tabs = tuple(t for t in tabs if t != "New Chat")
+        return tabs + (("Stop",) if turn_busy else ())
+
+    def _top_tab_action() -> str | None:
+        labels = _top_tab_labels()
+        if 0 <= top_tab < len(labels):
+            return labels[top_tab]
+        return None
 
     def _stop_tab_index() -> int | None:
-        return len(_TOP_TABS) if turn_busy else None
+        if not turn_busy:
+            return None
+        for i, label in enumerate(_top_tab_labels()):
+            if label == "Stop":
+                return i
+        return None
 
     def _clamp_top_tab() -> None:
         nonlocal top_tab
@@ -2088,10 +2108,33 @@ def _chat_conversation_loop(
             follow_tail = True
             _render_sig = None
         finally:
+            _clamp_top_tab()
             _draw(show_cursor=input_focus and bool(buf.strip()))
 
     def _pick_history() -> None:
         _open_history_tab()
+
+    def _start_new_chat() -> None:
+        """Empty Enter on New Chat tab — same as History → New chat."""
+        nonlocal history, scroll, thinking_line, follow_tail, _render_sig
+        nonlocal session_title_shown, session_title_target
+        try:
+            if load_history is None:
+                thinking_line = "  (history unavailable)"
+                return
+            loaded = load_history("__new__")
+            if loaded is None:
+                thinking_line = "  (could not start new chat)"
+                return
+            history, session_title_target = list(loaded[0]), loaded[1]
+            session_title_shown = session_title_target
+            thinking_line = None
+            follow_tail = True
+            scroll = 0
+            _render_sig = None
+        finally:
+            _clamp_top_tab()
+            _draw(show_cursor=input_focus and bool(buf.strip()))
 
     def _draw(*, show_cursor: bool = False) -> None:
         nonlocal scroll, follow_tail
@@ -2106,11 +2149,13 @@ def _chat_conversation_loop(
         box_bottom = h - 1
 
         stdscr.erase()
-        header = (session_title_shown or "New Chat").strip() or "New Chat"
-        try:
-            stdscr.addstr(0, pad, header[: max(0, w - pad - 1)], normal | c.A_BOLD)
-        except c.error:
-            pass
+        splash_on = _show_new_chat_splash()
+        if not splash_on:
+            header = (session_title_shown or "New Chat").strip() or "New Chat"
+            try:
+                stdscr.addstr(0, pad, header[: max(0, w - pad - 1)], normal | c.A_BOLD)
+            except c.error:
+                pass
         tab_gap = 2
         segments: list[tuple[str, int]] = []
         for i, label in enumerate(_top_tab_labels()):
@@ -2176,6 +2221,19 @@ def _chat_conversation_loop(
                 except c.error:
                     pass
 
+        if splash_on:
+            splash = tui_theme.new_chat_splash_lines(width=box_w)
+            brand_attr = _curses_brand_attr()
+            y0 = transcript_top + max(0, (transcript_h - len(splash)) // 2)
+            for j, sline in enumerate(splash):
+                y = y0 + j
+                if y >= input_box_top:
+                    break
+                try:
+                    stdscr.addstr(y, pad, sline[:box_w], brand_attr)
+                except c.error:
+                    pass
+
         if _voice_busy():
             dot_i = int(time.monotonic() / _VOICE_SPEAK_DOT_S) % len(_VOICE_SPEAK_DOTS)
             speak_label = "● Speak"
@@ -2235,6 +2293,8 @@ def _chat_conversation_loop(
         pending = ""
         think_target = ""
         think_revealed = ""
+        answer_target = ""
+        answer_revealed = ""
         draw_lock = threading.Lock()
 
         def _sync_think_history() -> None:
@@ -2257,11 +2317,12 @@ def _chat_conversation_loop(
 
         user_stopped = threading.Event()
 
-        def on_partial(text: str, phase: str = "answer") -> None:
+        def on_partial(text: str, phase: str = "answer", **kwargs) -> None:
             if user_stopped.is_set():
                 return
             nonlocal thinking_line, think_idx, stream_idx, last_paint, _render_sig, pending
             nonlocal think_target, think_revealed, session_title_shown, session_title_target
+            nonlocal answer_target, answer_revealed, think_live
             pending = text
             now = time.monotonic()
             if phase == "title":
@@ -2276,6 +2337,17 @@ def _chat_conversation_loop(
             if phase == "think":
                 think_target = _merge_think_partial(think_target, text)
                 thinking_line = None
+                return
+            if phase == "answer" and kwargs.get("stream_reveal"):
+                answer_target = (text or "").strip()
+                think_live = False
+                thinking_line = None
+                if stream_idx is None:
+                    history.append(("assistant", ""))
+                    stream_idx = len(history) - 1
+                    _render_sig = None
+                    follow_tail = True
+                    _draw_turn(show_cursor=False)
                 return
             thinking_line = None
             if stream_idx is None:
@@ -2461,7 +2533,19 @@ def _chat_conversation_loop(
             think_revealed = think_target
             _sync_think_history()
             session_title_shown = session_title_target
-            if err[0] is not None:
+            if answer_target and stream_idx is not None:
+                while len(answer_revealed) < len(answer_target):
+                    answer_revealed = _advance_think_reveal(
+                        answer_target,
+                        answer_revealed,
+                        chunk=_CHAT_THINK_CHARS_PER_TICK,
+                    )
+                    history[stream_idx] = ("assistant", answer_revealed)
+                    _render_sig = None
+                    _draw_turn(show_cursor=False)
+                    time.sleep(_CHAT_THINK_TICK_S)
+                answer = answer_target
+            elif err[0] is not None:
                 answer = f"error: {err[0]}"
             else:
                 raw = answer_box[0] or "(empty)"
@@ -2477,10 +2561,11 @@ def _chat_conversation_loop(
                     history[think_idx] = ("thinking", merged)
                 answer = rest if rest.strip() else answer
 
-            if stream_idx is None:
-                history.append(("assistant", answer))
-            else:
-                history[stream_idx] = ("assistant", answer)
+            if not answer_target:
+                if stream_idx is None:
+                    history.append(("assistant", answer))
+                else:
+                    history[stream_idx] = ("assistant", answer)
             follow_tail = True
             _render_sig = None
             _draw(show_cursor=False)
@@ -2558,8 +2643,12 @@ def _chat_conversation_loop(
             elif kind == "enter":
                 if input_focus and buf.strip():
                     return
-                elif top_tab == 1 and not turn_busy:
-                    _open_history_tab()
+                elif not turn_busy:
+                    act = _top_tab_action()
+                    if act == "History":
+                        _open_history_tab()
+                    elif act == "New Chat":
+                        _start_new_chat()
             elif kind == "bare_esc":
                 stdscr.timeout(-1)
                 return
@@ -2609,20 +2698,34 @@ def _chat_conversation_loop(
             if input_focus and buf.strip():
                 _submit_turn()
                 continue
-            if top_tab == 0 and not turn_busy:
-                stdscr.timeout(-1)
-                return
-            if top_tab == 1 and not turn_busy:
-                _open_history_tab()
-                continue
+            if not turn_busy:
+                act = _top_tab_action()
+                if act == "Back":
+                    stdscr.timeout(-1)
+                    return
+                if act == "History":
+                    _open_history_tab()
+                    continue
+                if act == "New Chat":
+                    _start_new_chat()
+                    continue
             si = _stop_tab_index()
             if si is not None and top_tab == si and turn_busy:
                 continue
             _draw(show_cursor=input_focus)
             continue
         if key in (ord("h"), ord("H")) and not input_focus:
-            top_tab = 1
+            labels = _top_tab_labels()
+            if "History" in labels:
+                top_tab = labels.index("History")
             _open_history_tab()
+            continue
+        if key in (ord("n"), ord("N")) and not input_focus:
+            labels = _top_tab_labels()
+            if "New Chat" not in labels:
+                continue
+            top_tab = labels.index("New Chat")
+            _start_new_chat()
             continue
         if not input_focus:
             if 32 <= key <= 126 and len(buf) < 4000:

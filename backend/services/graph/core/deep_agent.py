@@ -236,7 +236,10 @@ async def run_deep_agent(
     )
     middleware = [TodoListMiddleware()]
     system_prompt = (
-            "MindOS deep agent: answer from Preloaded context and tool results only; never invent mail "
+            "MindOS deep agent: if the user asks general knowledge or unrelated trivia with no "
+            "mail, calendar, files, or workspace task, apologize briefly and redirect—do not "
+            "answer from world knowledge. "
+            "Answer from Preloaded context and tool results only; never invent mail "
             "or write Not available in context—use mindos_search and Drive · lines from tools. "
             "Before calling mindos_gmail_sync or mindos_process_outbox, send the user one short sentence "
             "about what you are about to do; then call the tool. "
