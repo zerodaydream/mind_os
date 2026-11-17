@@ -4,7 +4,7 @@
       "name": "personal",
       "enabled": true,
       "transport": "builtin",
-      "guidance": "Indexed mail and Drive first: mindos_search before any filesystem tool when the user names attachments, people, or email threads. mindos_calendar_* for schedule; mindos_summarize_url for URL/PDF content and compare-two-files; mindos_gmail_sync → mindos_process_outbox only when search is empty or user wants fresh Gmail."
+      "guidance": "Indexed mail and Drive first: mindos_search before any filesystem tool when the user names attachments, people, or email threads. mindos_calendar_* for schedule; mindos_summarize_url for URL/PDF content and compare-two-files; when search is empty use mindos_gmail_sync(query=<Gmail q from user words>, max_messages≈25) then mindos_process_outbox then mindos_search—not mindos_gmail_sync() with no query unless user wants a full inbox pull."
     },
     {
       "name": "filesystem",

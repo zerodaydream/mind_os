@@ -100,14 +100,14 @@ async def _fetch_via_mcp(url: str, *, on_ping: PartialFn | None) -> str:
 
     emit_partial(
         on_ping,
-        f"→ {tool_status_line('mindos_summarize_url')} ({_short_url(url)})…",
+        f"[tool] {tool_status_line('mindos_summarize_url')} ({_short_url(url)})…",
         phase="think",
     )
     while len("".join(parts)) < _DOC_CHAR_CAP:
         page += 1
         if page > 1:
             emit_partial(
-                on_ping, f"→ Reading more of the document (part {page})…", phase="think"
+                on_ping, f"[tool] Reading more of the document (part {page})…", phase="think"
             )
         with _silence_stdio_server_banner():
             payload = await tool.ainvoke({"url": url, "start_index": start})
@@ -183,7 +183,7 @@ async def fetch_public_document(url: str, *, on_ping: PartialFn | None) -> str:
 
         emit_partial(
             on_ping,
-            f"→ {tool_status_line('fetch_url')} ({_short_url(url)})…",
+            f"[tool] {tool_status_line('fetch_url')} ({_short_url(url)})…",
             phase="think",
         )
         body = await _arxiv_atom_text(url)
@@ -216,7 +216,7 @@ async def summarize_public_url(
         return doc
     from backend.services.agents.core.render.tool_status import tool_status_line
 
-    emit_partial(on_ping, f"→ {tool_status_line('mindos_summarize_url')}…", phase="think")
+    emit_partial(on_ping, f"[tool] {tool_status_line('mindos_summarize_url')}…", phase="think")
     focus_line = f"\nFocus: {focus.strip()}" if (focus or "").strip() else ""
     prompt = (
         "Answer from the document below in clear prose for the user. "

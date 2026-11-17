@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import sys
 import uuid
 from collections.abc import Callable
@@ -175,6 +176,21 @@ async def _handle_turn_body(
             on_partial=on_partial,
             client_tz=client_tz,
         )
+    except asyncio.CancelledError:
+        if title_task is not None:
+            title_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await title_task
+        return {
+            "message": user_line,
+            "answer": "",
+            "sources": [],
+            "mode": "cancelled",
+            "intent": intent,
+            "session_id": str(chat.id),
+            "thread_id": str(chat.thread_id),
+            "title": display_session_title(chat.title),
+        }
     except OSError as exc:
         out, mode = await _synth_plan(
             session, user, settings, gateway, body,

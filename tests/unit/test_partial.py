@@ -39,8 +39,8 @@ def test_emit_partial_keeps_tool_status_think() -> None:
     def cb(text: str, *, phase: str = "answer") -> None:
         seen.append(text)
 
-    emit_partial(cb, "→ Searching for files…", phase="think")
-    assert seen == ["→ Searching for files…"]
+    emit_partial(cb, "[tool] Searching for files…", phase="think")
+    assert seen == ["[tool] Searching for files…"]
 
 
 def test_emit_partial_legacy_one_arg() -> None:

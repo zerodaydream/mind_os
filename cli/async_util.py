@@ -9,6 +9,18 @@ from typing import Any, TypeVar
 T = TypeVar("T")
 
 _shared_event_loop: asyncio.AbstractEventLoop | None = None
+_active_turn_task: asyncio.Task | None = None
+
+
+def cancel_active_turn() -> bool:
+    """Cancel the in-flight ``run_async`` coroutine (e.g. TUI Stop). Returns True if signalled."""
+    global _active_turn_task
+    loop = _shared_event_loop
+    task = _active_turn_task
+    if loop is None or loop.is_closed() or task is None or task.done():
+        return False
+    loop.call_soon_threadsafe(task.cancel)
+    return True
 
 
 def shared_event_loop_is_running() -> bool:
@@ -79,7 +91,15 @@ def run_async(coro: Coroutine[Any, Any, T]) -> T:
         return await coro
 
     if _shared_event_loop is not None and not _shared_event_loop.is_closed():
-        return _shared_event_loop.run_until_complete(_run())
+        global _active_turn_task
+        loop = _shared_event_loop
+        task = loop.create_task(_run())
+        _active_turn_task = task
+        try:
+            return loop.run_until_complete(task)
+        finally:
+            if _active_turn_task is task:
+                _active_turn_task = None
 
     _dispose_db_engine_sync()
 

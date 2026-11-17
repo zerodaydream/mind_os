@@ -167,7 +167,7 @@ def _curses_addstr_todo_active(
     base_attr: int,
     icon_attr: int,
     *,
-    icon: str = "→",
+    icon: str = "●",
 ) -> None:
     import curses
 
@@ -1071,11 +1071,13 @@ def _merge_think_partial(prev: str, text: str) -> str:
     merged = merge_stream_text(prev, text)
     if not prev or merged == text:
         return merged
-    if text.startswith("Plan:") or prev.startswith("Plan:"):
-        if text.startswith("Plan:"):
+    from backend.services.agents.core.render.partial import THINK_PLAN_HEADER
+
+    if text.startswith(THINK_PLAN_HEADER) or prev.startswith(THINK_PLAN_HEADER):
+        if text.startswith(THINK_PLAN_HEADER):
             return text
         return f"{prev}\n{text}".strip()
-    if "\n→ " in text or text.startswith("→ ") or "→ " in prev:
+    if "\n[tool] " in text or text.startswith("[tool] ") or "[tool] " in prev:
         if prev in text:
             return text
         if text in prev:
@@ -1090,7 +1092,9 @@ def _advance_think_reveal(target: str, revealed: str, *, chunk: int) -> str:
     if not target:
         return revealed
     if revealed and not target.startswith(revealed):
-        if target.startswith("Plan:"):
+        from backend.services.agents.core.render.partial import THINK_PLAN_HEADER
+
+        if target.startswith(THINK_PLAN_HEADER):
             revealed = ""
         else:
             return target
@@ -1131,8 +1135,14 @@ def _thinking_chat_lines(text: str, width: int) -> list[tuple[str, str]]:
             continue
         plain = md_render.strip_inline_md(raw.strip())
         style = _markdown_line_style(raw, in_sources=False)
-        if plain.startswith("→ "):
+        if plain.startswith("● "):
             style = "todo_active"
+        elif plain.startswith("○ "):
+            style = "todo_pending"
+        elif plain.startswith("✓ "):
+            style = "todo_done"
+        elif plain.startswith("[tool] "):
+            style = "tool_status"
         if style == "list":
             m = re.match(r"^(\s*)([-*]|\d+\.)\s+(.*)$", raw.rstrip())
             if m:
@@ -1215,6 +1225,7 @@ def _chat_think_turn(fn: Callable[[], str], on_tick: Callable[[int], None]) -> s
 
 
 _CHAT_INPUT_TIMEOUT_MS = 400
+_CHAT_STOPPED_REPLY = "[Stopped unexpectedly — response was not saved.]"
 _CHAT_STREAM_MIN_S = 0.055
 _CHAT_THINK_TICK_S = 0.03
 _THINK_SPIN_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
@@ -1280,9 +1291,14 @@ def _chat_wrap_text(text: str, width: int) -> list[str]:
     return chunks if chunks else [text[:width]]
 
 
-def _chat_nav_hint(inner_w: int) -> str:
+def _chat_nav_hint(inner_w: int, *, turn_active: bool = False) -> str:
     tiers = (
-        " Tab → Main Menu/History  | Tab while typing → browse  |  Ctrl+G voice | ←/→ Navigate ",
+        (
+            " Tab → Back/History/Stop · Stop+Enter halts stream "
+            " | Tab while typing → browse  |  Ctrl+G voice | ←/→ "
+            if turn_active
+            else " Tab → menus · Ctrl+G voice · Ctrl+D clear draft · ←/→ "
+        ),
         " Tab → menus/history · Ctrl+G voice · ←/→ scroll ",
         " Tab · Ctrl+G · ←/→ ",
     )
@@ -1347,6 +1363,8 @@ def _csi_modifier_has_shift(mod: int) -> bool:
 def _csi_modifier_has_ctrl(mod: int) -> bool:
     if mod <= 0:
         return False
+    if mod & 4:
+        return True
     return bool((mod - 1) & 4)
 
 
@@ -1471,6 +1489,31 @@ def _read_esc_csi_action(
     if nav:
         return nav
     return "ignored"
+
+
+def _word_before_cursor(buf: str, cursor: int) -> int:
+    cursor = max(0, min(cursor, len(buf)))
+    if cursor == 0:
+        return 0
+    i = cursor - 1
+    while i > 0 and buf[i].isspace():
+        i -= 1
+    while i > 0 and not buf[i - 1].isspace():
+        i -= 1
+    return i
+
+
+def _chat_shift_backspace_sweep(buf: str, cursor: int, stage: int) -> tuple[str, int]:
+    """Progressive delete: word → line before cursor → whole draft."""
+    cursor = max(0, min(cursor, len(buf)))
+    if stage <= 0:
+        nxt = _word_before_cursor(buf, cursor)
+        return buf[:nxt] + buf[cursor:], nxt
+    if stage == 1:
+        line_start = buf.rfind("\n", 0, cursor)
+        line_start = 0 if line_start < 0 else line_start + 1
+        return buf[:line_start] + buf[cursor:], line_start
+    return "", 0
 
 
 def _chat_cursor_logical(buf: str, cursor: int) -> tuple[int, int]:
@@ -1663,6 +1706,7 @@ def _chat_conversation_loop(
     }
 
     _TOP_TABS = ("Back", "History")
+    turn_busy = False
     history: list[tuple[str, str]] = list(initial_history or [])
     session_title_target = (initial_session_title or "New Chat").strip() or "New Chat"
     session_title_shown = session_title_target
@@ -1671,6 +1715,8 @@ def _chat_conversation_loop(
     buf = ""
     cursor = 0
     input_focus = True
+    shift_bs_stage = 0
+    shift_bs_at = 0.0
     top_tab = 0
     thinking_line: str | None = None
     think_live = False
@@ -1761,6 +1807,18 @@ def _chat_conversation_loop(
             _voice_drain_preview()
             _draw(show_cursor=True)
 
+    def _top_tab_labels() -> tuple[str, ...]:
+        return _TOP_TABS + (("Stop",) if turn_busy else ())
+
+    def _stop_tab_index() -> int | None:
+        return len(_TOP_TABS) if turn_busy else None
+
+    def _clamp_top_tab() -> None:
+        nonlocal top_tab
+        n = len(_top_tab_labels())
+        if n and top_tab >= n:
+            top_tab = n - 1
+
     def _flat_history(inner_w: int) -> list[tuple[int, str] | tuple[int, str, int]]:
         out: list[tuple[int, str] | tuple[int, str, int]] = []
         compact = _chat_compact(inner_w)
@@ -1775,10 +1833,19 @@ def _chat_conversation_loop(
                 continue
             if role == "thinking":
                 lines = _thinking_chat_lines(text, wrap_w)
+                last_tool_i = max(
+                    (j for j, (s, _) in enumerate(lines) if s == "tool_status"),
+                    default=-1,
+                )
                 for i, (style, ln) in enumerate(lines):
                     pad = prefix if i == 0 else cont_pad
                     row: tuple[int, str] | tuple[int, str, int] = (think_attr, f"{pad}{ln}")
-                    if style == "todo_active" and ln.startswith("→"):
+                    if style == "tool_status" and "[tool]" in ln:
+                        icon_a = think_icon_attr
+                        if think_live and i == last_tool_i and think_pulse % 2:
+                            icon_a = think_attr
+                        row = (think_attr, f"{pad}{ln}", icon_a)
+                    elif style == "todo_active" and "●" in ln:
                         icon_a = think_icon_attr
                         if think_live and i == len(lines) - 1 and think_pulse % 2:
                             icon_a = think_attr
@@ -1878,13 +1945,13 @@ def _chat_conversation_loop(
             if _editing_draft():
                 cursor = max(0, cursor - 1)
             else:
-                top_tab = (top_tab - 1) % len(_TOP_TABS)
+                top_tab = (top_tab - 1) % len(_top_tab_labels())
             return
         if action == "right":
             if _editing_draft():
                 cursor = min(len(buf), cursor + 1)
             else:
-                top_tab = (top_tab + 1) % len(_TOP_TABS)
+                top_tab = (top_tab + 1) % len(_top_tab_labels())
             return
         if action == "up":
             if _editing_draft():
@@ -2046,7 +2113,7 @@ def _chat_conversation_loop(
             pass
         tab_gap = 2
         segments: list[tuple[str, int]] = []
-        for i, label in enumerate(_TOP_TABS):
+        for i, label in enumerate(_top_tab_labels()):
             mark = "› " if i == top_tab else ""
             segments.append((i, f"{mark}{label}"))
         bar_w = sum(len(s) for _, s in segments) + tab_gap * max(0, len(segments) - 1)
@@ -2059,28 +2126,13 @@ def _chat_conversation_loop(
                 pass
             tab_x += len(segment) + tab_gap
         hint_attr = tab_norm
-        hint1 = _chat_nav_hint(inner_w)
+        hint1 = _chat_nav_hint(inner_w, turn_active=turn_busy)
         try:
             stdscr.addstr(1, pad, tui_theme.rule(inner_w)[:inner_w], normal)
             stdscr.addstr(2, pad, hint1[:inner_w], hint_attr)
             stdscr.addstr(3, pad, tui_theme.rule(inner_w)[:inner_w], normal)
         except c.error:
             pass
-        if _voice_busy():
-            dot_i = int(time.monotonic() / _VOICE_SPEAK_DOT_S) % len(_VOICE_SPEAK_DOTS)
-            speak_label = "● Speak"
-            dot_w = 3
-            hx = max(pad, w - pad - len(speak_label) - dot_w)
-            try:
-                stdscr.addstr(3, hx, speak_label, voice_attr)
-                stdscr.addstr(
-                    3,
-                    hx + len(speak_label),
-                    _VOICE_SPEAK_DOTS[dot_i].ljust(dot_w),
-                    voice_attr,
-                )
-            except c.error:
-                pass
 
         input_lines = chat_input_lines(
             buf, cursor, text_w, prefix=_CHAT_INPUT_PREFIX, show_cursor=show_cursor
@@ -2106,6 +2158,7 @@ def _chat_conversation_loop(
             row = rendered[ri]
             if len(row) == 3:
                 attr, ln, icon_attr = row
+                mark = "[tool]" if "[tool]" in ln else "●"
                 _curses_addstr_todo_active(
                     stdscr,
                     transcript_top + i,
@@ -2114,6 +2167,7 @@ def _chat_conversation_loop(
                     inner_w,
                     attr,
                     icon_attr,
+                    icon=mark,
                 )
             else:
                 attr, ln = row
@@ -2121,6 +2175,23 @@ def _chat_conversation_loop(
                     stdscr.addstr(transcript_top + i, pad, ln[:inner_w], attr)
                 except c.error:
                     pass
+
+        if _voice_busy():
+            dot_i = int(time.monotonic() / _VOICE_SPEAK_DOT_S) % len(_VOICE_SPEAK_DOTS)
+            speak_label = "● Speak"
+            dot_w = 3
+            speak_row = max(transcript_top, input_box_top - 1)
+            hx = pad
+            try:
+                stdscr.addstr(speak_row, hx, speak_label[: max(0, w - hx - pad)], voice_attr)
+                stdscr.addstr(
+                    speak_row,
+                    hx + len(speak_label),
+                    _VOICE_SPEAK_DOTS[dot_i].ljust(dot_w),
+                    voice_attr,
+                )
+            except c.error:
+                pass
 
         in_attr = asst_attr
         try:
@@ -2145,6 +2216,7 @@ def _chat_conversation_loop(
     def _submit_turn() -> None:
         nonlocal buf, cursor, scroll, thinking_line, follow_tail, _render_sig
         nonlocal think_live, think_pulse, session_title_shown, session_title_target
+        nonlocal turn_busy, top_tab, input_focus
         if _voice_busy():
             _voice_stop()
         msg = buf.rstrip()
@@ -2179,7 +2251,15 @@ def _chat_conversation_loop(
             with draw_lock:
                 _draw(show_cursor=show_cursor)
 
+        import asyncio
+
+        from cli.async_util import cancel_active_turn
+
+        user_stopped = threading.Event()
+
         def on_partial(text: str, phase: str = "answer") -> None:
+            if user_stopped.is_set():
+                return
             nonlocal thinking_line, think_idx, stream_idx, last_paint, _render_sig, pending
             nonlocal think_target, think_revealed, session_title_shown, session_title_target
             pending = text
@@ -2218,15 +2298,61 @@ def _chat_conversation_loop(
         err: list[BaseException | None] = [None]
         answer_box: list[str | None] = [None]
 
+        def _request_turn_stop() -> None:
+            user_stopped.set()
+            stop.set()
+            cancel_active_turn()
+
         def _run_turn() -> None:
             try:
                 answer_box[0] = turn(msg, on_partial)
             except TypeError:
                 answer_box[0] = turn(msg)
+            except asyncio.CancelledError as exc:
+                err[0] = exc
             except BaseException as exc:
                 err[0] = exc
             finally:
                 stop.set()
+
+        def _handle_turn_input(key: int) -> None:
+            nonlocal top_tab, input_focus, scroll, follow_tail
+            if key == -1:
+                return
+            if key == 9:
+                if not _editing_draft():
+                    top_tab = (top_tab + 1) % len(_top_tab_labels())
+                return
+            scroll_act = _scroll_key_to_action(key)
+            if scroll_act and not _editing_draft():
+                _apply_nav(scroll_act)
+                return
+            if key in (c.KEY_LEFT, c.KEY_RIGHT, c.KEY_UP, c.KEY_DOWN, c.KEY_PPAGE, c.KEY_NPAGE):
+                if key == c.KEY_PPAGE:
+                    _apply_nav("ppage")
+                elif key == c.KEY_NPAGE:
+                    _apply_nav("npage")
+                elif key == c.KEY_LEFT:
+                    _apply_nav("left")
+                elif key == c.KEY_RIGHT:
+                    _apply_nav("right")
+                elif key == c.KEY_UP:
+                    _apply_nav("up")
+                elif key == c.KEY_DOWN:
+                    _apply_nav("down")
+                return
+            if key == 27:
+                kind = _read_esc_csi_action(stdscr)
+                if kind in ("up", "down", "ppage", "npage") and not _editing_draft():
+                    _burst_transcript_scroll(kind, restore_ms=80)
+                elif kind not in ("ignored", "bare_esc") and not _editing_draft():
+                    _apply_nav(kind)
+                return
+            if key in (c.KEY_ENTER, 10, 13, 343, ord("\n")):
+                si = _stop_tab_index()
+                if si is not None and top_tab == si:
+                    _request_turn_stop()
+                return
 
         def _spin() -> None:
             nonlocal thinking_line
@@ -2293,6 +2419,8 @@ def _chat_conversation_loop(
                         _draw(show_cursor=False)
                 stop.wait(_CHAT_THINK_TICK_S)
 
+        turn_busy = True
+        _clamp_top_tab()
         think_live = True
         think_pulse = 0
         thinking_line = (
@@ -2301,41 +2429,64 @@ def _chat_conversation_loop(
         )
         spinner = threading.Thread(target=_spin, daemon=True)
         think_thread = threading.Thread(target=_think_stream, daemon=True)
+        turn_thread = threading.Thread(target=_run_turn, daemon=True)
         spinner.start()
         think_thread.start()
-        _run_turn()
-        stop.set()
-        spinner.join(timeout=0.35)
-        think_thread.join(timeout=1.5)
-        think_revealed = think_target
-        _sync_think_history()
-        thinking_line = None
-        think_live = False
-        think_pulse = 0
-        session_title_shown = session_title_target
-        if err[0] is not None:
-            answer = f"error: {err[0]}"
-        else:
-            raw = answer_box[0] or "(empty)"
-            answer = raw[0] if isinstance(raw, tuple) else raw
-
-        plan, rest = _split_plan_prefix(answer)
-        if plan:
-            merged = plan if think_idx is None else f"{history[think_idx][1]}\n\n{plan}".strip()
-            if think_idx is None:
-                history.append(("thinking", merged))
-                think_idx = len(history) - 1
+        turn_thread.start()
+        try:
+            while turn_thread.is_alive():
+                stdscr.timeout(80)
+                _draw_turn(show_cursor=False)
+                _handle_turn_input(stdscr.getch())
+            stop.set()
+            turn_thread.join(timeout=2.0)
+            spinner.join(timeout=0.35)
+            think_thread.join(timeout=1.5)
+            thinking_line = None
+            think_live = False
+            think_pulse = 0
+            stopped = user_stopped.is_set() or isinstance(err[0], asyncio.CancelledError)
+            if stopped:
+                for idx in sorted(
+                    (i for i in (stream_idx, think_idx) if i is not None),
+                    reverse=True,
+                ):
+                    history.pop(idx)
+                history.append(("assistant", _CHAT_STOPPED_REPLY))
+                follow_tail = True
+                _render_sig = None
+                stdscr.timeout(-1)
+                _draw(show_cursor=False)
+                return
+            think_revealed = think_target
+            _sync_think_history()
+            session_title_shown = session_title_target
+            if err[0] is not None:
+                answer = f"error: {err[0]}"
             else:
-                history[think_idx] = ("thinking", merged)
-            answer = rest if rest.strip() else answer
+                raw = answer_box[0] or "(empty)"
+                answer = raw[0] if isinstance(raw, tuple) else raw
 
-        if stream_idx is None:
-            history.append(("assistant", answer))
-        else:
-            history[stream_idx] = ("assistant", answer)
-        follow_tail = True
-        _render_sig = None
-        _draw(show_cursor=False)
+            plan, rest = _split_plan_prefix(answer)
+            if plan:
+                merged = plan if think_idx is None else f"{history[think_idx][1]}\n\n{plan}".strip()
+                if think_idx is None:
+                    history.append(("thinking", merged))
+                    think_idx = len(history) - 1
+                else:
+                    history[think_idx] = ("thinking", merged)
+                answer = rest if rest.strip() else answer
+
+            if stream_idx is None:
+                history.append(("assistant", answer))
+            else:
+                history[stream_idx] = ("assistant", answer)
+            follow_tail = True
+            _render_sig = None
+            _draw(show_cursor=False)
+        finally:
+            turn_busy = False
+            _clamp_top_tab()
 
     def _insert_newline() -> None:
         nonlocal buf, cursor
@@ -2343,6 +2494,18 @@ def _chat_conversation_loop(
             return
         buf = buf[:cursor] + "\n" + buf[cursor:]
         cursor += 1
+        _draw(show_cursor=True)
+
+    def _apply_ctrl_sweep() -> None:
+        nonlocal buf, cursor, shift_bs_stage, shift_bs_at
+        if cursor <= 0 and not buf:
+            return
+        now = time.monotonic()
+        if now - shift_bs_at > 0.75:
+            shift_bs_stage = 0
+        shift_bs_at = now
+        buf, cursor = _chat_shift_backspace_sweep(buf, cursor, shift_bs_stage)
+        shift_bs_stage = min(shift_bs_stage + 1, 2)
         _draw(show_cursor=True)
 
     c.curs_set(0)
@@ -2385,7 +2548,7 @@ def _chat_conversation_loop(
                 if not input_focus:
                     follow_tail = False
             else:
-                top_tab = (top_tab + 1) % len(_TOP_TABS)
+                top_tab = (top_tab + 1) % len(_top_tab_labels())
             _draw(show_cursor=input_focus and bool(buf.strip()))
             continue
         if key == 27:
@@ -2395,7 +2558,7 @@ def _chat_conversation_loop(
             elif kind == "enter":
                 if input_focus and buf.strip():
                     return
-                elif top_tab == 1:
+                elif top_tab == 1 and not turn_busy:
                     _open_history_tab()
             elif kind == "bare_esc":
                 stdscr.timeout(-1)
@@ -2446,11 +2609,14 @@ def _chat_conversation_loop(
             if input_focus and buf.strip():
                 _submit_turn()
                 continue
-            if top_tab == 0:
+            if top_tab == 0 and not turn_busy:
                 stdscr.timeout(-1)
                 return
-            if top_tab == 1:
+            if top_tab == 1 and not turn_busy:
                 _open_history_tab()
+                continue
+            si = _stop_tab_index()
+            if si is not None and top_tab == si and turn_busy:
                 continue
             _draw(show_cursor=input_focus)
             continue
@@ -2476,11 +2642,15 @@ def _chat_conversation_loop(
                 cursor -= 1
             _draw(show_cursor=True)
             continue
-        if key in (c.KEY_DC, 330) and cursor < len(buf):
+        if key == 4 and input_focus:
+            _apply_ctrl_sweep()
+            continue
+        if key in (c.KEY_DC, 330) and input_focus and cursor < len(buf):
             buf = buf[:cursor] + buf[cursor + 1 :]
             _draw(show_cursor=True)
             continue
         if 32 <= key <= 126 and len(buf) < 4000:
+            shift_bs_stage = 0
             buf = buf[:cursor] + chr(key) + buf[cursor:]
             cursor += 1
             _draw(show_cursor=True)

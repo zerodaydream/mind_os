@@ -27,6 +27,7 @@ from backend.services.integrations.core.calendar.scheduling import (
 )
 from backend.services.integrations.core.calendar.timezone import effective_calendar_tz
 from backend.services.integrations.core.gdrive.drive_store import drive_file_exists
+from backend.services.agents.core.render.partial import emit_partial
 from backend.services.integrations.core.gmail.sync import (
     refresh_gmail_message_drive,
     sync_gmail_inbox,
@@ -154,12 +155,27 @@ def build_personal_tools(
             lines.append(block)
         return "\n".join(lines)
 
-    async def mindos_gmail_sync() -> str:
-        """Pull new Gmail into MindOS. Use when mail search is empty or user wants fresh mail."""
+    async def mindos_gmail_sync(query: str = "", max_messages: int = 0) -> str:
+        """Pull Gmail into MindOS. query: Gmail search string (default cap 25); empty query: incremental inbox sync."""
         if not get_config().is_enabled("integrations"):
             return "Gmail sync disabled (integrations off in config.json)."
+        gmail_q = query.strip() or None
+        if max_messages <= 0:
+            cap = 25 if gmail_q else None
+        else:
+            cap = max(1, min(int(max_messages), 50))
+        def _gmail_think(line: str) -> None:
+            emit_partial(on_partial, f"[tool] {line}", phase="think")
+
         try:
-            stats = await sync_gmail_inbox(session, user=user, settings=settings)
+            stats = await sync_gmail_inbox(
+                session,
+                user=user,
+                settings=settings,
+                query=gmail_q,
+                max_messages=cap,
+                on_progress=_gmail_think if on_partial else None,
+            )
             await session.commit()
         except ValueError as exc:
             return f"Gmail sync failed: {exc}"
@@ -171,9 +187,11 @@ def build_personal_tools(
             if ingested > 0
             else ""
         )
+        qbit = f" query={stats.get('query')!r}" if stats.get("query") else ""
         return (
             f"Gmail sync done: ingested={ingested}, "
-            f"skipped={stats.get('skipped', 0)}, scanned={stats.get('scanned', 0)}.{tail}"
+            f"skipped={stats.get('skipped', 0)}, scanned={stats.get('scanned', 0)}"
+            f"{qbit}.{tail}"
         )
 
     async def mindos_process_outbox(max_events: int = 80) -> str:

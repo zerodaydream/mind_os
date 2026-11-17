@@ -3,6 +3,7 @@ import base64
 import hashlib
 import re
 import sys
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 import httpx
 from sqlalchemy import delete as sql_delete, select, update
@@ -50,6 +51,24 @@ _URL = re.compile(r"https?://[^\s<>\"')\]]+", re.I)
 def _gmail_sync_note(line: str) -> None:
     sys.stderr.write(f"  · Gmail  {line}\n")
     sys.stderr.flush()
+
+
+def _gmail_sync_notify(
+    line: str,
+    *,
+    on_progress: Callable[[str], None] | None = None,
+) -> None:
+    if on_progress:
+        on_progress(line)
+    else:
+        _gmail_sync_note(line)
+
+
+def _gmail_query_label(query: str, *, max_len: int = 72) -> str:
+    q = (query or "").strip()
+    if len(q) <= max_len:
+        return q
+    return f"{q[: max_len - 1]}…"
 _HREF = re.compile(r"""href\s*=\s*['"]([^'"]+)['"]""", re.I)
 
 
@@ -735,6 +754,7 @@ async def sync_gmail_inbox(
     query: str | None = None,
     page_token: str | None = None,
     after_msg_id: str | None = None,
+    on_progress: Callable[[str], None] | None = None,
 ) -> dict:
     if max_messages is None:
         limit = settings.gmail_sync_max_messages
@@ -767,12 +787,19 @@ async def sync_gmail_inbox(
     scanned = 0
     message_bar = None
     last_subject = ""
+    use_tui = on_progress is not None
+    qlabel = _gmail_query_label(list_query)
     if not use_cap:
-        _gmail_sync_note("starting ingestion")
-    elif use_cap and limit > 0:
+        _gmail_sync_notify("starting ingestion", on_progress=on_progress)
+    elif use_cap and limit > 0 and not use_tui:
         from tqdm import tqdm
 
         message_bar = tqdm(total=limit, unit="msg", desc="Gmail", leave=True)
+    if use_tui:
+        if use_cap and limit > 0:
+            on_progress(f"Fetching up to {limit} messages from Gmail ({qlabel})")
+        else:
+            on_progress(f"Fetching messages from Gmail ({qlabel})")
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         nonlocal_token = {"value": token}
@@ -809,7 +836,7 @@ async def sync_gmail_inbox(
             if list_page_token:
                 params["pageToken"] = list_page_token
             if not saw_messages:
-                _gmail_sync_note("listing messages…")
+                _gmail_sync_notify("listing messages…", on_progress=on_progress)
             listed = await gmail_get(
                 "https://gmail.googleapis.com/gmail/v1/users/me/messages",
                 params=params,
@@ -819,7 +846,12 @@ async def sync_gmail_inbox(
                 est = page.get("resultSizeEstimate")
                 if isinstance(est, int) and est >= 0:
                     total_estimate = est
-                    if not use_cap:
+                    if use_tui:
+                        target = min(est, limit) if use_cap and limit > 0 else est
+                        on_progress(
+                            f"Gmail reports ~{est} matches; loading up to {target}"
+                        )
+                    elif not use_cap:
                         _gmail_sync_note(f"~{est} messages match query (Gmail estimate)")
             batch = [m["id"] for m in page.get("messages", [])]
             if not batch:
@@ -842,7 +874,7 @@ async def sync_gmail_inbox(
 
                 bar_total = total_estimate if total_estimate and total_estimate > 0 else None
                 message_bar = tqdm(total=bar_total, unit="msg", desc="Gmail", leave=True)
-                _gmail_sync_note("processing messages…")
+                _gmail_sync_notify("processing messages…", on_progress=on_progress)
             batch = batch[_gmail_batch_start(batch, list_after_msg_id) :]
             list_after_msg_id = None
 
@@ -906,6 +938,16 @@ async def sync_gmail_inbox(
                     message_bar.update(1)
                     tail = f" · {last_subject}" if last_subject else ""
                     message_bar.set_postfix_str(f"ing={ingested} skip={skipped}{tail}")
+                elif use_tui and use_cap and limit > 0:
+                    step = 1 if limit <= 12 else 4
+                    if scanned == 1 or scanned % step == 0 or scanned >= limit:
+                        on_progress(
+                            f"Gmail {scanned}/{limit} · {ingested} new, {skipped} indexed"
+                        )
+                elif use_tui and (scanned in (1, 5) or scanned % 10 == 0):
+                    on_progress(
+                        f"Gmail {scanned} fetched · {ingested} new, {skipped} indexed"
+                    )
             else:
                 resume_after_msg_id = None
 
@@ -922,16 +964,23 @@ async def sync_gmail_inbox(
                     and total_estimate
                     and scanned < total_estimate
                 ):
-                    _gmail_sync_note(
-                        f"list ended at {scanned} · Gmail estimate was ~{total_estimate}"
+                    _gmail_sync_notify(
+                        f"list ended at {scanned} · Gmail estimate was ~{total_estimate}",
+                        on_progress=on_progress,
                     )
                 break
             if not use_cap:
                 await session.commit()
-                _gmail_sync_note(
-                    f"checkpoint · scanned {scanned} · ingested {ingested} · more pages"
+                _gmail_sync_notify(
+                    f"checkpoint · scanned {scanned} · ingested {ingested} · more pages",
+                    on_progress=on_progress,
                 )
 
+    if use_tui:
+        on_progress(
+            f"Gmail sync finished · {ingested} new · {skipped} already indexed · "
+            f"{scanned} fetched"
+        )
     if message_bar is not None:
         message_bar.close()
     await session.flush()

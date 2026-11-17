@@ -8,7 +8,8 @@ def test_format_todos_think() -> None:
         {"content": "Event C", "status": "completed"},
     ]
     text = _format_todos_think(todos)
-    assert "→ Event A (in progress)" in text
+    assert text.startswith("Planning moves:")
+    assert "● Event A (in progress)" in text
     assert "○ Event B (pending)" in text
     assert "✓ Event C (completed)" in text
 

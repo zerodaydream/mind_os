@@ -7,6 +7,8 @@ from collections.abc import Callable
 
 PartialFn = Callable[..., None]
 
+THINK_PLAN_HEADER = "Planning moves:"
+
 # Model thoughts that leak training/meta phrasing — never show verbatim in UI.
 _THINK_META = re.compile(
     r"(?i)\b("
@@ -56,7 +58,7 @@ def emit_partial(cb: PartialFn | None, text: str, *, phase: str = "answer") -> N
     """Call streaming callback with optional think vs answer phase."""
     if cb is None:
         return
-    if phase == "think" and text.strip().startswith("→"):
+    if phase == "think" and text.strip().startswith("[tool]"):
         pass  # tool status lines from the harness
     elif phase == "think":
         text = polish_think_for_ui(text)

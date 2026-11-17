@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import sys
@@ -25,7 +26,11 @@ from backend.common.langsmith_setup import (
 )
 from backend.common.utils.enums import LlmMode
 from backend.services.agents.core.render.markdown_tables import normalize_markdown_tables
-from backend.services.agents.core.render.partial import emit_partial, merge_stream_text
+from backend.services.agents.core.render.partial import (
+    THINK_PLAN_HEADER,
+    emit_partial,
+    merge_stream_text,
+)
 from backend.services.agents.core.render.tool_status import tool_status_line
 from backend.services.agents.core.render.prompt_budget import DEEP_USER_CONTEXT_MAX, clip_text
 from backend.services.agents.core.turn.turn_context import preflight_prompt_block
@@ -242,8 +247,9 @@ async def run_deep_agent(
             "**Source excerpt:** followed by a short verbatim quote from tool output or Preloaded "
             "context (keep units); if you cannot quote, say (not found in retrieved text). "
             "Compare two files: call mindos_summarize_url per file with focus=the question. "
-            "Mail: use Preloaded context and mindos_search; call mindos_gmail_sync → "
-            "mindos_process_outbox only when you judge the index is stale or the user wants fresh Gmail. "
+            "Mail: Preloaded context and mindos_search first; if empty, mindos_gmail_sync(query=Gmail "
+            "search from the user's names/keywords, max_messages≤25) → mindos_process_outbox → "
+            "mindos_search again—not a blanket sync without query unless they want full inbox refresh. "
             "If Steps already taken were completed before you started, summarize them in your opening. "
             "Tables/lists only from retrieved data. For Drive files use a bullet list "
             "with [exact_filename](full_https_url) per line—not a table with URLs in cells. "
@@ -514,7 +520,7 @@ def _finalize_calendar_answer(
 
 
 _TODO_ICON = {
-    "in_progress": "→",
+    "in_progress": "●",
     "pending": "○",
     "completed": "✓",
     "done": "✓",
@@ -584,12 +590,15 @@ def _latest_todos(msgs) -> list[dict] | None:
 
 def _format_todos_think(todos: list[dict]) -> str:
     """Format todos for the thinking/status partial stream."""
-    lines = ["Plan:"]
+    lines = [THINK_PLAN_HEADER]
     for item in todos:
-        status = str(item.get("status") or "pending").lower()
+        if isinstance(item, str):
+            content, status = item.strip(), "pending"
+        else:
+            content = (item.get("content") or "").strip()
+            status = str(item.get("status") or "pending").lower()
         icon = _TODO_ICON.get(status, "○")
         label = status.replace("_", " ")
-        content = (item.get("content") or "").strip()
         lines.append(f"{icon} {content} ({label})")
     return "\n".join(lines)
 
@@ -630,7 +639,7 @@ def _emit_tool_think(msgs, on_partial, *, seen: set[str], user_task: str = "") -
             seen.add(key)
             emit_partial(
                 on_partial,
-                f"→ {tool_status_line(_canonical_tool_name(tid))}…",
+                f"[tool] {tool_status_line(_canonical_tool_name(tid))}…",
                 phase="think",
             )
         break
@@ -736,6 +745,8 @@ async def _ainvoke_streaming(
                 text = "".join(answer_buf).strip()
                 if text:
                     emit_partial(on_partial, text, phase="answer")
+    except asyncio.CancelledError:
+        raise
     except Exception:
         return await _ainvoke_values_only(
             agent, invoke, config, on_partial=on_partial, user_task=user_task
