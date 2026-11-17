@@ -9,6 +9,7 @@ class LlmMode(StrEnum):
 
 
 class LlmTask(StrEnum):
-    """LLM task: extract, synth."""
+    """LLM task: router (cheap prep), extract, synth."""
+    ROUTER = "router"
     EXTRACT = "extract"
     SYNTH = "synth"

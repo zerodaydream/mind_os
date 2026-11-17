@@ -20,112 +20,23 @@ from backend.services.agents.core.render.prompt_budget import (
     clip_text,
 )
 from backend.services.agents.core.render.mail_display import format_mail_display_when
-from backend.services.agents.core.routing.router_llm import (
-    _looks_like_thread_continuation,
-    thread_pending_execute,
-)
+from backend.services.agents.core.routing.turn_prep import TurnPrep
 from backend.services.retrieval.core.hybrid import hybrid_search_artifacts
 from backend.services.retrieval.core.search_memories import search_memories_ilike
 
-_MAIL_KEYWORDS = (
-    "email",
-    "gmail",
-    "reply",
-    "replies",
-    "inbox",
-    "sent",
-    "waiting",
-    "message",
-    "messages",
-    "mail",
-    "subject",
-    "thread",
-)
-_LIST_PHRASES = ("show all", "list all", "all my", "display all", "every ")
-_HTTP_URL = re.compile(r"https?://\S+", re.I)
-_GREETING_START = re.compile(
-    r"^(hi|hello|hey|yo|good\s+(morning|afternoon|evening)|thanks|thank\s+you|bye)\b",
-    re.I,
-)
-_WORKSPACE_WORDS = (
-    "calendar",
-    "meeting",
-    "meetings",
-    "schedule",
-    "reminder",
-    "reminders",
-    "event",
-    "invite",
-    "file",
-    "files",
-    "folder",
-    "download",
-    "pdf",
-    "drive",
-    "workspace",
-    "notes",
-    "mindos",
-    "summarize",
-    "convert",
-    "rename",
-    "delete",
-    "sync",
-    "outbox",
-    "attachment",
-    "web search",
-)
+_GMAIL_PREFETCH = re.compile(r"\b(gmail|mail|inbox|sent)\b", re.I)
 
 
-def converse_wants_context(message: str) -> bool:
-    """Indexed mail/commitments/search only when the user is actually asking."""
-    lower = message.lower().strip()
-    if any(w in lower for w in _MAIL_KEYWORDS):
-        return True
-    triggers = (
-        "commit",
-        "todo",
-        "task",
-        "promise",
-        "deadline",
-        "remember",
-        "memory",
-        "artifact",
-        "indexed",
-        "search",
-        "find",
-        "list",
-        "show",
-        "help me with",
-    )
-    if any(t in lower for t in triggers):
-        return True
-    return len(lower) > 60
-
-
-def message_in_mindos_scope(
+def turn_in_scope(
+    prep: TurnPrep,
     message: str,
     *,
     history: list[dict] | None = None,
     turn_context: TurnContext | None = None,
 ) -> bool:
-    """False for general-knowledge / random chat with no MindOS workspace tie-in."""
-    msg = (message or "").strip()
-    if not msg:
-        return False
-    if msg.startswith("/"):
+    if prep.in_scope:
         return True
-    if _GREETING_START.match(msg):
-        return True
-    if _HTTP_URL.search(msg):
-        return True
-    lower = msg.lower()
-    if converse_wants_context(msg):
-        return True
-    if any(w in lower for w in _WORKSPACE_WORDS):
-        return True
-    if history and _looks_like_thread_continuation(msg) and thread_pending_execute(history):
-        return True
-    if turn_context and turn_context.has_context and _mail_followup_topic(msg, history):
+    if turn_context and turn_context.has_context and _mail_followup_topic(message, history):
         return True
     return False
 
@@ -136,6 +47,26 @@ def out_of_scope_reply() -> str:
         "MindOS is for your mail, calendar, reminders, files, and indexed notes. "
         "What would you like to look up or do in your workspace?"
     )
+
+
+_CLARIFY_FALLBACK = (
+    "What should I look up in your mail, calendar, files, or notes? "
+    "A name or date helps."
+)
+
+
+def scope_block_reply(
+    message: str,
+    *,
+    block: str = "clarify",
+    clarify: str = "",
+) -> str:
+    del message  # clarify text comes from router CLARIFY: when live
+    if block == "sorry":
+        return out_of_scope_reply()
+    if (clarify or "").strip():
+        return clarify.strip()
+    return _CLARIFY_FALLBACK
 
 
 _COMMITMENT_WORDS = (
@@ -152,8 +83,13 @@ _COMMITMENT_WORDS = (
 )
 
 
-def wants_commitment_context(message: str) -> bool:
-    """True when message asks about todos or commitments."""
+def wants_commitment_context(
+    message: str,
+    *,
+    prefetch_commitments: bool | None = None,
+) -> bool:
+    if prefetch_commitments is not None:
+        return prefetch_commitments
     lower = message.lower()
     return any(w in lower for w in _COMMITMENT_WORDS)
 
@@ -222,16 +158,17 @@ def _mail_recipient_needle(message: str) -> str | None:
     return m.group(1).strip().rstrip("?.!")
 
 
-def wants_mail_context(message: str, source: str | None) -> bool:
-    """Whether to load Gmail rows for this turn."""
+def wants_mail_context(
+    message: str,
+    source: str | None,
+    *,
+    prefetch_mail: bool | None = None,
+) -> bool:
     if source == "gmail":
         return True
-    lower = message.lower()
-    if any(w in lower for w in _MAIL_KEYWORDS):
-        return True
-    if any(p in lower for p in _LIST_PHRASES):
-        return any(w in lower for w in ("message", "messages", "mail", "email", "inbox", "gmail"))
-    return False
+    if prefetch_mail is not None:
+        return prefetch_mail
+    return bool(_GMAIL_PREFETCH.search(message or ""))
 
 
 @dataclass
@@ -402,13 +339,18 @@ async def prefetch_turn_context(
     source: str | None = None,
     intent: str | None = None,
     history: list[dict] | None = None,
+    prep: TurnPrep | None = None,
 ) -> TurnContext:
     message = message.strip()
-    if intent == "converse" and not converse_wants_context(message):
+    if prep is not None and prep.skip_retrieval:
         return TurnContext(message=message, has_context=False)
-    wants_mail = wants_mail_context(message, source)
+    mail_flag = prep.prefetch_mail if prep else None
+    commit_flag = prep.prefetch_commitments if prep else None
+    mem_flag = prep.prefetch_memories if prep else None
+    wants_mail = wants_mail_context(message, source, prefetch_mail=mail_flag)
     topic = _mail_followup_topic(message, history)
-    search_query = f"{topic} {message}".strip() if topic else message
+    base_q = (prep.search_query if prep else message).strip()
+    search_query = f"{topic} {base_q}".strip() if topic else base_q
     hybrid_hits = await hybrid_search_artifacts(
         session,
         user_id=user.id,
@@ -418,22 +360,29 @@ async def prefetch_turn_context(
         source=source,
     )
     results = list(hybrid_hits)
+    load_commitments = wants_commitment_context(message, prefetch_commitments=commit_flag)
     commitments = (
-        await _open_commitment_summaries(session, user.id)
-        if wants_commitment_context(message)
-        else []
+        await _open_commitment_summaries(session, user.id) if load_commitments else []
     )
-    if intent in ("plan", "execute") and len(message) >= 8:
+    if mem_flag is not None:
+        load_memories = mem_flag
+    elif intent == "converse":
+        load_memories = False
+    else:
+        load_memories = True
+    if load_memories and len(message) >= 8:
         mem_hits = await search_memories_ilike(
-            session, user_id=user.id, query=message, limit=PREFETCH_MEMORIES
+            session, user_id=user.id, query=search_query, limit=PREFETCH_MEMORIES
         )
         memories = (
             [f"[{h['kind']}] {h['content']}" for h in mem_hits if h.get("content")]
             if mem_hits
             else await _approved_memories(session, user.id)
         )
-    else:
+    elif load_memories:
         memories = await _approved_memories(session, user.id)
+    else:
+        memories = []
     recipient = (
         (_mail_recipient_needle(message) or _pronoun_recipient(message, history))
         if wants_mail

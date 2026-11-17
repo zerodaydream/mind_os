@@ -324,9 +324,9 @@ async def run_deep_agent(
         tags=tags,
     )
     from backend.services.agents.core.render.prompt_budget import DEEP_CHAT_HISTORY_TURNS
-    from backend.services.agents.core.routing.router_llm import _format_history
+    from backend.services.agents.core.routing.turn_prep import format_router_history
 
-    hist_block = _format_history(history, max_turns=DEEP_CHAT_HISTORY_TURNS)
+    hist_block = format_router_history(history, max_turns=DEEP_CHAT_HISTORY_TURNS)
     notes_preview = read_notes_preview(thread_id)
     user_content = message
     if hist_block:

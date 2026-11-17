@@ -12,7 +12,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.services.agents.core.converse.chat import run_chat
 from backend.services.agents.core.routing.router import url_from_thread
-from backend.services.agents.core.routing.router_llm import resolve_turn_routing
+from dataclasses import replace
+
+from backend.services.agents.core.routing.turn_prep import (
+    is_vague_thread_followup,
+    prepare_turn,
+)
 from backend.services.agents.core.session.sessions import (
     append_message,
     create_session,
@@ -27,9 +32,9 @@ from backend.services.agents.core.session.title import (
 from backend.services.agents.core.render.partial import emit_canned_stream
 from backend.services.agents.core.render.prompt_budget import CHAT_HISTORY_TURNS
 from backend.services.agents.core.turn.turn_context import (
-    message_in_mindos_scope,
-    out_of_scope_reply,
     prefetch_turn_context,
+    scope_block_reply,
+    turn_in_scope,
 )
 from backend.common.langsmith_setup import begin_turn_trace, flush_traces, tracing_active, unique_run_name
 from backend.services.graph.core.deep_agent import run_deep_agent
@@ -41,10 +46,14 @@ async def _finish_out_of_scope(
     *,
     user_line: str,
     intent: str,
+    prep,
     title_task: asyncio.Task | None,
     on_partial: Callable[[str], None] | None,
 ) -> dict:
-    answer = out_of_scope_reply()
+    answer = scope_block_reply(
+        user_line, block=prep.scope_block, clarify=prep.clarify_reply
+    )
+    mode = "out_of_scope" if prep.scope_block == "sorry" else "clarify"
     emit_canned_stream(on_partial, answer)
     if title_task is not None:
         with contextlib.suppress(Exception):
@@ -55,13 +64,13 @@ async def _finish_out_of_scope(
         role="assistant",
         content=answer,
         intent=intent,
-        metadata={"mode": "out_of_scope", "sources": []},
+        metadata={"mode": mode, "sources": []},
     )
     return {
         "message": user_line,
         "answer": answer,
         "sources": [],
-        "mode": "out_of_scope",
+        "mode": mode,
         "intent": intent,
         "session_id": str(chat.id),
         "thread_id": str(chat.thread_id),
@@ -79,6 +88,7 @@ async def _synth_plan(
     source,
     history,
     turn_context,
+    prep,
     on_partial: Callable[[str], None] | None = None,
 ) -> tuple[dict, str]:
     """Converse/plan synth fallback when deep agent is unavailable."""
@@ -91,6 +101,7 @@ async def _synth_plan(
         source=source,
         history=history,
         turn_context=turn_context,
+        prep=prep,
         plan_style=True,
         on_partial=on_partial,
     )
@@ -181,7 +192,8 @@ async def _handle_turn_body(
 
     prior_history = await recent_messages(session, session_id=chat.id, limit=CHAT_HISTORY_TURNS)
     user_line = message.strip()
-    intent, body = await resolve_turn_routing(gateway, user_line, prior_history)
+    prep = await prepare_turn(gateway, user_line, prior_history)
+    intent, body = prep.intent, prep.task
     source_url = url_from_thread(body, prior_history)
     if source_url and source_url not in body:
         body = f"{body.strip()}\n\nSource URL: {source_url}"
@@ -198,30 +210,46 @@ async def _handle_turn_body(
     # drop the message we just appended from history fed into the model
     history = history[:-1] if history and history[-1].get("role") == "user" else history
 
-    if not prior_history and not message_in_mindos_scope(
-        body, history=history, turn_context=None
-    ):
+    vague_followup = is_vague_thread_followup(user_line, history)
+    if prep.blocks_chat_turn() and not vague_followup:
         return await _finish_out_of_scope(
             session,
             chat,
             user_line=user_line,
             intent=intent,
+            prep=prep,
             title_task=title_task,
             on_partial=on_partial,
         )
 
+    prep_fetch = prep
+    if vague_followup and not prep.in_scope:
+        prep_fetch = replace(
+            prep,
+            prefetch_memories=True,
+            prefetch_mail=prep.prefetch_mail or True,
+        )
+
     turn_context = await prefetch_turn_context(
-        session, user, settings, body, source=source, intent=intent, history=history
+        session,
+        user,
+        settings,
+        body,
+        source=source,
+        intent=intent,
+        history=history,
+        prep=prep_fetch,
     )
 
-    if not message_in_mindos_scope(
-        body, history=history, turn_context=turn_context
+    if prep.blocks_chat_turn() and not turn_in_scope(
+        prep, body, history=history, turn_context=turn_context
     ):
         return await _finish_out_of_scope(
             session,
             chat,
             user_line=user_line,
             intent=intent,
+            prep=prep,
             title_task=title_task,
             on_partial=on_partial,
         )
@@ -259,6 +287,7 @@ async def _handle_turn_body(
         out, mode = await _synth_plan(
             session, user, settings, gateway, body,
             source=source, history=history, turn_context=turn_context,
+            prep=prep,
             on_partial=on_partial,
         )
         answer = out.get("answer") or ""
@@ -275,6 +304,7 @@ async def _handle_turn_body(
             out, mode = await _synth_plan(
                 session, user, settings, gateway, body,
                 source=source, history=history, turn_context=turn_context,
+                prep=prep,
                 on_partial=on_partial,
             )
         answer = out.get("answer") or ""

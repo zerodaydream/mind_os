@@ -1843,6 +1843,8 @@ def _chat_conversation_loop(
         out: list[tuple[int, str] | tuple[int, str, int]] = []
         compact = _chat_compact(inner_w)
         for role, text in history:
+            if role == "assistant" and not (text or "").strip():
+                continue
             prefix = _chat_role_prefix(role, wide=not compact)
             wrap_w = _chat_wrap_width(inner_w, prefix)
             cont_pad = " " * len(prefix)

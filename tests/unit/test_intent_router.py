@@ -1,15 +1,18 @@
-from backend.services.agents.core.routing.router import classify
+from backend.services.agents.core.routing.turn_prep import fallback_turn_prep, fast_path_turn_prep
 
 
-def test_always_plan() -> None:
+def test_fast_path_slash_command_is_execute() -> None:
+    prep = fast_path_turn_prep("/do sync gmail")
+    assert prep is not None
+    assert prep.intent == "execute"
+
+
+def test_fallback_workspace_plan() -> None:
     for msg in (
-        "/plan ship the release",
-        "/do create file notes.md",
-        "please implement the sync helper",
         "who owes me a reply?",
-        "hello",
+        "show my inbox",
         "delete the first 2 upcoming meetings in my calender",
     ):
-        intent, body = classify(msg)
-        assert intent == "plan"
-        assert body == msg.strip()
+        prep = fallback_turn_prep(msg, None)
+        assert prep.in_scope is True
+        assert prep.intent in ("plan", "execute")

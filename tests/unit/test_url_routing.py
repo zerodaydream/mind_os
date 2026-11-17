@@ -1,10 +1,12 @@
-from backend.services.agents.core.routing.router import classify, url_from_thread
+from backend.services.agents.core.routing.router import url_from_thread
+from backend.services.agents.core.routing.turn_prep import fallback_turn_prep
 
 
 def test_summarize_pdf_url_routes_plan() -> None:
     msg = "summarize this pdf for me https://arxiv.org/pdf/1803.08664"
-    intent, _ = classify(msg)
-    assert intent == "plan"
+    prep = fallback_turn_prep(msg, None)
+    assert prep.intent in ("plan", "execute")
+    assert prep.in_scope is True
 
 
 def test_url_from_thread_followup() -> None:

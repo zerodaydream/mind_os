@@ -32,6 +32,8 @@ class ProviderGateway:
     def model_for(self, task: LlmTask, override: str | None = None) -> str:
         if override:
             return override
+        if task == LlmTask.ROUTER:
+            return self._settings.mindos_router_model
         if task == LlmTask.EXTRACT:
             return self._settings.mindos_extract_model
         return self._settings.mindos_synth_model

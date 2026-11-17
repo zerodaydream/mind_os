@@ -24,12 +24,6 @@ def url_from_thread(message: str, history: list[dict] | None) -> str | None:
     return m.group(0).rstrip(").,]")
 
 
-def classify(message: str) -> tuple[Intent, str]:
-    """Keyword-free intent stub: currently always plan with full body."""
-    body = message.strip()
-    return "plan", body
-
-
 def looks_like_thread_continuation(message: str) -> bool:
     """True for short confirmations (yes, ok, …)."""
     lower = (message or "").strip().lower()
@@ -53,9 +47,8 @@ def thread_pending_execute(history: list[dict] | None) -> bool:
         if entry.get("role") != "user":
             continue
         text = (entry.get("content") or "").strip()
-        if not text:
+        if len(text) < 8:
             continue
-        routed, _ = classify(text)
-        if routed in ("execute", "plan"):
+        if any(w in text.lower() for w in ("calendar", "schedule", "meeting", "gmail", "file", "/do")):
             return True
     return False

@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     mindos_default_provider: str = Field(
         default="google", validation_alias="MINDOS_DEFAULT_PROVIDER"
     )
+    mindos_router_model: str = Field(
+        default="gemini-2.0-flash-lite", validation_alias="MINDOS_ROUTER_MODEL"
+    )
     mindos_extract_model: str = Field(
         default="gemini-3.5-flash-lite", validation_alias="MINDOS_EXTRACT_MODEL"
     )

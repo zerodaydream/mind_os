@@ -36,9 +36,11 @@ def test_model_for_extract_vs_synth() -> None:
     gw = build_llm_gateway(
         Settings(
             mindos_llm_mode=LlmMode.MOCK,
+            mindos_router_model="gemini-2.0-flash-lite",
             mindos_extract_model="gemini-3.5-flash-lite",
             mindos_synth_model="gemini-3.5-flash-lite",
         )
     )
+    assert gw.model_for(LlmTask.ROUTER) == "gemini-2.0-flash-lite"
     assert gw.model_for(LlmTask.EXTRACT) == "gemini-3.5-flash-lite"
     assert gw.model_for(LlmTask.SYNTH) == "gemini-3.5-flash-lite"

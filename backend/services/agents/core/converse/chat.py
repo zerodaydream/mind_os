@@ -17,6 +17,7 @@ from backend.services.agents.core.render.markdown_tables import (
     gmail_rows_markdown_table,
     normalize_markdown_tables,
 )
+from backend.services.agents.core.routing.turn_prep import TurnPrep
 from backend.services.agents.core.turn.turn_context import (
     TurnContext,
     preflight_prompt_block,
@@ -152,12 +153,21 @@ async def run_chat(
     source: str | None = None,
     history: list[dict] | None = None,
     turn_context: TurnContext | None = None,
+    prep: TurnPrep | None = None,
     plan_style: bool = False,
     on_partial: Callable[[str], None] | None = None,
 ) -> dict:
     message = message.strip()
+    intent = prep.intent if prep else "plan"
     ctx = turn_context or await prefetch_turn_context(
-        session, user, settings, message, source=source
+        session,
+        user,
+        settings,
+        message,
+        source=source,
+        intent=intent,
+        history=history,
+        prep=prep,
     )
 
     hist_text = _format_history(history)
