@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 from backend.common.utils.enums import LlmMode, LlmTask
 from backend.common.config_loader.settings import Settings
-from backend.services.llm.core.gateway import build_llm_gateway
+from backend.services.llm.core.provider_gateway import build_provider_gateway
 from backend.services.llm.providers.google import (
     _parts_from_chunk,
     build_gemini_thinking_config,
@@ -26,7 +26,7 @@ def test_build_thinking_config_off() -> None:
 
 
 def test_gateway_thinking_only_on_synth() -> None:
-    gw = build_llm_gateway(
+    gw = build_provider_gateway(
         Settings(mindos_llm_mode=LlmMode.MOCK, mindos_thinking_level="MEDIUM")
     )
     m = "gemini-3.5-flash-lite"

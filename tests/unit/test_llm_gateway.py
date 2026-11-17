@@ -3,7 +3,7 @@ import pytest
 from backend.common.utils.enums import LlmMode, LlmTask
 from backend.common.utils.exceptions import LlmDisabledError
 from backend.common.config_loader.settings import Settings
-from backend.services.llm.core.gateway import build_llm_gateway
+from backend.services.llm.core.provider_gateway import build_provider_gateway
 
 
 @pytest.mark.asyncio
@@ -27,13 +27,13 @@ async def test_mock_stream_yields_chunks(mock_gateway) -> None:
 
 @pytest.mark.asyncio
 async def test_degraded_blocks() -> None:
-    gw = build_llm_gateway(Settings(mindos_llm_mode=LlmMode.DEGRADED))
+    gw = build_provider_gateway(Settings(mindos_llm_mode=LlmMode.DEGRADED))
     with pytest.raises(LlmDisabledError):
         await gw.complete("x")
 
 
 def test_model_for_extract_vs_synth() -> None:
-    gw = build_llm_gateway(
+    gw = build_provider_gateway(
         Settings(
             mindos_llm_mode=LlmMode.MOCK,
             mindos_router_model="gemini-2.0-flash-lite",

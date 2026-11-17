@@ -4,7 +4,7 @@ from backend.common.langsmith_setup import tracing_active, turn_trace_id, unique
 from backend.common.utils.enums import LlmMode, LlmTask
 from backend.common.utils.exceptions import BudgetExceededError, LlmDisabledError
 from backend.common.config_loader.settings import Settings
-from backend.services.agents.core.render.partial import emit_partial, merge_stream_text
+from backend.services.agents.core.render.chat_stream import emit_chat_stream, merge_chat_stream_text
 from backend.services.llm.core.budget import BudgetGuard
 from backend.services.llm.providers.google import build_gemini_thinking_config, stream_google
 from backend.services.llm.providers.mock import MockProvider
@@ -121,11 +121,11 @@ class ProviderGateway:
                 prompt, resolved_model, max_output_tokens, task=task
             ):
                 if kind == "think":
-                    think_text = merge_stream_text(think_text, piece)
-                    emit_partial(on_partial, think_text, phase="think")
+                    think_text = merge_chat_stream_text(think_text, piece)
+                    emit_chat_stream(on_partial, think_text, phase="think")
                 else:
                     answer.append(piece)
-                    emit_partial(on_partial, "".join(answer), phase="answer")
+                    emit_chat_stream(on_partial, "".join(answer), phase="answer")
                     yield piece
         finally:
             if ls_run is not None:
@@ -171,5 +171,5 @@ class ProviderGateway:
         )
 
 
-def build_llm_gateway(settings: Settings) -> ProviderGateway:
+def build_provider_gateway(settings: Settings) -> ProviderGateway:
     return ProviderGateway(settings)

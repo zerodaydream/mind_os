@@ -1,4 +1,4 @@
-from backend.services.agents.core.converse.chat import _looks_cut_off
+from backend.services.agents.core.converse.converse_synth import _looks_cut_off
 
 
 def test_cut_off_on_dangling_to():

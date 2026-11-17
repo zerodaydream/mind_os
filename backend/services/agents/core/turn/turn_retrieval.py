@@ -13,18 +13,85 @@ from backend.services.agents.core.render.prompt_budget import (
     PREFETCH_COMMITMENTS,
     PREFETCH_CONTEXT_MAX,
     PREFETCH_CTX_ARTIFACTS,
+    PREFETCH_GMAIL_BODY,
     PREFETCH_GMAIL_ROWS,
     PREFETCH_MAIL_PREVIEW,
     PREFETCH_MEMORIES,
     PREFETCH_SEARCH_LIMIT,
     clip_text,
 )
+from backend.services.retrieval.core.mail_lookup import (
+    attachment_lines_from_metadata,
+    lookup_indexed_mail,
+)
 from backend.services.agents.core.render.mail_display import format_mail_display_when
 from backend.services.agents.core.routing.turn_prep import TurnPrep
+from backend.services.integrations.core.gmail.live_fetch import fetch_live_gmail_turn_rows
 from backend.services.retrieval.core.hybrid import hybrid_search_artifacts
 from backend.services.retrieval.core.search_memories import search_memories_ilike
 
 _GMAIL_PREFETCH = re.compile(r"\b(gmail|mail|inbox|sent)\b", re.I)
+_NAMED_DOC = re.compile(r"\.(?:pdf|docx?|pptx?|xlsx?|csv|md)\b", re.I)
+_FILENAME_TOKEN = re.compile(
+    r"\b([\w]+(?:\s[\w]+){0,6}\.(?:pdf|docx?|pptx?|xlsx?|csv|md))\b",
+    re.I,
+)
+_LOCAL_PATH_HINT = re.compile(
+    r"(?:^|[\s'\"])(?:~/?|/Users/|\\|[A-Za-z]:\\|\./|\.\./)"
+)
+
+
+def looks_like_named_attachment(message: str) -> bool:
+    """Filename like foo.pdf in chat—not an explicit local path."""
+    msg = (message or "").strip()
+    if not msg or not _NAMED_DOC.search(msg):
+        return False
+    return not _LOCAL_PATH_HINT.search(msg)
+
+
+def _mail_vendor_needle(message: str) -> str | None:
+    m = re.search(
+        r"\b([A-Za-z][\w]*(?:\s+[A-Za-z][\w]*){0,2})\s+team\b",
+        message or "",
+        re.I,
+    )
+    return m.group(1).strip() if m else None
+
+
+def _attachment_filename_needle(message: str) -> str | None:
+    m = _FILENAME_TOKEN.search((message or "").strip())
+    if not m:
+        return None
+    parts = m.group(1).strip().split()
+    while len(parts) > 1 and parts[0].islower() and "." not in parts[0]:
+        parts.pop(0)
+    return " ".join(parts)
+
+
+def _attachment_named_in_gmail_ctx(gmail_ctx: list[dict], filename: str) -> bool:
+    low = filename.lower()
+    for row in gmail_ctx:
+        for rec in (row.get("metadata") or {}).get("attachments") or []:
+            if not isinstance(rec, dict):
+                continue
+            name = (rec.get("filename") or "").lower()
+            if low in name or name in low:
+                return True
+    return False
+
+
+_HYBRID_GMAIL_WEAK = 0.35
+
+
+def _hybrid_gmail_weak(results: list[dict], gmail_ids: list[str]) -> bool:
+    if not gmail_ids:
+        return True
+    ranks = [
+        float(h.get("rank") or 0.0)
+        for h in results
+        if (h.get("source") or "").lower() == "gmail"
+    ]
+    return not ranks or max(ranks) < _HYBRID_GMAIL_WEAK
 
 
 def turn_in_scope(
@@ -32,11 +99,11 @@ def turn_in_scope(
     message: str,
     *,
     history: list[dict] | None = None,
-    turn_context: TurnContext | None = None,
+    turn_retrieval: TurnRetrieval | None = None,
 ) -> bool:
     if prep.in_scope:
         return True
-    if turn_context and turn_context.has_context and _mail_followup_topic(message, history):
+    if turn_retrieval and turn_retrieval.has_context and _mail_followup_topic(message, history):
         return True
     return False
 
@@ -117,19 +184,7 @@ def _mail_followup_topic(message: str, history: list[dict] | None) -> str | None
 
 def _gmail_attachment_url_lines(metadata: dict | None) -> list[str]:
     """Exact filenames from ingest metadata — agent must not invent names."""
-    lines: list[str] = []
-    for rec in (metadata or {}).get("attachments") or []:
-        if not isinstance(rec, dict):
-            continue
-        name = (rec.get("filename") or "attachment").strip()
-        url = (rec.get("drive_url") or "").strip()
-        if not url and (fid := (rec.get("drive_file_id") or "").strip()):
-            url = f"https://drive.google.com/file/d/{fid}/view"
-        if url:
-            lines.append(f"  Drive · {name}: {url}")
-        else:
-            lines.append(f"  attachment · {name}")
-    return lines
+    return attachment_lines_from_metadata(metadata)
 
 
 def _pronoun_recipient(message: str, history: list[dict] | None) -> str | None:
@@ -172,7 +227,7 @@ def wants_mail_context(
 
 
 @dataclass
-class TurnContext:
+class TurnRetrieval:
     """Retrieval and mail context assembled once per turn."""
 
     message: str
@@ -185,6 +240,23 @@ class TurnContext:
     has_context: bool = False
     hybrid_hit_count: int = 0
     preflight_actions: list[str] = field(default_factory=list)
+
+
+def preloaded_mail_is_indexed(turn: TurnRetrieval) -> bool:
+    """True when prefetch already surfaced Gmail rows or hybrid [gmail] hits."""
+    if turn.gmail_ctx:
+        return True
+    return any((h.get("source") or "").lower() == "gmail" for h in turn.results)
+
+
+def preloaded_mail_agent_hint(turn: TurnRetrieval) -> str:
+    if not preloaded_mail_is_indexed(turn):
+        return ""
+    return (
+        "Indexed Gmail for this question is in Preloaded context below. "
+        "Answer from that text and mindos_mail_lookup or mindos_search—do not "
+        "mindos_gmail_sync or mindos_process_outbox unless lookup/search lack relevant hits."
+    )
 
 
 def preflight_prompt_block(actions: list[str]) -> str:
@@ -307,11 +379,11 @@ def format_context_text(
                 f"- {title} | {direction} | {mail_at or '?'} | "
                 f"To: {recip or '?'} | From: {sender}"
             )
-            preview = (g.get("preview") or "").strip().replace("\n", " ")
+            body = (g.get("body") or g.get("preview") or "").strip()
             block = header
             drive_lines = _gmail_attachment_url_lines(g.get("metadata"))
-            if preview:
-                prev = clip_text(preview, PREFETCH_MAIL_PREVIEW)
+            if body:
+                prev = clip_text(body, PREFETCH_GMAIL_BODY)
                 block = f"{block}\n  {prev}"
             block += "".join(f"\n{ln}" for ln in drive_lines)
             ctx_lines.append(block)
@@ -330,7 +402,7 @@ def format_context_text(
     return "\n".join(ctx_lines) if ctx_lines else "(no retrieval hits)"
 
 
-async def prefetch_turn_context(
+async def prefetch_turn_retrieval(
     session: AsyncSession,
     user,
     settings,
@@ -340,14 +412,16 @@ async def prefetch_turn_context(
     intent: str | None = None,
     history: list[dict] | None = None,
     prep: TurnPrep | None = None,
-) -> TurnContext:
+) -> TurnRetrieval:
     message = message.strip()
     if prep is not None and prep.skip_retrieval:
-        return TurnContext(message=message, has_context=False)
+        return TurnRetrieval(message=message, has_context=False)
     mail_flag = prep.prefetch_mail if prep else None
     commit_flag = prep.prefetch_commitments if prep else None
     mem_flag = prep.prefetch_memories if prep else None
     wants_mail = wants_mail_context(message, source, prefetch_mail=mail_flag)
+    if looks_like_named_attachment(message):
+        wants_mail = True
     topic = _mail_followup_topic(message, history)
     base_q = (prep.search_query if prep else message).strip()
     search_query = f"{topic} {base_q}".strip() if topic else base_q
@@ -392,20 +466,89 @@ async def prefetch_turn_context(
         h["artifact_id"] for h in results if (h.get("source") or "").lower() == "gmail"
     ]
     if wants_mail:
+        mail_limit = min(10, PREFETCH_GMAIL_ROWS)
+        gmail_ctx = await lookup_indexed_mail(
+            session, user.id, settings, search_query, limit=mail_limit
+        )
         if recipient:
-            gmail_ctx = await _ingested_gmail(
+            low = recipient.lower()
+            gmail_ctx = [
+                g
+                for g in gmail_ctx
+                if low in (g.get("to_addr") or "").lower()
+                or low in (g.get("title") or "").lower()
+                or low in (g.get("body") or "").lower()
+            ]
+        if not gmail_ctx and recipient:
+            bare = await _ingested_gmail(
                 session, user.id, to_needle=recipient, sent_only=True, limit=40
             )
-        elif gmail_ids:
-            gmail_ctx = await _ingested_gmail(session, user.id, artifact_ids=gmail_ids)
-        elif topic:
-            gmail_ctx = await _ingested_gmail(
-                session, user.id, to_needle=topic[:120], limit=30
+            if bare:
+                gmail_ctx = await lookup_indexed_mail(
+                    session,
+                    user.id,
+                    settings,
+                    search_query,
+                    limit=mail_limit,
+                    artifact_ids=[r["artifact_id"] for r in bare],
+                )
+        elif not gmail_ctx and gmail_ids:
+            gmail_ctx = await lookup_indexed_mail(
+                session,
+                user.id,
+                settings,
+                search_query,
+                limit=mail_limit,
+                artifact_ids=gmail_ids,
             )
-        elif results:
-            gmail_ctx = []
-        else:
-            gmail_ctx = await _ingested_gmail(session, user.id)
+        elif not gmail_ctx:
+            file_needle = _attachment_filename_needle(message)
+            vendor = _mail_vendor_needle(message) or _mail_vendor_needle(search_query)
+            needle = (
+                file_needle
+                or (topic[:120] if topic else None)
+                or vendor
+                or search_query
+                or message
+            )
+            needle = (needle or "").strip()[:120]
+            if needle:
+                bare = await _ingested_gmail(
+                    session, user.id, to_needle=needle, limit=mail_limit
+                )
+                if bare:
+                    gmail_ctx = await lookup_indexed_mail(
+                        session,
+                        user.id,
+                        settings,
+                        search_query,
+                        limit=mail_limit,
+                        artifact_ids=[r["artifact_id"] for r in bare],
+                    )
+        filename = _attachment_filename_needle(message)
+        needs_live_gmail = _hybrid_gmail_weak(results, gmail_ids) and not gmail_ctx
+        if filename and gmail_ctx and not _attachment_named_in_gmail_ctx(gmail_ctx, filename):
+            needs_live_gmail = True
+        if needs_live_gmail:
+            live_query = search_query
+            if filename and filename.lower() not in live_query.lower():
+                live_query = f"{live_query} {filename}".strip()
+            try:
+                live_rows = await fetch_live_gmail_turn_rows(
+                    session,
+                    user=user,
+                    settings=settings,
+                    query=live_query,
+                )
+            except Exception:
+                live_rows = []
+            if live_rows:
+                seen = {str(g.get("external_id") or g.get("artifact_id")) for g in gmail_ctx}
+                for row in live_rows:
+                    key = str(row.get("external_id") or row.get("artifact_id"))
+                    if key not in seen:
+                        gmail_ctx.append(row)
+                        seen.add(key)
     else:
         gmail_ctx = []
 
@@ -440,7 +583,7 @@ async def prefetch_turn_context(
         PREFETCH_CONTEXT_MAX,
     )
     has = bool(results or commitments or gmail_ctx or memories)
-    return TurnContext(
+    return TurnRetrieval(
         message=message,
         results=results,
         sources=sources,

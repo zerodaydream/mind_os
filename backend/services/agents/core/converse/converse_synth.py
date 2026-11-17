@@ -1,27 +1,32 @@
-"""Converse/plan synth: LLM answers over prefetched TurnContext."""
+"""Converse/plan synth: LLM answers over prefetched turn retrieval."""
 
 from collections.abc import Callable
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.common.utils.enums import LlmMode, LlmTask
-from backend.services.agents.core.render.partial import emit_partial
 from backend.services.agents.core.render.prompt_budget import (
     CHAT_HISTORY_MSG_CHARS,
     CHAT_HISTORY_TURNS,
     SYNTH_MAX_OUTPUT_TOKENS,
     clip_text,
 )
+from backend.services.agents.core.render.prompts import (
+    ANSWER_LAYOUT_CORE,
+    CONVERSE_EXECUTIVE_TONE,
+    CONVERSE_PLAN_STYLE_EXTRA,
+)
 from backend.services.agents.core.render.markdown_tables import (
     answer_has_empty_table_shell,
     gmail_rows_markdown_table,
     normalize_markdown_tables,
+    polish_agent_answer,
 )
 from backend.services.agents.core.routing.turn_prep import TurnPrep
-from backend.services.agents.core.turn.turn_context import (
-    TurnContext,
+from backend.services.agents.core.turn.turn_retrieval import (
+    TurnRetrieval,
     preflight_prompt_block,
-    prefetch_turn_context,
+    prefetch_turn_retrieval,
 )
 
 _CONVERSE_SYSTEM = (
@@ -103,7 +108,7 @@ def _format_history(history: list[dict] | None) -> str:
     return "\n".join(lines)
 
 
-def _ensure_table_rows(answer: str, ctx: TurnContext) -> str:
+def _ensure_table_rows(answer: str, ctx: TurnRetrieval) -> str:
     """Backfill empty markdown tables from gmail_ctx."""
     if not answer_has_empty_table_shell(answer) or not ctx.gmail_ctx:
         return answer
@@ -113,7 +118,7 @@ def _ensure_table_rows(answer: str, ctx: TurnContext) -> str:
     return f"{answer.rstrip()}\n\n{built}"
 
 
-def _fallback_answer(ctx: TurnContext) -> str:
+def _fallback_answer(ctx: TurnRetrieval) -> str:
     """Retrieval-only answer when LLM is degraded."""
     lines: list[str] = []
     if ctx.commitments:
@@ -143,7 +148,7 @@ def _fallback_answer(ctx: TurnContext) -> str:
     return "\n".join(lines)
 
 
-async def run_chat(
+async def run_converse_turn(
     session: AsyncSession,
     user,
     settings,
@@ -152,14 +157,14 @@ async def run_chat(
     *,
     source: str | None = None,
     history: list[dict] | None = None,
-    turn_context: TurnContext | None = None,
+    turn_context: TurnRetrieval | None = None,
     prep: TurnPrep | None = None,
     plan_style: bool = False,
     on_partial: Callable[[str], None] | None = None,
 ) -> dict:
     message = message.strip()
     intent = prep.intent if prep else "plan"
-    ctx = turn_context or await prefetch_turn_context(
+    ctx = turn_retrieval or await prefetch_turn_retrieval(
         session,
         user,
         settings,
@@ -189,33 +194,18 @@ async def run_chat(
                 answer = "Hello — what would you like to look up?"
         except Exception:
             answer = "Hello — what would you like to look up?"
-        answer = _ensure_table_rows(normalize_markdown_tables(answer), ctx)
+        answer = _ensure_table_rows(
+            normalize_markdown_tables(polish_agent_answer(answer)), ctx
+        )
         return {"message": message, "answer": answer, "sources": [], "mode": "converse"}
 
     system = (
         "You are MindOS assistant. Answer from Context and Recent conversation. "
-        "Tone: professional and concise, like a capable executive assistant—never sound like a debug log. "
-        "Do not say ingested, indexed, context, or 'no additional data is missing' when you can answer. "
-        "Open with a direct answer in one short sentence; add a table or list when it helps. "
-        "Only mention missing mail or sync when you truly lack the facts. "
-        "Do not repeat Gmail sync counts the user already saw in thinking. "
-        "Never reply with tables or lists only. "
-        "Put a blank line before each heading, list, or table. "
-        "Lists: one `1. item` per line; indent nested items with two leading spaces. "
-        "Dates: use the human Sent/Date fields from Context (weekday, day, month, year, local time)—never raw ISO. "
-        "Tables: pipe markdown with header, `| --- |` separator, one data row per line; every table needs data rows. "
-        "For To/From cells use readable names or emails, not long MIME header blobs. "
-        "Complete every sentence; do not trail off."
+        f"{CONVERSE_EXECUTIVE_TONE}"
+        f"{ANSWER_LAYOUT_CORE}"
     )
     if plan_style:
-        system += (
-            " Multi-part questions: handle each part in order—blank line, short lead-in, blank line, then table or list. "
-            "Respect numeric limits (e.g. top 10). Use real Subject/Description cells from Context. "
-            "For recipient tables use the To: field from Context, not From:. "
-            "Example shape:\n"
-            "Here are the matching messages:\n\n"
-            "| Subject | Description |\n| --- | --- |\n| Indeed Application: AI Developer | summary from mail |"
-        )
+        system += CONVERSE_PLAN_STYLE_EXTRA
     if not ctx.has_context:
         base = system if plan_style else _CONVERSE_SYSTEM
         parts = [base]
@@ -250,7 +240,9 @@ async def run_chat(
 
     return {
         "message": message,
-        "answer": _ensure_table_rows(normalize_markdown_tables(answer), ctx),
+        "answer": _ensure_table_rows(
+            normalize_markdown_tables(polish_agent_answer(answer)), ctx
+        ),
         "sources": ctx.sources,
         "mode": mode,
         "filter_source": source,

@@ -10,7 +10,7 @@ import stat
 from pathlib import Path
 
 from backend.common.langsmith_setup import trace_tool
-from backend.services.agents.core.render.partial import PartialFn
+from backend.services.agents.core.render.chat_stream import ChatStreamCallback
 from backend.services.graph.core.deep_session import mindos_home
 from backend.services.integrations.mcp.fs_ripgrep import (
     _MAX_SCAN_BASES,
@@ -359,7 +359,7 @@ def _fmt_entry(path: Path) -> str:
     return f"{path.name}\t{mode}\t{st.st_size}"
 
 
-def build_filesystem_tools(*, on_partial: PartialFn | None = None, user_task: str = ""):
+def build_filesystem_tools(*, on_partial: ChatStreamCallback | None = None, user_task: str = ""):
     async def mindos_fs_roots() -> str:
         """List directory roots the agent may read or modify."""
         return f"Allowed filesystem roots:\n" + "\n".join(f"- {r}" for r in filesystem_roots())

@@ -4,13 +4,13 @@
       "name": "personal",
       "enabled": true,
       "transport": "builtin",
-      "guidance": "Indexed mail and Drive first: mindos_search before any filesystem tool when the user names attachments, people, or email threads. mindos_calendar_* for schedule; mindos_summarize_url for URL/PDF content and compare-two-files; when search is empty use mindos_gmail_sync(query=<Gmail q from user words>, max_messages≈25) then mindos_process_outbox then mindos_search—not mindos_gmail_sync() with no query unless user wants a full inbox pull."
+      "guidance": "Indexed mail and Drive first: Preloaded context and mindos_mail_lookup for Gmail bodies/attachments; mindos_search for mixed sources. Before filesystem tools when the user names attachments, people, or threads. Do not mindos_gmail_sync or mindos_process_outbox when Preloaded context or lookup/search already has [gmail] hits, or when sync returns ingested=0. mindos_calendar_* for schedule; mindos_summarize_url for URL/PDF content; only if Preloaded+lookup/search lack mail: mindos_gmail_sync(query=<Gmail q>, max_messages≈25) then mindos_process_outbox only if ingested>0, then mindos_mail_lookup—not blank mindos_gmail_sync unless user wants full inbox refresh."
     },
     {
       "name": "filesystem",
       "enabled": true,
       "transport": "builtin",
-      "guidance": "Local disk only—not Gmail/Drive ingested mail. Use mindos_search first for mail/Drive. Default search is MINDOS_HOME (project), not whole ~. For personal files: mindos_fs_list(\"~\") then glob/grep with root=~/Downloads|Desktop|Documents; deep=True only if they want a wide scan. Configure agents.filesystem.search_paths for your usual folders. Destructive: preview then confirmed=True."
+      "guidance": "Local disk only—not Gmail/Drive ingested mail. Use mindos_mail_lookup or mindos_search first for mail/Drive. Default search is MINDOS_HOME (project), not whole ~. For personal files: mindos_fs_list(\"~\") then glob/grep with root=~/Downloads|Desktop|Documents; deep=True only if they want a wide scan. Configure agents.filesystem.search_paths for your usual folders. Destructive: preview then confirmed=True."
     },
     {
       "name": "convert",

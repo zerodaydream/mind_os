@@ -7,7 +7,8 @@ import re
 _TOOL_TRACE_SUFFIX = re.compile(r"^(.+)_[a-f0-9]{10}$")
 
 _TOOL_STATUS: dict[str, str] = {
-    "mindos_search": "Searching your mail and indexed documents",
+    "mindos_search": "Searching the indexed documents",
+    "mindos_mail_lookup": "Loading indexed Gmail messages",
     "mindos_gmail_sync": "Syncing Gmail",
     "mindos_process_outbox": "Indexing new mail and attachments",
     "mindos_commitments": "Listing open commitments",

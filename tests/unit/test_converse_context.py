@@ -1,5 +1,5 @@
 from backend.services.agents.core.routing.turn_prep import fast_path_turn_prep
-from backend.services.agents.core.turn.turn_context import (
+from backend.services.agents.core.turn.turn_retrieval import (
     _mail_recipient_needle,
     wants_commitment_context,
     wants_mail_context,

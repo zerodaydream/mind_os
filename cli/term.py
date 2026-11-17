@@ -158,6 +158,31 @@ class _C:
     yellow = "\033[33m"
 
 
+def _curses_addstr_spans(
+    stdscr,
+    y: int,
+    x: int,
+    spans: list[tuple[int, str]],
+    *,
+    width: int,
+) -> None:
+    import curses
+
+    pos = x
+    limit = x + max(0, width)
+    for attr, frag in spans:
+        if pos >= limit:
+            break
+        piece = frag[: max(0, limit - pos)]
+        if not piece:
+            continue
+        try:
+            stdscr.addstr(y, pos, piece, attr)
+        except curses.error:
+            pass
+        pos += len(piece)
+
+
 def _curses_addstr_todo_active(
     stdscr,
     y: int,
@@ -1011,8 +1036,14 @@ def _markdown_line_style(line: str, *, in_sources: bool) -> str:
     s = line.strip()
     if not s:
         return "body"
+    from cli.md_render import is_http_url
+
+    if is_http_url(s) or re.match(r"^\s{2,}https?://", line):
+        return "link"
     if s == "sources:":
         return "sources"
+    if re.match(r"(?i)^(?:\*\*)?\s*source(?:\s*excerpt|\(s\))?(?:\*\*)?:", s):
+        return "meta"
     if in_sources and re.match(r"^\s*\d+\.", line):
         return "source_item"
     if s.startswith("…") or s.startswith("..."):
@@ -1021,13 +1052,15 @@ def _markdown_line_style(line: str, *, in_sources: bool) -> str:
         return "meta"
     if re.match(r"^#{1,6}\s", s):
         return "heading"
+    if re.fullmatch(r"\*\*[^*]+\*\*", s) and not re.fullmatch(r"\*\*[^*]+:\*\*", s):
+        return "heading"
     if s.count("|") >= 2:
         return "table"
     if re.match(r"^[-:|+\s]{3,}$", s.replace("|", "").strip("-: |+")) or re.fullmatch(
         r"[-\s]{3,}", s
     ):
         return "rule"
-    if re.match(r"^[-*]\s", s) or re.match(r"^\d+\.\s", s):
+    if re.match(r"^[-*•]\s", s) or re.match(r"^\d+\.\s", s):
         return "list"
     if re.match(r"^[A-Z][^:\n]{2,40}:$", s):
         return "heading"
@@ -1066,12 +1099,12 @@ def _split_plan_prefix(text: str) -> tuple[str, str]:
 
 
 def _merge_think_partial(prev: str, text: str) -> str:
-    from backend.services.agents.core.render.partial import merge_stream_text
+    from backend.services.agents.core.render.chat_stream import merge_chat_stream_text
 
-    merged = merge_stream_text(prev, text)
+    merged = merge_chat_stream_text(prev, text)
     if not prev or merged == text:
         return merged
-    from backend.services.agents.core.render.partial import THINK_PLAN_HEADER
+    from backend.services.agents.core.render.chat_stream import THINK_PLAN_HEADER
 
     if text.startswith(THINK_PLAN_HEADER) or prev.startswith(THINK_PLAN_HEADER):
         if text.startswith(THINK_PLAN_HEADER):
@@ -1092,7 +1125,7 @@ def _advance_think_reveal(target: str, revealed: str, *, chunk: int) -> str:
     if not target:
         return revealed
     if revealed and not target.startswith(revealed):
-        from backend.services.agents.core.render.partial import THINK_PLAN_HEADER
+        from backend.services.agents.core.render.chat_stream import THINK_PLAN_HEADER
 
         if target.startswith(THINK_PLAN_HEADER):
             revealed = ""
@@ -1153,13 +1186,86 @@ def _thinking_chat_lines(text: str, width: int) -> list[tuple[str, str]]:
     return out or [("body", "(empty)")]
 
 
-def _markdown_chat_lines(text: str, width: int) -> list[tuple[str, str]]:
+def _spans_for_range(
+    spans: list[tuple[str, str]], start: int, end: int
+) -> list[tuple[str, str]]:
+    from cli.md_render import _merge_style_spans
+
+    pieces: list[tuple[str, str]] = []
+    cursor = 0
+    for key, text in spans:
+        seg_end = cursor + len(text)
+        overlap_start = max(start, cursor)
+        overlap_end = min(end, seg_end)
+        if overlap_start < overlap_end:
+            pieces.append((key, text[overlap_start - cursor : overlap_end - cursor]))
+        cursor = seg_end
+    return _merge_style_spans(pieces)
+
+
+def _wrap_rich_span_row(
+    row: tuple[str, str] | tuple[str, str, list[tuple[str, str]]],
+    width: int,
+) -> list[tuple[str, str] | tuple[str, str, list[tuple[str, str]]]]:
+    style = row[0]
+    line = row[1]
+    spans = row[2] if len(row) == 3 else None
+    if not spans or len(line) <= width:
+        return [row]
+    wrapped = _chat_wrap_text(line, width)
+    if len(wrapped) <= 1:
+        return [row]
+    out: list[tuple[str, str] | tuple[str, str, list[tuple[str, str]]]] = []
+    pos = 0
+    for chunk in wrapped:
+        idx = line.find(chunk, pos)
+        if idx < 0:
+            idx = pos
+        end = idx + len(chunk)
+        sub = _spans_for_range(spans, idx, end)
+        merged = "".join(part for _, part in sub).rstrip() or chunk.rstrip()
+        if len(sub) > 1:
+            out.append((style, merged, sub))
+        elif sub and sub[0][0] not in ("body", style):
+            out.append((style, merged, sub))
+        else:
+            out.append((style, merged))
+        pos = end
+        while pos < len(line) and line[pos] == " ":
+            pos += 1
+    return out or [row]
+
+
+def _markdown_chat_lines(
+    text: str,
+    width: int,
+    *,
+    final: bool = True,
+) -> list[tuple[str, str] | tuple[str, str, list[tuple[str, str]]]]:
     from cli import md_render
 
     width = max(20, width)
-    out: list[tuple[str, str]] = []
+    prepared = md_render.prepare_chat_text(text)
+    if final:
+        rich_rows = md_render.rich_chat_span_lines(prepared, width)
+        if rich_rows is not None:
+            wrapped: list[tuple[str, str] | tuple[str, str, list[tuple[str, str]]]] = []
+            for row in rich_rows:
+                style, line = row[0], row[1]
+                spans = row[2] if len(row) == 3 else None
+                if not line.strip():
+                    wrapped.append(("body", ""))
+                    continue
+                if spans:
+                    wrapped.extend(_wrap_rich_span_row(row, width))
+                    continue
+                for ln in _chat_wrap_text(line, width):
+                    wrapped.append((style, ln.rstrip()))
+            return wrapped or [("body", "(empty)")]
+
+    out: list[tuple[str, str] | tuple[str, str, list[tuple[str, str]]]] = []
     in_sources = False
-    lines = md_render.prepare_chat_text(text).splitlines()
+    lines = prepared.splitlines()
     i = 0
     while i < len(lines):
         raw = lines[i]
@@ -1694,12 +1800,23 @@ def _chat_conversation_loop(
     md_source_item = asst_attr | c.A_DIM
     md_meta = tab_norm
     md_list = asst_attr
+    md_link = asst_attr | c.A_DIM
+    md_code = asst_attr | c.A_DIM
+    try:
+        c.init_pair(9, c.COLOR_GREEN, -1)
+        md_code = c.color_pair(9)
+    except c.error:
+        pass
+    md_strong = asst_attr | c.A_BOLD
     md_attr = {
         "body": asst_attr,
         "heading": md_heading,
+        "strong": md_strong,
         "table": md_table,
         "rule": md_rule,
         "list": md_list,
+        "link": md_link,
+        "code": md_code,
         "sources": md_sources,
         "source_item": md_source_item,
         "meta": md_meta,
@@ -1707,6 +1824,7 @@ def _chat_conversation_loop(
 
     _TOP_TABS = ("New Chat", "History", "Back")
     turn_busy = False
+    assistant_streaming = False
     history: list[tuple[str, str]] = list(initial_history or [])
     session_title_target = (initial_session_title or "New Chat").strip() or "New Chat"
     session_title_shown = session_title_target
@@ -1839,10 +1957,10 @@ def _chat_conversation_loop(
         if n and top_tab >= n:
             top_tab = n - 1
 
-    def _flat_history(inner_w: int) -> list[tuple[int, str] | tuple[int, str, int]]:
-        out: list[tuple[int, str] | tuple[int, str, int]] = []
+    def _flat_history(inner_w: int) -> list[tuple[int, str] | tuple[int, str, int | list[tuple[int, str]]]]:
+        out: list[tuple[int, str] | tuple[int, str, int | list[tuple[int, str]]]] = []
         compact = _chat_compact(inner_w)
-        for role, text in history:
+        for idx, (role, text) in enumerate(history):
             if role == "assistant" and not (text or "").strip():
                 continue
             prefix = _chat_role_prefix(role, wide=not compact)
@@ -1874,18 +1992,40 @@ def _chat_conversation_loop(
                         row = (think_attr, f"{pad}{ln}", icon_a)
                     out.append(row)
                 continue
-            lines = _markdown_chat_lines(text, wrap_w)
-            for i, (style, ln) in enumerate(lines):
+            is_final = not (
+                assistant_streaming
+                and role == "assistant"
+                and idx == len(history) - 1
+            )
+            lines = _markdown_chat_lines(text, wrap_w, final=is_final)
+            for i, row in enumerate(lines):
+                style, ln = row[0], row[1]
                 pad = prefix if i == 0 else cont_pad
-                out.append((md_attr.get(style, asst_attr), f"{pad}{ln}"))
+                spans = row[2] if len(row) == 3 else None
+                if spans:
+                    painted: list[tuple[int, str]] = []
+                    for j, (span_key, frag) in enumerate(spans):
+                        piece = f"{pad}{frag}" if j == 0 else frag
+                        painted.append((md_attr.get(span_key, asst_attr), piece))
+                    out.append((asst_attr, f"{pad}{ln}", painted))
+                else:
+                    out.append((md_attr.get(style, asst_attr), f"{pad}{ln}"))
         return out
 
     def _rendered_transcript(
         inner_w: int,
-    ) -> list[tuple[int, str] | tuple[int, str, int]]:
+    ) -> list[tuple[int, str] | tuple[int, str, int | list[tuple[int, str]]]]:
         nonlocal _render_sig, _rendered_lines
         think = thinking_line or ""
-        sig = (len(history), inner_w, think, think_live, think_pulse, _chat_compact(inner_w))
+        sig = (
+            len(history),
+            inner_w,
+            think,
+            think_live,
+            think_pulse,
+            _chat_compact(inner_w),
+            assistant_streaming,
+        )
         if sig != _render_sig:
             _rendered_lines = _flat_history(inner_w)
             if thinking_line:
@@ -2203,7 +2343,15 @@ def _chat_conversation_loop(
             if ri >= len(rendered):
                 break
             row = rendered[ri]
-            if len(row) == 3:
+            if len(row) == 3 and isinstance(row[2], list):
+                _curses_addstr_spans(
+                    stdscr,
+                    transcript_top + i,
+                    pad,
+                    row[2],
+                    width=inner_w,
+                )
+            elif len(row) == 3:
                 attr, ln, icon_attr = row
                 mark = "[tool]" if "[tool]" in ln else "●"
                 _curses_addstr_todo_active(
@@ -2276,7 +2424,7 @@ def _chat_conversation_loop(
     def _submit_turn() -> None:
         nonlocal buf, cursor, scroll, thinking_line, follow_tail, _render_sig
         nonlocal think_live, think_pulse, session_title_shown, session_title_target
-        nonlocal turn_busy, top_tab, input_focus
+        nonlocal turn_busy, top_tab, input_focus, assistant_streaming
         if _voice_busy():
             _voice_stop()
         msg = buf.rstrip()
@@ -2289,6 +2437,7 @@ def _chat_conversation_loop(
         _render_sig = None
         _draw(show_cursor=False)
 
+        assistant_streaming = False
         think_idx: int | None = None
         stream_idx: int | None = None
         last_paint = 0.0
@@ -2324,7 +2473,7 @@ def _chat_conversation_loop(
                 return
             nonlocal thinking_line, think_idx, stream_idx, last_paint, _render_sig, pending
             nonlocal think_target, think_revealed, session_title_shown, session_title_target
-            nonlocal answer_target, answer_revealed, think_live
+            nonlocal answer_target, answer_revealed, think_live, assistant_streaming
             pending = text
             now = time.monotonic()
             if phase == "title":
@@ -2347,6 +2496,7 @@ def _chat_conversation_loop(
                 if stream_idx is None:
                     history.append(("assistant", ""))
                     stream_idx = len(history) - 1
+                    assistant_streaming = True
                     _render_sig = None
                     follow_tail = True
                     _draw_turn(show_cursor=False)
@@ -2355,6 +2505,7 @@ def _chat_conversation_loop(
             if stream_idx is None:
                 history.append(("assistant", text))
                 stream_idx = len(history) - 1
+                assistant_streaming = True
                 last_paint = now
                 _render_sig = None
                 follow_tail = True
@@ -2363,6 +2514,7 @@ def _chat_conversation_loop(
             if now - last_paint < _CHAT_STREAM_MIN_S:
                 return
             last_paint = now
+            assistant_streaming = True
             history[stream_idx] = ("assistant", text)
             _render_sig = None
             follow_tail = True
@@ -2568,10 +2720,12 @@ def _chat_conversation_loop(
                     history.append(("assistant", answer))
                 else:
                     history[stream_idx] = ("assistant", answer)
+            assistant_streaming = False
             follow_tail = True
             _render_sig = None
             _draw(show_cursor=False)
         finally:
+            assistant_streaming = False
             turn_busy = False
             _clamp_top_tab()
 

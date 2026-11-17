@@ -1,6 +1,9 @@
 from backend.services.agents.core.routing.turn_prep import TurnPrep, fallback_turn_prep, parse_turn_prep
-from backend.services.agents.core.turn.turn_context import (
+from backend.services.agents.core.turn.turn_retrieval import (
+    TurnRetrieval,
     out_of_scope_reply,
+    preloaded_mail_agent_hint,
+    preloaded_mail_is_indexed,
     scope_block_reply,
     turn_in_scope,
 )
@@ -70,14 +73,12 @@ def test_prep_can_widen_after_retrieval() -> None:
         prefetch_commitments=False,
         prefetch_memories=False,
     )
-    from backend.services.agents.core.turn.turn_context import TurnContext
-
-    ctx = TurnContext(message="x", has_context=True)
+    ctx = TurnRetrieval(message="x", has_context=True)
     hist = [
         {"role": "user", "content": "show gmail from alex"},
         {"role": "assistant", "content": "Found 3 messages."},
     ]
-    assert turn_in_scope(prep, "tell me more", history=hist, turn_context=ctx) is True
+    assert turn_in_scope(prep, "tell me more", history=hist, turn_retrieval=ctx) is True
 
 
 def test_scope_no_without_clarify_continues() -> None:
@@ -108,3 +109,18 @@ def test_clarify_line_blocks_turn() -> None:
         clarify_reply="Mail or calendar?",
     )
     assert prep.blocks_chat_turn() is True
+
+
+def test_preloaded_mail_hint_when_gmail_ctx() -> None:
+    ctx = TurnRetrieval(
+        message="northflank gpu",
+        gmail_ctx=[{"title": "Re: credits", "metadata": {}}],
+    )
+    assert preloaded_mail_is_indexed(ctx)
+    assert "mindos_gmail_sync" in preloaded_mail_agent_hint(ctx)
+
+
+def test_preloaded_mail_hint_absent_without_mail() -> None:
+    ctx = TurnRetrieval(message="hello", results=[{"source": "manual", "artifact_id": "1"}])
+    assert not preloaded_mail_is_indexed(ctx)
+    assert preloaded_mail_agent_hint(ctx) == ""

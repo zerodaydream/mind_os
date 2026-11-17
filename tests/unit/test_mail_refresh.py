@@ -1,4 +1,4 @@
-from backend.services.agents.core.turn.turn_context import preflight_prompt_block
+from backend.services.agents.core.turn.turn_retrieval import preflight_prompt_block
 
 
 def test_preflight_prompt_block_nonempty() -> None:

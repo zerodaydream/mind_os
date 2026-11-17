@@ -101,6 +101,50 @@ def gmail_rows_markdown_table(rows: list[dict], *, limit: int = 10) -> str:
     return "\n".join(_format_table(data))
 
 
+_LIST_NUM_GLUE = re.compile(r"^(\s*)(\d+)([A-Za-z])")
+_INLINE_BULLET = re.compile(r"(?<!\n)\s+•\s+")
+_EM_DASH_URL = re.compile(r"\s+—\s+(?=https?://)")
+
+
+def _polish_prose_line(line: str) -> str:
+    if not line.strip():
+        return line
+    if _is_table_line(line):
+        return line
+    if "://" in line:
+        s = line
+    else:
+        s = line
+        s = _LIST_NUM_GLUE.sub(r"\1\2. \3", s)
+        s = re.sub(r"([a-z])(\d)", r"\1 \2", s)
+        s = re.sub(r"(\d)([A-Za-z])", r"\1 \2", s)
+        s = re.sub(r"([a-z])([A-Z][a-z])", r"\1 \2", s)
+    s = _INLINE_BULLET.sub("\n• ", s)
+    s = _EM_DASH_URL.sub("\n  ", s)
+    return s
+
+
+def polish_agent_answer(text: str) -> str:
+    """Fix common LLM spacing: glued words, inline bullets, URLs after em dashes."""
+    if not (text or "").strip():
+        return text or ""
+    out: list[str] = []
+    for raw in text.splitlines():
+        chunk = _polish_prose_line(raw)
+        out.extend(chunk.splitlines())
+    collapsed: list[str] = []
+    blanks = 0
+    for ln in out:
+        if not ln.strip():
+            blanks += 1
+            if blanks <= 2:
+                collapsed.append("")
+            continue
+        blanks = 0
+        collapsed.append(ln.rstrip())
+    return "\n".join(collapsed).strip()
+
+
 def normalize_markdown_tables(text: str) -> str:
     """Fix placeholder and broken tables in LLM markdown."""
     lines = text.splitlines()

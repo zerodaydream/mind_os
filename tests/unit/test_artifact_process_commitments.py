@@ -45,7 +45,7 @@ async def test_skips_commitment_extract_when_already_linked(monkeypatch) -> None
         lambda: MagicMock(embedding_model="m"),
     )
     monkeypatch.setattr(
-        "backend.worker.handlers.artifact_process.build_llm_gateway",
+        "backend.worker.handlers.artifact_process.build_provider_gateway",
         lambda _: None,
     )
 

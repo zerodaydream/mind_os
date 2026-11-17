@@ -1,9 +1,9 @@
-from backend.services.agents.core.converse.chat import _fallback_answer
-from backend.services.agents.core.turn.turn_context import TurnContext
+from backend.services.agents.core.converse.converse_synth import _fallback_answer
+from backend.services.agents.core.turn.turn_retrieval import TurnRetrieval
 
 
 def test_fallback_lists_context() -> None:
-    ctx = TurnContext(
+    ctx = TurnRetrieval(
         message="hi",
         results=[{"artifact_id": "1", "title": "Hello", "source": "gmail"}],
         commitments=["I will reply by Friday"],

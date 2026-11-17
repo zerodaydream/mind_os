@@ -11,6 +11,13 @@ def test_table_and_heading():
     assert _markdown_line_style("## Roles", in_sources=False) == "heading"
 
 
+def test_link_and_source_excerpt_styles():
+    assert _markdown_line_style("https://example.com/x", in_sources=False) == "link"
+    assert (
+        _markdown_line_style("**Source(s):**", in_sources=False) == "meta"
+    )
+
+
 def test_blank_lines_preserved():
     text = "para one\n\npara two"
     lines = _markdown_chat_lines(text, width=60)
@@ -22,6 +29,24 @@ def test_long_source_line_wraps_not_truncates():
     lines = _markdown_chat_lines(long, width=60)
     assert len(lines) > 1
     assert "…" not in "".join(ln for _, ln in lines)
+
+
+def test_rich_wrap_keeps_strong_on_continuation():
+    from cli.md_render import rich_chat_span_lines
+
+    long_tail = "x" * 55
+    text = f"**When:** Tue 4pm IST — {long_tail}"
+    rows = rich_chat_span_lines(text, 40)
+    if rows is None:
+        return
+    wrapped = _markdown_chat_lines(text, width=40, final=True)
+    # Filter rows that still carry Rich spans
+    span_rows = [r for r in wrapped if len(r) == 3]
+    if not span_rows:
+        return
+    keys = {k for row in span_rows for k, _ in row[2]}
+    assert "strong" in keys
+    assert len(wrapped) > 1
 
 
 def test_long_file_path_wraps_not_hard_cut():

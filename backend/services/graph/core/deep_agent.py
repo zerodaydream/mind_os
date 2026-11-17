@@ -25,15 +25,27 @@ from backend.common.langsmith_setup import (
     unique_run_name,
 )
 from backend.common.utils.enums import LlmMode
-from backend.services.agents.core.render.markdown_tables import normalize_markdown_tables
-from backend.services.agents.core.render.partial import (
+from backend.services.agents.core.render.chat_stream import (
     THINK_PLAN_HEADER,
-    emit_partial,
-    merge_stream_text,
+    emit_chat_stream,
+    merge_chat_stream_text,
+)
+from backend.services.agents.core.render.prompts import (
+    ANSWER_LAYOUT_CORE,
+    DEEP_AGENT_MAIL_RETRIEVAL,
+    DEEP_AGENT_REPLY_LAYOUT,
+    SOURCE_CITATION_RULE,
+)
+from backend.services.agents.core.render.markdown_tables import (
+    normalize_markdown_tables,
+    polish_agent_answer,
 )
 from backend.services.agents.core.render.tool_status import tool_status_line
 from backend.services.agents.core.render.prompt_budget import DEEP_USER_CONTEXT_MAX, clip_text
-from backend.services.agents.core.turn.turn_context import preflight_prompt_block
+from backend.services.agents.core.turn.turn_retrieval import (
+    preflight_prompt_block,
+    preloaded_mail_agent_hint,
+)
 from backend.services.integrations.core.calendar.scheduling import (
     collect_calendar_thread,
     mentions_tomorrow,
@@ -45,7 +57,7 @@ from backend.services.integrations.core.calendar.events import (
 )
 
 if TYPE_CHECKING:
-    from backend.services.agents.core.turn.turn_context import TurnContext
+    from backend.services.agents.core.turn.turn_retrieval import TurnRetrieval
 
 
 def deepagents_available() -> bool:
@@ -187,7 +199,7 @@ async def run_deep_agent(
     *,
     intent: str,
     thread_id: uuid.UUID,
-    turn_context: TurnContext | None = None,
+    turn_retrieval: TurnRetrieval | None = None,
     history: list[dict] | None = None,
     on_partial: Callable[..., None] | None = None,
     client_tz: str = "",
@@ -240,22 +252,19 @@ async def run_deep_agent(
             "mail, calendar, files, or workspace task, apologize briefly and redirect—do not "
             "answer from world knowledge. "
             "Answer from Preloaded context and tool results only; never invent mail "
-            "or write Not available in context—use mindos_search and Drive · lines from tools. "
+            "or write Not available in context—use mindos_mail_lookup, mindos_search, and Drive · lines. "
             "Before calling mindos_gmail_sync or mindos_process_outbox, send the user one short sentence "
             "about what you are about to do; then call the tool. "
-            "Use mindos_search for gaps. For any URL/PDF or follow-up about a linked paper: "
+            "Use mindos_search for gaps; if a hit names the right thread, read the Source(s) "
+            "excerpt for dollar amounts or credit requests—do not re-search the same thread with "
+            "narrower queries. For any URL/PDF or follow-up about a linked paper: "
             "call mindos_summarize_url with the URL from the user or thread and focus=their question; "
             "never invent title, authors, or findings from memory. Reply from tool output only. "
-            "Every factual answer about mail, PDFs, or indexed content must end with a line "
-            "**Source excerpt:** followed by a short verbatim quote from tool output or Preloaded "
-            "context (keep units); if you cannot quote, say (not found in retrieved text). "
+            f"{SOURCE_CITATION_RULE} "
             "Compare two files: call mindos_summarize_url per file with focus=the question. "
-            "Mail: Preloaded context and mindos_search first; if empty, mindos_gmail_sync(query=Gmail "
-            "search from the user's names/keywords, max_messages≤25) → mindos_process_outbox → "
-            "mindos_search again—not a blanket sync without query unless they want full inbox refresh. "
+            f"{DEEP_AGENT_MAIL_RETRIEVAL} "
             "If Steps already taken were completed before you started, summarize them in your opening. "
-            "Tables/lists only from retrieved data. For Drive files use a bullet list "
-            "with [exact_filename](full_https_url) per line—not a table with URLs in cells. "
+            f"{DEEP_AGENT_REPLY_LAYOUT} {ANSWER_LAYOUT_CORE} "
             "Never invent attachment filenames; only names on Drive · or attachment · lines "
             "from mindos_search or Preloaded context. If the file type or thread is wrong, "
             "call mindos_search again with words from the user's question before answering. "
@@ -273,7 +282,7 @@ async def run_deep_agent(
             "If it is unclear whether files are in indexed mail/Drive or on local disk, ask one short "
             "question (mail/indexed vs local workspace) and do not call tools until they answer—"
             "unless Preloaded context already shows Drive · or mail hits for those names. "
-            "Mail attachments, PDFs named in email, and anything sent to a person: always "
+            "mindos_mail_lookup first (then mindos_summarize_url on Drive URLs); never mindos_fs_* for those. "
             "mindos_search first (then mindos_summarize_url on Drive URLs); never mindos_fs_* for those. "
             "Filesystem (local): iterate mindos_fs_list, mindos_fs_glob, mindos_fs_grep with explicit "
             "folders (e.g. ~/Downloads); multiple narrow searches beat one wide scan. "
@@ -285,7 +294,9 @@ async def run_deep_agent(
             "Every calendar time you state must include the timezone label from Clock "
             "(e.g. 4 PM IST), matching time_zone / user_tz_label. "
             "Streamed reasoning must read like brief status for the user—what you are checking next, "
-            "in plain language (e.g. 'Searching Downloads for my_photo images'). "
+            "in plain language (e.g. 'Indexed mail first for this PDF name—not disk'). "
+            "Before the first tool on an ambiguous file question, reason once: indexed mail/Drive vs local path. "
+            "After a tool returns empty or the wrong file type, reason once and pivot—do not repeat the same disk search. "
             "Never mention system prompts, instructions, tools inventories, or analyzing the request."
     )
     if mcp_guidance:
@@ -331,17 +342,20 @@ async def run_deep_agent(
     user_content = message
     if hist_block:
         user_content = f"Recent conversation:\n{hist_block}\n\nUser task:\n{message}"
-    if turn_context is not None and turn_context.has_context:
-        ctx_block = clip_text(turn_context.context_text, DEEP_USER_CONTEXT_MAX)
-        pre = preflight_prompt_block(turn_context.preflight_actions)
+    if turn_retrieval is not None and turn_retrieval.has_context:
+        ctx_block = clip_text(turn_retrieval.context_text, DEEP_USER_CONTEXT_MAX)
+        pre = preflight_prompt_block(turn_retrieval.preflight_actions)
         user_content = f"Preloaded context:\n{ctx_block}"
+        mail_hint = preloaded_mail_agent_hint(turn_retrieval)
+        if mail_hint:
+            user_content += f"\n\n{mail_hint}"
         if pre:
             user_content += f"\n\n{pre}"
         if hist_block:
             user_content += f"\n\nRecent conversation:\n{hist_block}"
         user_content += f"\n\nUser task:\n{message}"
-    elif turn_context is not None and turn_context.preflight_actions:
-        pre = preflight_prompt_block(turn_context.preflight_actions)
+    elif turn_retrieval is not None and turn_retrieval.preflight_actions:
+        pre = preflight_prompt_block(turn_retrieval.preflight_actions)
         user_content = pre
         if hist_block:
             user_content += f"\n\nRecent conversation:\n{hist_block}"
@@ -405,18 +419,19 @@ async def run_deep_agent(
                         invoke,
                         config,
                         on_partial=on_partial,
-                        user_task=(message or "").strip() or calendar_task,
                     )
             except BaseException:
                 if deep_run is not None:
                     trace_ctx.__exit__(*sys.exc_info())
                 raise
             answer = normalize_markdown_tables(
-                _finalize_calendar_answer(
-                    _surface_tool_outputs(_extract_answer(result) or "", result),
-                    result,
-                    oauth_url=oauth_url,
-                    calendar_turn=calendar_finalize,
+                polish_agent_answer(
+                    _finalize_calendar_answer(
+                        _surface_tool_outputs(_extract_answer(result) or "", result),
+                        result,
+                        oauth_url=oauth_url,
+                        calendar_turn=calendar_finalize,
+                    )
                 )
             )
             if deep_run is not None:
@@ -434,14 +449,15 @@ async def run_deep_agent(
                 invoke,
                 config,
                 on_partial=on_partial,
-                user_task=(message or "").strip() or calendar_task,
             )
             answer = normalize_markdown_tables(
-                _finalize_calendar_answer(
-                    _surface_tool_outputs(_extract_answer(result) or "", result),
-                    result,
-                    oauth_url=oauth_url,
-                    calendar_turn=calendar_finalize,
+                polish_agent_answer(
+                    _finalize_calendar_answer(
+                        _surface_tool_outputs(_extract_answer(result) or "", result),
+                        result,
+                        oauth_url=oauth_url,
+                        calendar_turn=calendar_finalize,
+                    )
                 )
             )
     except Exception as exc:
@@ -615,10 +631,78 @@ def _emit_todo_think(msgs, on_partial, *, last_sig: list[str]) -> None:
     if text == last_sig[0]:
         return
     last_sig[0] = text
-    emit_partial(on_partial, text, phase="think")
+    emit_chat_stream(on_partial, text, phase="think")
 
 
-def _emit_tool_think(msgs, on_partial, *, seen: set[str], user_task: str = "") -> None:
+def _thinking_text_from_message(msg) -> str:
+    """Gemini/LC thinking blocks on AIMessage (often before tool_calls, not token-streamed)."""
+    content = getattr(msg, "content", None)
+    if content is None and isinstance(msg, dict):
+        content = msg.get("content")
+    if not isinstance(content, list):
+        return ""
+    bits: list[str] = []
+    for p in content:
+        if not isinstance(p, dict):
+            continue
+        if p.get("type") not in ("thinking", "reasoning") and not p.get("thought"):
+            continue
+        text = (p.get("thinking") or p.get("text") or "").strip()
+        if text:
+            bits.append(text)
+    return "\n\n".join(bits)
+
+
+def _latest_ai_message(msgs) -> object | None:
+    if not msgs:
+        return None
+    for m in reversed(msgs):
+        if _is_tool_message(m):
+            continue
+        if "Human" in type(m).__name__:
+            continue
+        if "AI" in type(m).__name__:
+            return m
+        role = getattr(m, "type", None) or (m.get("role") if isinstance(m, dict) else None)
+        if role in ("ai", "assistant"):
+            return m
+    return None
+
+
+def _emit_model_step_thinking(
+    msgs,
+    on_partial,
+    *,
+    think_acc: list[str],
+    think_step_sig: list[str],
+    think_from_stream: list[bool] | None = None,
+) -> None:
+    """Surface provider thinking between agent steps (per LangGraph/Gemini AIMessage blocks)."""
+    if on_partial is None:
+        return
+    m = _latest_ai_message(msgs)
+    if m is None:
+        return
+    tool_calls = getattr(m, "tool_calls", None)
+    if tool_calls is None and isinstance(m, dict):
+        tool_calls = m.get("tool_calls")
+    if think_from_stream and think_from_stream[0] and not tool_calls:
+        return
+    text = _thinking_text_from_message(m)
+    if not text or text == think_step_sig[0]:
+        return
+    if think_acc[0] and (text in think_acc[0] or think_acc[0] in text):
+        think_step_sig[0] = text
+        return
+    think_step_sig[0] = text
+    if think_acc[0]:
+        think_acc[0] = f"{think_acc[0].rstrip()}\n\n{text}"
+    else:
+        think_acc[0] = text
+    emit_chat_stream(on_partial, think_acc[0], phase="think")
+
+
+def _emit_tool_think(msgs, on_partial, *, seen: set[str]) -> None:
     """Push new tool calls to on_partial once per call id."""
     if not msgs or on_partial is None:
         return
@@ -640,9 +724,10 @@ def _emit_tool_think(msgs, on_partial, *, seen: set[str], user_task: str = "") -
             if key in seen:
                 continue
             seen.add(key)
-            emit_partial(
+            name = _canonical_tool_name(tid)
+            emit_chat_stream(
                 on_partial,
-                f"[tool] {tool_status_line(_canonical_tool_name(tid))}…",
+                f"[tool] {tool_status_line(name)}…",
                 phase="think",
             )
         break
@@ -660,47 +745,44 @@ def _is_ai_stream_chunk(msg) -> bool:
     return "AI" in name
 
 
-def _maybe_reset_answer_stream(
-    msgs, buf: list[str], think_acc: list[str] | None = None
-) -> None:
+def _maybe_reset_answer_stream(msgs, buf: list[str]) -> None:
     """Clear streamed answer buffer when a new AI message starts."""
     if not msgs:
         return
     last = msgs[-1]
     if _is_tool_message(last) or getattr(last, "tool_calls", None):
         buf.clear()
-        if think_acc is not None:
-            think_acc[0] = ""
 
 
-async def _ainvoke_values_only(agent, invoke, config, *, on_partial, user_task: str = "") -> dict:
+async def _ainvoke_values_only(agent, invoke, config, *, on_partial) -> dict:
     """Invoke agent without token streaming; still emit tool/todo think."""
     last_sig: list[str] = [""]
+    think_acc = [""]
+    think_step_sig = [""]
     tool_seen: set[str] = set()
     result: dict | None = None
     async for state in agent.astream(invoke, config=config, stream_mode="values"):
         if isinstance(state, dict):
             result = state
-            _emit_todo_think(state.get("messages"), on_partial, last_sig=last_sig)
-            _emit_tool_think(
-                state.get("messages"),
-                on_partial,
-                seen=tool_seen,
-                user_task=user_task,
+            msgs = state.get("messages")
+            _emit_model_step_thinking(
+                msgs, on_partial, think_acc=think_acc, think_step_sig=think_step_sig
             )
+            _emit_todo_think(msgs, on_partial, last_sig=last_sig)
+            _emit_tool_think(msgs, on_partial, seen=tool_seen)
     if result is not None:
         return result
     return await agent.ainvoke(invoke, config=config)
 
 
-async def _ainvoke_streaming(
-    agent, invoke, config, *, on_partial, user_task: str = ""
-) -> dict:
+async def _ainvoke_streaming(agent, invoke, config, *, on_partial) -> dict:
     """Invoke agent with astream; stream answer tokens to on_partial."""
     last_sig: list[str] = [""]
     tool_seen: set[str] = set()
     answer_buf: list[str] = []
     think_acc = [""]
+    think_step_sig = [""]
+    think_from_stream = [False]
     result: dict | None = None
     try:
         async for part in agent.astream(
@@ -716,16 +798,17 @@ async def _ainvoke_streaming(
                 data = part.get("data")
                 if isinstance(data, dict):
                     result = data
-                    _maybe_reset_answer_stream(
-                        data.get("messages"), answer_buf, think_acc
-                    )
-                    _emit_todo_think(data.get("messages"), on_partial, last_sig=last_sig)
-                    _emit_tool_think(
-                        data.get("messages"),
+                    msgs = data.get("messages")
+                    _maybe_reset_answer_stream(msgs, answer_buf)
+                    _emit_model_step_thinking(
+                        msgs,
                         on_partial,
-                        seen=tool_seen,
-                        user_task=user_task,
+                        think_acc=think_acc,
+                        think_step_sig=think_step_sig,
+                        think_from_stream=think_from_stream,
                     )
+                    _emit_todo_think(msgs, on_partial, last_sig=last_sig)
+                    _emit_tool_think(msgs, on_partial, seen=tool_seen)
                 continue
             if kind != "messages":
                 continue
@@ -740,20 +823,19 @@ async def _ainvoke_streaming(
                 continue
             kind, piece = streamed
             if kind == "think":
-                think_acc[0] = merge_stream_text(think_acc[0], piece)
+                think_from_stream[0] = True
+                think_acc[0] = merge_chat_stream_text(think_acc[0], piece)
                 if think_acc[0]:
-                    emit_partial(on_partial, think_acc[0], phase="think")
+                    emit_chat_stream(on_partial, think_acc[0], phase="think")
             else:
                 answer_buf.append(piece)
                 text = "".join(answer_buf).strip()
                 if text:
-                    emit_partial(on_partial, text, phase="answer")
+                    emit_chat_stream(on_partial, text, phase="answer")
     except asyncio.CancelledError:
         raise
     except Exception:
-        return await _ainvoke_values_only(
-            agent, invoke, config, on_partial=on_partial, user_task=user_task
-        )
+        return await _ainvoke_values_only(agent, invoke, config, on_partial=on_partial)
     if result is not None:
         return result
     return await agent.ainvoke(invoke, config=config)

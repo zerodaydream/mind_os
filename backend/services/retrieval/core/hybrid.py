@@ -12,7 +12,7 @@ from backend.services.retrieval.core.search import search_chunks_by_keyword
 _HYBRID_KEYWORD_WEIGHT = 0.3
 _HYBRID_VECTOR_WEIGHT = 0.7
 _CANDIDATE_MULT = 4
-_SNIPPET_CHARS = 500
+_SNIPPET_CHARS = 900
 _WORD = re.compile(r"[a-z0-9]+", re.I)
 
 

@@ -62,9 +62,9 @@ def load_services(config: ConfigResponse, settings: Settings) -> LoadedServices:
 
     runtime = LoadedServices(enabled=enabled_map, loaded=loaded)
     if config.is_enabled("llm"):
-        from backend.services.llm.core.gateway import build_llm_gateway
+        from backend.services.llm.core.provider_gateway import build_provider_gateway
 
-        runtime.llm = build_llm_gateway(settings)
+        runtime.llm = build_provider_gateway(settings)
     return runtime
 
 

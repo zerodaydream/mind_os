@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.common.config_loader.settings import Settings, get_settings
 from backend.common.database.session import get_session
-from backend.services.llm.core.gateway import ProviderGateway
+from backend.services.llm.core.provider_gateway import ProviderGateway
 
 
 async def db_session() -> AsyncGenerator[AsyncSession, None]:

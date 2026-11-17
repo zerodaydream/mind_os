@@ -1,4 +1,4 @@
-from backend.services.agents.core.turn.turn_context import (
+from backend.services.agents.core.turn.turn_retrieval import (
     _gmail_attachment_url_lines,
     _mail_followup_topic,
     _pronoun_recipient,

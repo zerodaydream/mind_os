@@ -27,7 +27,7 @@ from backend.services.integrations.core.calendar.scheduling import (
 )
 from backend.services.integrations.core.calendar.timezone import effective_calendar_tz
 from backend.services.integrations.core.gdrive.drive_store import drive_file_exists
-from backend.services.agents.core.render.partial import emit_partial
+from backend.services.agents.core.render.chat_stream import emit_chat_stream
 from backend.services.integrations.core.gmail.sync import (
     refresh_gmail_message_drive,
     sync_gmail_inbox,
@@ -76,16 +76,23 @@ async def _gmail_attachment_lines(metadata: dict | None) -> list[str]:
     return lines
 
 
-async def _chunk_preview(session: AsyncSession, artifact_id: str) -> str:
-    row = await session.execute(
-        text(
-            "SELECT LEFT(text, 420) FROM artifact_chunks "
-            "WHERE artifact_id = CAST(:aid AS uuid) ORDER BY ord LIMIT 1"
-        ),
-        {"aid": artifact_id},
+def _attachments_need_drive_refresh(metadata: dict | None) -> bool:
+    atts = (metadata or {}).get("attachments") or []
+    if not atts:
+        return False
+    return not any(
+        isinstance(a, dict) and (a.get("drive_url") or "").strip() for a in atts
     )
-    raw = row.scalar_one_or_none()
-    return (raw or "").strip().replace("\n", " ")[:420]
+
+
+async def _search_hit_preview(
+    session: AsyncSession, artifact_id: str, *, snippet: str, source: str | None
+) -> str:
+    from backend.services.retrieval.core.mail_lookup import mail_search_preview
+
+    return await mail_search_preview(
+        session, artifact_id, snippet=snippet, source=source
+    )
 
 
 def build_personal_tools(
@@ -98,6 +105,66 @@ def build_personal_tools(
     gateway=None,
     on_partial: Callable[..., None] | None = None,
 ):
+    refreshed_gmail_ext: set[str] = set()
+
+    async def _refresh_gmail_drive_meta(
+        ext_id: str, artifact_id, meta: dict | None
+    ) -> dict | None:
+        if not ext_id or not isinstance(meta, dict) or not _attachments_need_drive_refresh(meta):
+            return meta if isinstance(meta, dict) else None
+        key = str(ext_id)
+        if key in refreshed_gmail_ext:
+            return meta
+        refreshed_gmail_ext.add(key)
+        try:
+            if await refresh_gmail_message_drive(
+                session,
+                user=user,
+                settings=settings,
+                msg_id=key,
+            ):
+                await session.commit()
+                await drain_outbox(max_events=20)
+                row = await session.execute(
+                    select(Artifact.metadata_).where(
+                        Artifact.id == artifact_id,
+                        Artifact.user_id == user.id,
+                    )
+                )
+                return row.scalar_one_or_none() or meta
+        except Exception:
+            pass
+        return meta
+
+    async def mindos_mail_lookup(query: str) -> str:
+        """Indexed Gmail for a question: ranked match, full body, Drive attachment lines."""
+        from backend.services.retrieval.core.mail_lookup import (
+            format_mail_lookup_text,
+            lookup_indexed_mail,
+        )
+
+        q = (query or "").strip()
+        if not q:
+            return "Query required."
+        rows = await lookup_indexed_mail(session, user.id, settings, q, limit=3)
+        if not rows:
+            return "No matching indexed Gmail messages."
+        for row in rows:
+            meta = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+            ext = await session.execute(
+                select(Artifact.external_id).where(
+                    Artifact.id == row["artifact_id"],
+                    Artifact.user_id == user.id,
+                )
+            )
+            ext_id = ext.scalar_one_or_none()
+            if not ext_id:
+                continue
+            row["metadata"] = await _refresh_gmail_drive_meta(
+                str(ext_id), row["artifact_id"], meta
+            ) or meta
+        return format_mail_lookup_text(rows)
+
     async def mindos_search(query: str, source: str = "") -> str:
         """Hybrid keyword + vector search over Gmail and notes. Optional source: gmail or manual."""
         src = source.strip().lower() or None
@@ -108,45 +175,54 @@ def build_personal_tools(
         )
         if not hits:
             return "No matching artifacts."
+        from backend.services.retrieval.core.mail_lookup import (
+            gmail_search_preview_text,
+            mail_search_previews_batch,
+        )
+
+        gmail_ids = [
+            str(h["artifact_id"])
+            for h in hits
+            if (h.get("source") or "").lower() == "gmail"
+        ]
+        gmail_previews = (
+            await mail_search_previews_batch(session, gmail_ids) if gmail_ids else {}
+        )
+        meta_by_id: dict[str, tuple] = {}
+        if gmail_ids:
+            art_rows = await session.execute(
+                select(Artifact.id, Artifact.metadata_, Artifact.external_id).where(
+                    Artifact.id.in_(gmail_ids),
+                    Artifact.user_id == user.id,
+                )
+            )
+            meta_by_id = {
+                str(r.id): (r.metadata_, r.external_id) for r in art_rows.all()
+            }
         lines: list[str] = []
         for h in hits:
             title = h.get("title") or h["artifact_id"]
-            preview = (h.get("snippet") or "").strip().replace("\n", " ")
-            if not preview:
-                preview = await _chunk_preview(session, h["artifact_id"])
-            head = f"- [{h.get('source')}] {title} (score {h.get('rank', 0):.3f})"
-            block = (
-                f"{head}\n  Source excerpt: {preview}" if preview else head
-            )
+            aid = str(h["artifact_id"])
+            snippet = (h.get("snippet") or "").strip()
             if (h.get("source") or "").lower() == "gmail":
-                row = await session.execute(
-                    select(Artifact.metadata_, Artifact.external_id).where(
-                        Artifact.id == h["artifact_id"],
-                        Artifact.user_id == user.id,
-                    )
+                preview = gmail_previews.get(aid) or gmail_search_preview_text(
+                    body="", snippet=snippet
                 )
-                art_row = row.one_or_none()
+            else:
+                preview = await _search_hit_preview(
+                    session,
+                    h["artifact_id"],
+                    snippet=snippet,
+                    source=h.get("source"),
+                )
+            head = f"- [{h.get('source')}] {title} (score {h.get('rank', 0):.3f})"
+            block = f"{head}\n  Source(s): {preview}" if preview else head
+            if (h.get("source") or "").lower() == "gmail":
+                art_row = meta_by_id.get(aid)
                 meta = art_row[0] if art_row else None
                 ext_id = art_row[1] if art_row else None
-                if ext_id and isinstance(meta, dict):
-                    try:
-                        if await refresh_gmail_message_drive(
-                            session,
-                            user=user,
-                            settings=settings,
-                            msg_id=str(ext_id),
-                        ):
-                            await session.commit()
-                            await drain_outbox(max_events=20)
-                            row = await session.execute(
-                                select(Artifact.metadata_).where(
-                                    Artifact.id == h["artifact_id"],
-                                    Artifact.user_id == user.id,
-                                )
-                            )
-                            meta = row.scalar_one_or_none()
-                    except Exception:
-                        pass
+                if ext_id:
+                    meta = await _refresh_gmail_drive_meta(str(ext_id), h["artifact_id"], meta)
                 drive_lines = await _gmail_attachment_lines(
                     meta if isinstance(meta, dict) else None
                 )
@@ -165,7 +241,7 @@ def build_personal_tools(
         else:
             cap = max(1, min(int(max_messages), 50))
         def _gmail_think(line: str) -> None:
-            emit_partial(on_partial, f"[tool] {line}", phase="think")
+            emit_chat_stream(on_partial, f"[tool] {line}", phase="think")
 
         try:
             stats = await sync_gmail_inbox(
@@ -182,11 +258,16 @@ def build_personal_tools(
         except Exception as exc:
             return f"Gmail sync error: {exc}"
         ingested = int(stats.get("ingested") or 0)
-        tail = (
-            " Call mindos_process_outbox then mindos_search again."
-            if ingested > 0
-            else ""
-        )
+        scanned = int(stats.get("scanned") or 0)
+        if ingested > 0:
+            tail = " Call mindos_process_outbox then mindos_search again."
+        elif scanned > 0:
+            tail = (
+                " All matches already indexed—skip mindos_process_outbox; "
+                "use mindos_search and Preloaded context."
+            )
+        else:
+            tail = ""
         qbit = f" query={stats.get('query')!r}" if stats.get("query") else ""
         return (
             f"Gmail sync done: ingested={ingested}, "
@@ -217,7 +298,7 @@ def build_personal_tools(
         return "\n".join(f"- {s}" for s in items) if items else "No open commitments."
 
     async def mindos_summarize_url(url: str, focus: str = "") -> str:
-        """Read a link or PDF; returns Answer plus a verbatim Source excerpt for proof."""
+        """Read a link or PDF; returns Answer plus a verbatim Source(s) quote for proof."""
         return await summarize_public_url(url, focus, gateway=gateway, on_ping=on_partial)
 
     async def mindos_google_integration_status() -> str:
@@ -449,6 +530,7 @@ def build_personal_tools(
             return f"Free/busy error: {exc}"
 
     return [
+        trace_tool(mindos_mail_lookup),
         trace_tool(mindos_search),
         trace_tool(mindos_gmail_sync),
         trace_tool(mindos_process_outbox),

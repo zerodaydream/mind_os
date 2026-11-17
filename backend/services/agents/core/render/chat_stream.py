@@ -1,15 +1,15 @@
-"""Optional phase=think on partial stream callbacks (TUI persists thinking block)."""
+"""Chat turn streaming callbacks (think/answer/title chunks to the TUI)."""
 
 from __future__ import annotations
 
 import re
 from collections.abc import Callable
 
-PartialFn = Callable[..., None]
+ChatStreamCallback = Callable[..., None]
 
 THINK_PLAN_HEADER = "Planning moves:"
+THINK_UI_MAX_CHARS = 12_000
 
-# Model thoughts that leak training/meta phrasing — never show verbatim in UI.
 _THINK_META = re.compile(
     r"(?i)\b("
     r"system prompt|system instructions?|cross[- ]referenc|dissecting|"
@@ -22,7 +22,7 @@ _THINK_META = re.compile(
 _THINK_SENTENCE = re.compile(r"(?<=[.!?])\s+|\n+")
 
 
-def polish_think_for_ui(text: str) -> str:
+def format_thinking_for_ui(text: str) -> str:
     """User-visible thinking: concrete progress only, no meta-instruction talk."""
     raw = (text or "").strip()
     if not raw:
@@ -35,7 +35,7 @@ def polish_think_for_ui(text: str) -> str:
     return "Working on it…"
 
 
-def merge_stream_text(prev: str, piece: str) -> str:
+def merge_chat_stream_text(prev: str, piece: str) -> str:
     """Merge LLM stream chunks; cumulative snapshots replace prior text."""
     piece = (piece or "").strip()
     if not piece:
@@ -54,28 +54,34 @@ def merge_stream_text(prev: str, piece: str) -> str:
     return f"{prev}{piece}"
 
 
-def emit_canned_stream(cb: PartialFn | None, text: str, *, phase: str = "answer") -> None:
-    """Fixed copy through on_partial so the TUI can typewriter-reveal (see stream_reveal)."""
+def emit_chat_stream_reveal(
+    callback: ChatStreamCallback | None, text: str, *, phase: str = "answer"
+) -> None:
+    """Fixed copy through on_partial so the TUI can typewriter-reveal."""
     t = (text or "").strip()
-    if cb is None or not t:
+    if callback is None or not t:
         return
     try:
-        cb(t, phase=phase, stream_reveal=True)
+        callback(t, phase=phase, stream_reveal=True)
     except TypeError:
-        emit_partial(cb, t, phase=phase)
+        emit_chat_stream(callback, t, phase=phase)
 
 
-def emit_partial(cb: PartialFn | None, text: str, *, phase: str = "answer") -> None:
-    """Call streaming callback with optional think vs answer phase."""
-    if cb is None:
+def emit_chat_stream(
+    callback: ChatStreamCallback | None, text: str, *, phase: str = "answer"
+) -> None:
+    """Invoke the TUI streaming callback for a think or answer phase chunk."""
+    if callback is None:
         return
     if phase == "think" and text.strip().startswith("[tool]"):
-        pass  # tool status lines from the harness
+        pass
     elif phase == "think":
-        text = polish_think_for_ui(text)
+        text = format_thinking_for_ui(text)
         if not text:
             return
+        if len(text) > THINK_UI_MAX_CHARS:
+            text = f"{text[: THINK_UI_MAX_CHARS].rstrip()}…"
     try:
-        cb(text, phase=phase)
+        callback(text, phase=phase)
     except TypeError:
-        cb(text)
+        callback(text)

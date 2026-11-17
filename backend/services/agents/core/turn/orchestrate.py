@@ -10,7 +10,7 @@ from collections.abc import Callable
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.services.agents.core.converse.chat import run_chat
+from backend.services.agents.core.converse.converse_synth import run_converse_turn
 from backend.services.agents.core.routing.router import url_from_thread
 from dataclasses import replace
 
@@ -29,10 +29,10 @@ from backend.services.agents.core.session.title import (
     generate_session_title,
     needs_session_title,
 )
-from backend.services.agents.core.render.partial import emit_canned_stream
+from backend.services.agents.core.render.chat_stream import emit_chat_stream_reveal
 from backend.services.agents.core.render.prompt_budget import CHAT_HISTORY_TURNS
-from backend.services.agents.core.turn.turn_context import (
-    prefetch_turn_context,
+from backend.services.agents.core.turn.turn_retrieval import (
+    prefetch_turn_retrieval,
     scope_block_reply,
     turn_in_scope,
 )
@@ -54,7 +54,7 @@ async def _finish_out_of_scope(
         user_line, block=prep.scope_block, clarify=prep.clarify_reply
     )
     mode = "out_of_scope" if prep.scope_block == "sorry" else "clarify"
-    emit_canned_stream(on_partial, answer)
+    emit_chat_stream_reveal(on_partial, answer)
     if title_task is not None:
         with contextlib.suppress(Exception):
             await title_task
@@ -87,12 +87,12 @@ async def _synth_plan(
     *,
     source,
     history,
-    turn_context,
+    turn_retrieval,
     prep,
     on_partial: Callable[[str], None] | None = None,
 ) -> tuple[dict, str]:
     """Converse/plan synth fallback when deep agent is unavailable."""
-    out = await run_chat(
+    out = await run_converse_turn(
         session,
         user,
         settings,
@@ -100,7 +100,7 @@ async def _synth_plan(
         body,
         source=source,
         history=history,
-        turn_context=turn_context,
+        turn_retrieval=turn_retrieval,
         prep=prep,
         plan_style=True,
         on_partial=on_partial,
@@ -230,7 +230,7 @@ async def _handle_turn_body(
             prefetch_mail=prep.prefetch_mail or True,
         )
 
-    turn_context = await prefetch_turn_context(
+    turn_retrieval = await prefetch_turn_retrieval(
         session,
         user,
         settings,
@@ -242,7 +242,7 @@ async def _handle_turn_body(
     )
 
     if prep.blocks_chat_turn() and not turn_in_scope(
-        prep, body, history=history, turn_context=turn_context
+        prep, body, history=history, turn_retrieval=turn_retrieval
     ):
         return await _finish_out_of_scope(
             session,
@@ -263,7 +263,7 @@ async def _handle_turn_body(
             body,
             intent=intent,
             thread_id=chat.thread_id,
-            turn_context=turn_context,
+            turn_retrieval=turn_retrieval,
             history=history,
             on_partial=on_partial,
             client_tz=client_tz,
@@ -286,7 +286,7 @@ async def _handle_turn_body(
     except OSError as exc:
         out, mode = await _synth_plan(
             session, user, settings, gateway, body,
-            source=source, history=history, turn_context=turn_context,
+            source=source, history=history, turn_retrieval=turn_retrieval,
             prep=prep,
             on_partial=on_partial,
         )
@@ -299,11 +299,11 @@ async def _handle_turn_body(
         mode = out.get("mode") or "deep_agent"
         if (
             mode == "deep_unavailable"
-            and (turn_context.has_context or gateway is not None)
+            and (turn_retrieval.has_context or gateway is not None)
         ):
             out, mode = await _synth_plan(
                 session, user, settings, gateway, body,
-                source=source, history=history, turn_context=turn_context,
+                source=source, history=history, turn_retrieval=turn_retrieval,
                 prep=prep,
                 on_partial=on_partial,
             )

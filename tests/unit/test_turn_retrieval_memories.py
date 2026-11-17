@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from backend.services.agents.core.turn.turn_context import prefetch_turn_context
+from backend.services.agents.core.turn.turn_retrieval import prefetch_turn_retrieval
 
 
 @pytest.mark.asyncio
@@ -21,20 +21,20 @@ async def test_plan_uses_memory_search_when_hits(monkeypatch):
         pytest.fail("should not fall back when search hits")
 
     monkeypatch.setattr(
-        "backend.services.agents.core.turn.turn_context.hybrid_search_artifacts",
+        "backend.services.agents.core.turn.turn_retrieval.hybrid_search_artifacts",
         fake_hybrid,
     )
     monkeypatch.setattr(
-        "backend.services.agents.core.turn.turn_context.search_memories_ilike",
+        "backend.services.agents.core.turn.turn_retrieval.search_memories_ilike",
         fake_mem_search,
     )
     monkeypatch.setattr(
-        "backend.services.agents.core.turn.turn_context._approved_memories",
+        "backend.services.agents.core.turn.turn_retrieval._approved_memories",
         fake_approved,
     )
 
     session = AsyncMock()
-    ctx = await prefetch_turn_context(
+    ctx = await prefetch_turn_retrieval(
         session, user, settings, "schedule meeting tomorrow", intent="plan"
     )
     assert ctx.memories == ["[pref] likes tea"]

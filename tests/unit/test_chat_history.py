@@ -1,4 +1,4 @@
-from backend.services.agents.core.converse.chat import _format_history
+from backend.services.agents.core.converse.converse_synth import _format_history
 from backend.services.agents.core.session.sessions import _title_from
 
 

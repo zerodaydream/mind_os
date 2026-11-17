@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable
 from urllib.parse import urlparse
 
 import httpx
 
-from backend.services.agents.core.render.partial import emit_partial
+from backend.services.agents.core.render.chat_stream import ChatStreamCallback, emit_chat_stream
 from backend.services.agents.core.render.prompt_budget import clip_text
 from backend.services.integrations.mcp.registry import (
     _read_raw_config,
@@ -18,7 +17,6 @@ from backend.services.integrations.mcp.registry import (
     parse_mcp_servers,
 )
 
-PartialFn = Callable[..., None]
 _DOC_CHAR_CAP = 96_000  # shortcut: hard cap; map-reduce summarize when docs exceed this
 _ARXIV_PDF = re.compile(r"arxiv\.org/pdf/([^?\s#]+)", re.I)
 
@@ -89,7 +87,7 @@ async def _load_fetch_tool():
     return None
 
 
-async def _fetch_via_mcp(url: str, *, on_ping: PartialFn | None) -> str:
+async def _fetch_via_mcp(url: str, *, on_ping: ChatStreamCallback | None) -> str:
     tool = await _load_fetch_tool()
     if tool is None:
         return ""
@@ -98,7 +96,7 @@ async def _fetch_via_mcp(url: str, *, on_ping: PartialFn | None) -> str:
     page = 0
     from backend.services.agents.core.render.tool_status import tool_status_line
 
-    emit_partial(
+    emit_chat_stream(
         on_ping,
         f"[tool] {tool_status_line('mindos_summarize_url')} ({_short_url(url)})…",
         phase="think",
@@ -106,7 +104,7 @@ async def _fetch_via_mcp(url: str, *, on_ping: PartialFn | None) -> str:
     while len("".join(parts)) < _DOC_CHAR_CAP:
         page += 1
         if page > 1:
-            emit_partial(
+            emit_chat_stream(
                 on_ping, f"[tool] Reading more of the document (part {page})…", phase="think"
             )
         with _silence_stdio_server_banner():
@@ -170,7 +168,7 @@ async def _fetch_via_httpx(url: str) -> str:
         return clip_text(text, _DOC_CHAR_CAP)
 
 
-async def fetch_public_document(url: str, *, on_ping: PartialFn | None) -> str:
+async def fetch_public_document(url: str, *, on_ping: ChatStreamCallback | None) -> str:
     url = (url or "").strip()
     if not url.startswith(("http://", "https://")):
         return ""
@@ -181,7 +179,7 @@ async def fetch_public_document(url: str, *, on_ping: PartialFn | None) -> str:
     if not body:
         from backend.services.agents.core.render.tool_status import tool_status_line
 
-        emit_partial(
+        emit_chat_stream(
             on_ping,
             f"[tool] {tool_status_line('fetch_url')} ({_short_url(url)})…",
             phase="think",
@@ -205,7 +203,7 @@ async def summarize_public_url(
     focus: str,
     *,
     gateway,
-    on_ping: PartialFn | None,
+    on_ping: ChatStreamCallback | None,
 ) -> str:
     from backend.common.utils.enums import LlmMode, LlmTask
 
@@ -216,17 +214,15 @@ async def summarize_public_url(
         return doc
     from backend.services.agents.core.render.tool_status import tool_status_line
 
-    emit_partial(on_ping, f"[tool] {tool_status_line('mindos_summarize_url')}…", phase="think")
+    emit_chat_stream(on_ping, f"[tool] {tool_status_line('mindos_summarize_url')}…", phase="think")
     focus_line = f"\nFocus: {focus.strip()}" if (focus or "").strip() else ""
+    from backend.services.agents.core.render.prompts import summarize_url_reply_shape
+
     prompt = (
         "Answer from the document below in clear prose for the user. "
         "Use only facts from the source text—never invent numbers, areas, or names. "
         f"{focus_line}\n\n"
-        "Reply in exactly this shape:\n"
-        "Answer: (your prose)\n\n"
-        "Source excerpt: \"...\" — one or two sentences copied verbatim from the document "
-        "that prove your answer (keep original units and spelling). "
-        "If no supporting quote exists, write: Source excerpt: (not found in document)\n\n"
+        f"{summarize_url_reply_shape()}\n\n"
         f"---\n{doc}\n---\n\n"
     )
     prompt = clip_text(prompt, 120_000, min_keep=8_000)

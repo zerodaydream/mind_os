@@ -7,7 +7,7 @@ from backend.common.config_loader import get_config
 from backend.common.config_loader.settings import get_settings
 from backend.common.database.models import Artifact, ArtifactChunk, ChunkEmbedding, Commitment
 from backend.services.commitments.core.extract import extract_commitments
-from backend.services.llm.core.gateway import build_llm_gateway
+from backend.services.llm.core.provider_gateway import build_provider_gateway
 from backend.services.retrieval.core.embed import embed_texts
 from backend.services.memories.core.persist import add_new_memories_from_artifact
 from backend.services.memories.core.rules import extract_memory_rules
@@ -38,7 +38,7 @@ async def handle_artifact_process(session: AsyncSession, payload: dict) -> None:
 
     settings = get_settings()
     config = get_config()
-    gateway = build_llm_gateway(settings) if config.is_enabled("llm") else None
+    gateway = build_provider_gateway(settings) if config.is_enabled("llm") else None
     label = (artifact.title or artifact.external_id or str(artifact_id))[:64]
 
     result = await session.execute(

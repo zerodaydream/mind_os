@@ -7,7 +7,7 @@ from collections.abc import Callable
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.common.utils.enums import LlmMode, LlmTask
-from backend.services.agents.core.render.partial import emit_partial
+from backend.services.agents.core.render.chat_stream import emit_chat_stream
 from backend.common.database.models import ChatSession
 from backend.services.agents.core.session.sessions import _title_from
 
@@ -44,7 +44,7 @@ async def generate_session_title(
     if gateway is None or gateway.mode == LlmMode.DEGRADED:
         chat.title = fallback
         await session.flush()
-        emit_partial(on_partial, display_session_title(fallback), phase="title")
+        emit_chat_stream(on_partial, display_session_title(fallback), phase="title")
         return fallback
     prompt = _TITLE_PROMPT.format(msg=message[:800])
     try:
@@ -59,5 +59,5 @@ async def generate_session_title(
         title = fallback
     chat.title = title
     await session.flush()
-    emit_partial(on_partial, display_session_title(title), phase="title")
+    emit_chat_stream(on_partial, display_session_title(title), phase="title")
     return title

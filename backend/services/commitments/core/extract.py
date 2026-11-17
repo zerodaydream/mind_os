@@ -1,7 +1,7 @@
 from backend.common.utils.enums import LlmMode, LlmTask
 from backend.common.utils.exceptions import LlmDisabledError
 from backend.services.commitments.core.rules import extract_rules
-from backend.services.llm.core.gateway import ProviderGateway
+from backend.services.llm.core.provider_gateway import ProviderGateway
 
 
 async def extract_commitments(

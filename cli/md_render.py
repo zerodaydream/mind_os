@@ -8,11 +8,12 @@ import textwrap
 _BOLD = re.compile(r"\*\*([^*]+)\*\*")
 _ITALIC = re.compile(r"(?<!\*)\*([^*]+)\*(?!\*)")
 _HEADING = re.compile(r"^#{1,6}\s+(.+)$")
+_HEADING_MARKS = re.compile(r"#{1,6}\s+")
 _NOTE = re.compile(r"^\*\((.+)\)\*\s*$")
-_LIST = re.compile(r"^(\s*)([-*]|\d+\.)\s+(.*)$")
+_LIST = re.compile(r"^(\s*)([-*•]|\d+\.)\s+(.*)$")
 _MD_LINK = re.compile(r"\[([^\]]*)\]\((https?://[^)]+)\)")
 _BARE_URL = re.compile(r"https?://[^\s\]\)]+")
-_TUI_LINK_LABEL = "Link"
+_LIST_LINE_URL = re.compile(r"^(\s*)(\d+\.)\s+(https?://\S+)\s*$")
 
 
 def is_http_url(text: str) -> bool:
@@ -26,26 +27,69 @@ def strip_inline_md(text: str) -> str:
     return text.strip()
 
 
-def visible_tui_text(text: str) -> str:
-    return text
+def strip_heading_marks(text: str) -> str:
+    return _HEADING_MARKS.sub("", text)
 
 
-def _link_block(label: str, url: str) -> str:
-    """Label line, then URL alone (no indent — copy must not pick up spaces)."""
-    return f"{label}\n{url}"
+def short_link_label(url: str) -> str:
+    from urllib.parse import urlparse
+
+    u = url.strip().rstrip(".,;")
+    p = urlparse(u)
+    host = (p.netloc or "").removeprefix("www.")
+    if "drive.google.com" in host:
+        return "Google Drive"
+    if "meet.google.com" in host or "zoom.us" in host:
+        return "Meeting link"
+    if "calendar.google.com" in host:
+        return "Calendar"
+    name = (p.path or "").strip("/").split("/")[-1]
+    if name and len(name) <= 48:
+        return name.replace("%20", " ")
+    return host or u[:56]
+
+
+def _list_link_block(indent: str, marker: str, label: str, url: str) -> str:
+    """Title line, indented full URL on the next (copy-friendly)."""
+    url = url.strip().rstrip(".,;")
+    title = strip_inline_md(label).strip() if label else short_link_label(url)
+    if not title or title == url:
+        title = short_link_label(url)
+    child = f"{indent}  {url}"
+    return f"{indent}{marker} {title}\n{child}"
 
 
 def prepare_chat_line(line: str) -> str:
-    """Markdown/bare URLs → label + full URL on the next line (copy-friendly, no OSC)."""
+    """Markdown/bare URLs → readable label + indented full URL (no orphan “Link” lines)."""
+    raw = line.rstrip()
+    stripped = raw.strip()
+    if is_http_url(stripped):
+        return stripped
 
-    def _link_sub(match: re.Match[str]) -> str:
+    lm = _LIST.match(raw)
+    if lm:
+        body = lm.group(3).strip()
+        link_m = _MD_LINK.fullmatch(body)
+        if link_m:
+            return _list_link_block(
+                lm.group(1), lm.group(2), link_m.group(1), link_m.group(2)
+            )
+        if is_http_url(body):
+            return _list_link_block(lm.group(1), lm.group(2), "", body)
+
+    num = _LIST_LINE_URL.match(raw)
+    if num:
+        return _list_link_block(num.group(1), num.group(2), "", num.group(3))
+
+    def _inline_link(match: re.Match[str]) -> str:
         label, url = match.group(1).strip(), match.group(2).strip()
-        vis = strip_inline_md(label) if label and label != url else _TUI_LINK_LABEL
-        return _link_block(vis, url)
+        title = strip_inline_md(label) if label else short_link_label(url)
+        if not title or title == url:
+            title = short_link_label(url)
+        return f"{title}\n  {url.strip()}"
 
-    line = _MD_LINK.sub(_link_sub, line)
-    line = _BARE_URL.sub(lambda m: _link_block(_TUI_LINK_LABEL, m.group(0).rstrip(".,;")), line)
-    return line
+    out = _MD_LINK.sub(_inline_link, raw)
+    return _BARE_URL.sub(lambda m: m.group(0).rstrip(".,;"), out)
 
 
 def _line_urls(line: str) -> list[str]:
@@ -55,15 +99,110 @@ def _line_urls(line: str) -> list[str]:
     return _BARE_URL.findall(line)
 
 
+def wants_legacy_chat_md(text: str) -> bool:
+    """Pipe tables and our two-line Drive links need the hand-rolled renderer."""
+    for raw in text.splitlines():
+        if is_table_line(raw):
+            return True
+        if re.match(r"^\s{2,}https?://", raw):
+            return True
+    return False
+
+
+MdChatRow = tuple[str, str] | tuple[str, str, list[tuple[str, str]]]
+
+
+def _rich_style_key(style: object | None) -> str:
+    s = str(style or "").lower()
+    if not s or s == "none":
+        return "body"
+    if "markdown.code" in s or s.startswith("repr") or "green" in s:
+        return "code"
+    if "magenta" in s or any(h in s for h in ("markdown.h1", "markdown.h2", "markdown.h3")):
+        return "heading"
+    if "bold" in s:
+        return "strong"
+    if "dim" in s or "markdown.block_quote" in s:
+        return "meta"
+    if "markdown.link" in s:
+        return "link"
+    return "body"
+
+
+def _merge_style_spans(spans: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    out: list[tuple[str, str]] = []
+    for key, text in spans:
+        if not text:
+            continue
+        if out and out[-1][0] == key:
+            out[-1] = (key, out[-1][1] + text)
+        else:
+            out.append((key, text))
+    return out
+
+
+def _row_style(line: str, spans: list[tuple[str, str]]) -> str:
+    if line.lstrip().startswith("•"):
+        return "list"
+    if is_http_url(line.strip()) or line.strip().startswith("↳"):
+        return "link"
+    if re.match(r"(?i)^source(?:\s*excerpt|\(s\))?(?:\*\*)?:", line.strip()):
+        return "meta"
+    keys = {k for k, _ in spans}
+    if "heading" in keys:
+        return "heading"
+    if "code" in keys and len(keys) == 1:
+        return "code"
+    return spans[0][0] if spans else "body"
+
+
+def rich_chat_span_lines(text: str, width: int) -> list[MdChatRow] | None:
+    if wants_legacy_chat_md(text):
+        return None
+    try:
+        from rich.console import Console
+        from rich.markdown import Markdown
+    except ImportError:
+        return None
+    width = max(20, width)
+    console = Console(width=width, force_terminal=True, color_system="standard")
+    opts = console.options.update_width(width)
+    out: list[MdChatRow] = []
+    try:
+        for line_segs in console.render_lines(Markdown(text), opts):
+            raw_spans = [
+                (_rich_style_key(seg.style), seg.text)
+                for seg in line_segs
+                if seg.text
+            ]
+            spans = _merge_style_spans(raw_spans)
+            line = "".join(part for _, part in spans).rstrip()
+            if not line.strip():
+                out.append(("body", ""))
+                continue
+            style = _row_style(line, spans)
+            if len(spans) == 1 or len({k for k, _ in spans}) == 1:
+                out.append((style, line))
+            else:
+                trimmed = [(k, t.rstrip()) for k, t in spans if t.rstrip()]
+                line = "".join(t for _, t in trimmed).rstrip()
+                out.append((style, line, trimmed))
+    except Exception:
+        return None
+    return out if out else None
+
+
 def prepare_chat_text(text: str) -> str:
+    from backend.services.agents.core.render.markdown_tables import polish_agent_answer
+
+    text = polish_agent_answer(text)
     out: list[str] = []
     prev_key = ""
     for raw in text.splitlines():
         line = prepare_chat_line(raw)
         urls = _line_urls(raw)
         key = urls[0] if len(urls) == 1 else ""
-        vis = line.split("\n", 1)[0].strip()
-        if key and key == prev_key and vis in (_TUI_LINK_LABEL, strip_inline_md(vis)):
+        if key and key == prev_key:
             continue
         prev_key = key if len(urls) == 1 else ""
         out.append(line)
@@ -78,7 +217,13 @@ def display_for_tui(line: str, style: str) -> str:
     if style == "list":
         m = _LIST.match(raw)
         if m:
-            return f"{m.group(1)}{m.group(2)} {strip_inline_md(m.group(3))}"
+            marker = "•" if m.group(2) in "-*•" else m.group(2)
+            return f"{m.group(1)}{marker} {strip_inline_md(m.group(3))}"
+    if style == "link":
+        link = strip_inline_md(raw.strip())
+        if not link.startswith("↳"):
+            link = f"↳ {link}"
+        return link
     if style == "source_item":
         body = raw.strip()
         if re.match(r"^\d+\.", body):
@@ -89,11 +234,19 @@ def display_for_tui(line: str, style: str) -> str:
         m = _HEADING.match(s)
         if m:
             return strip_inline_md(m.group(1))
+        if _BOLD.fullmatch(s):
+            return _BOLD.sub(r"\1", s)
     if style == "meta":
         s = s.strip("_")
         m = _NOTE.match(s)
         if m:
-            return m.group(1).strip()
+            return strip_heading_marks(m.group(1).strip())
+        plain = strip_heading_marks(strip_inline_md(s))
+        return re.sub(
+            r"(?i)^source\s*excerpt:",
+            "Source(s):",
+            plain,
+        )
     return strip_inline_md(s)
 
 
