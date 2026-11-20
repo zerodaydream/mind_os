@@ -101,13 +101,18 @@ async def handle_artifact_process(session: AsyncSession, payload: dict) -> None:
                     )
                 )
     if config.is_enabled("memories"):
-        drafts = extract_memory_rules(full_text)
-        if drafts:
-            await add_new_memories_from_artifact(
-                session,
-                user_id=artifact.user_id,
-                artifact_id=artifact_id,
-                drafts=drafts,
-            )
+        # Only first-person content the user wrote (sent mail / manual notes).
+        meta = artifact.metadata_ or {}
+        is_gmail = (artifact.source or "").lower() in {"gmail", "email", "mail"}
+        is_user_authored = (not is_gmail) or meta.get("direction") == "sent"
+        if is_user_authored:
+            drafts = extract_memory_rules(full_text)
+            if drafts:
+                await add_new_memories_from_artifact(
+                    session,
+                    user_id=artifact.user_id,
+                    artifact_id=artifact_id,
+                    drafts=drafts,
+                )
     if config.is_enabled("tensions"):
         await run_tension_detection(session, artifact.user_id)

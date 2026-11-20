@@ -244,6 +244,7 @@ class TurnRetrieval:
     has_context: bool = False
     hybrid_hit_count: int = 0
     preflight_actions: list[str] = field(default_factory=list)
+    evidence_pack: object | None = None
 
 
 def preloaded_mail_is_indexed(turn: TurnRetrieval) -> bool:
@@ -459,6 +460,26 @@ def format_context_text(
     return "\n".join(parts) if parts else "(no retrieval hits)"
 
 
+def _results_from_evidence_pack(pack: object) -> list[dict]:
+    """Map RRF EvidencePack items into prefetch result rows."""
+    items = getattr(pack, "items", None) or []
+    out: list[dict] = []
+    for item in items:
+        kind = str(getattr(item, "kind", "") or "artifact")
+        if kind == "memory":
+            continue
+        out.append(
+            {
+                "artifact_id": getattr(item, "artifact_id", None) or f"evidence:{getattr(item, 'eid', '')}",
+                "title": getattr(item, "title", None),
+                "source": kind,
+                "snippet": (getattr(item, "text", "") or "")[:500],
+                "rank": float(getattr(item, "score", 0.0) or 0.0),
+            }
+        )
+    return out
+
+
 async def prefetch_turn_retrieval(
     session: AsyncSession,
     user,
@@ -469,6 +490,7 @@ async def prefetch_turn_retrieval(
     intent: str | None = None,
     history: list[dict] | None = None,
     prep: TurnPrep | None = None,
+    evidence_pack: object | None = None,
 ) -> TurnRetrieval:
     message = message.strip()
     if prep is not None and prep.skip_retrieval:
@@ -482,28 +504,49 @@ async def prefetch_turn_retrieval(
         wants_mail = True
     topic = _mail_followup_topic(message, history)
     search_query = turn_search_query(message, history, prep)
-    hybrid_hits = await hybrid_search_artifacts(
-        session,
-        user_id=user.id,
-        query=search_query,
-        settings=settings,
-        limit=PREFETCH_SEARCH_LIMIT,
-        source=source,
-    )
-    results = list(hybrid_hits)
-    if hybrid_hits:
-        actions.append(f"Indexed search: {len(hybrid_hits)} hit(s) for query")
+    pack_hits = _results_from_evidence_pack(evidence_pack) if evidence_pack is not None else []
+    if pack_hits:
+        hybrid_hits: list[dict] = []
+        results = list(pack_hits)
+        actions.append(f"RRF evidence: {len(pack_hits)} item(s)")
+    else:
+        hybrid_hits = await hybrid_search_artifacts(
+            session,
+            user_id=user.id,
+            query=search_query,
+            settings=settings,
+            limit=PREFETCH_SEARCH_LIMIT,
+            source=source,
+        )
+        results = list(hybrid_hits)
+        if hybrid_hits:
+            actions.append(f"Indexed search: {len(hybrid_hits)} hit(s) for query")
     load_commitments = wants_commitment_context(message, prefetch_commitments=commit_flag)
-    commitments = (
-        await _open_commitment_summaries(session, user.id) if load_commitments else []
-    )
+    if pack_hits:
+        commitments = [
+            (getattr(item, "text", "") or "").strip()
+            for item in (getattr(evidence_pack, "items", None) or [])
+            if str(getattr(item, "kind", "") or "") == "commitment"
+            and (getattr(item, "text", "") or "").strip()
+        ]
+    elif load_commitments:
+        commitments = await _open_commitment_summaries(session, user.id)
+    else:
+        commitments = []
     if mem_flag is not None:
         load_memories = mem_flag
     elif intent == "converse":
         load_memories = False
     else:
         load_memories = True
-    if load_memories and len(message) >= 8:
+    if pack_hits:
+        memories = [
+            (getattr(item, "text", "") or "").strip()
+            for item in (getattr(evidence_pack, "items", None) or [])
+            if str(getattr(item, "kind", "") or "") == "memory"
+            and (getattr(item, "text", "") or "").strip()
+        ]
+    elif load_memories and len(message) >= 8:
         mem_hits = await search_memories_ilike(
             session, user_id=user.id, query=search_query, limit=PREFETCH_MEMORIES
         )

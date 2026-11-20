@@ -41,6 +41,7 @@ agents = [
     "langchain-google-genai>=2.0.0",
     "langchain-mcp-adapters>=0.3.2",
     "mcp>=1.30.0",
+    "langgraph-checkpoint-postgres>=2.0.0",
 ]
 ocr = ["rapidocr-onnxruntime>=1.4.4"]
 llm = [
@@ -57,6 +58,7 @@ cli = [
     "langchain-google-genai>=2.0.0",
     "langchain-mcp-adapters>=0.3.2",
     "mcp>=1.30.0",
+    "langgraph-checkpoint-postgres>=2.0.0",
     "moonshine-voice>=0.1.6",
     "imageio-ffmpeg>=0.8.1",
 ]

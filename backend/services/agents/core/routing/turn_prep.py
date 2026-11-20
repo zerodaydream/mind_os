@@ -40,8 +40,12 @@ _VAGUE_ANAPHORA = re.compile(
     r"\b(that|this|those|it|them|more|details?|link|above)\b",
     re.I,
 )
+# Write-oriented verbs only. Bare "calendar" / "create" must not force the agent
+# lane ("what's on my calendar", "create a summary").
 _EXECUTE_VERBS = re.compile(
-    r"\b(calendar|schedule|create|delete|rename|sync)\b",
+    r"\b(schedule|delete|rename|sync)\b|"
+    r"\b(create|update|cancel)\b.{0,48}\b(event|meeting|appointment|invite|calendar)\b|"
+    r"\b(event|meeting|appointment|invite)\b.{0,48}\b(create|update|cancel|delete)\b",
     re.I,
 )
 _SHORT_CONFIRM = frozenset(

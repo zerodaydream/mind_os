@@ -18,7 +18,11 @@ from backend.services.agents.core.render.markdown_tables import (
     normalize_markdown_tables,
     polish_agent_answer,
 )
-from backend.services.agents.core.routing.turn_prep import TurnPrep, format_router_history
+from backend.services.agents.core.routing.turn_prep import (
+    TurnPrep,
+    fast_path_turn_prep,
+    format_router_history,
+)
 from backend.services.agents.core.turn.turn_retrieval import (
     TurnRetrieval,
     preflight_prompt_block,
@@ -29,27 +33,11 @@ _CONVERSE_SYSTEM = (
     "You are MindOS assistant. Be brief and conversational. "
     "Refuse general knowledge or off-topic trivia; redirect to mail, calendar, "
     "reminders, files, or indexed notes. "
-    "Do not mention email, commitments, or indexed data unless the user asks. "
     "You cannot create, change, or delete calendar events—never claim you did. "
     "Say to use /do or mention calendar/meetings so the action agent can run. "
     "Never guess titles, authors, or contents of a URL or PDF—tell the user to ask to "
     "summarize the link so MindOS can fetch it."
 )
-
-
-def _looks_cut_off(text: str) -> bool:
-    """Heuristic: streamed synth answer ended mid-sentence."""
-    t = text.rstrip()
-    if len(t) < 24:
-        return False
-    if t[-1] in ".!?\n":
-        return False
-    if t.endswith("```") or t.endswith("|"):
-        return False
-    tail = t.split()[-1].lower() if t.split() else ""
-    if tail in {"to", "the", "a", "an", "and", "or", "for", "with", "in", "on", "of", "is", "are"}:
-        return True
-    return t[-1].isalnum()
 
 
 async def _synth_stream(
@@ -70,25 +58,6 @@ async def _synth_stream(
     return "".join(parts).strip()
 
 
-async def _finish_synth_answer(gateway, answer: str) -> str:
-    """Optionally continue a truncated synth answer."""
-    if not _looks_cut_off(answer):
-        return answer
-    try:
-        res = await gateway.complete(
-            "Continue the assistant reply below. Output only the remainder; do not repeat.\n\n"
-            f"{answer[-800:]}",
-            task=LlmTask.SYNTH,
-            max_output_tokens=512,
-        )
-        extra = (res.text or "").strip()
-        if extra:
-            return f"{answer.rstrip()} {extra}".strip()
-    except Exception:
-        pass
-    return answer
-
-
 def _ensure_table_rows(answer: str, ctx: TurnRetrieval) -> str:
     """Backfill empty markdown tables from gmail_ctx."""
     if not answer_has_empty_table_shell(answer) or not ctx.gmail_ctx:
@@ -99,8 +68,15 @@ def _ensure_table_rows(answer: str, ctx: TurnRetrieval) -> str:
     return f"{answer.rstrip()}\n\n{built}"
 
 
-def _fallback_answer(ctx: TurnRetrieval) -> str:
+_GREETING_FALLBACK = (
+    "Hi — I can help with your mail, calendar, files, and commitments. What should we look up?"
+)
+
+
+def _fallback_answer(ctx: TurnRetrieval, *, greeting: bool = False) -> str:
     """Retrieval-only answer when LLM is degraded."""
+    if greeting:
+        return _GREETING_FALLBACK
     lines: list[str] = []
     if ctx.commitments:
         lines.append("Open commitments:")
@@ -145,6 +121,10 @@ async def run_converse_turn(
 ) -> dict:
     message = message.strip()
     intent = prep.intent if prep else "plan"
+    fast = fast_path_turn_prep(message)
+    sole_greeting = bool(
+        (prep and prep.skip_retrieval) or (fast is not None and fast.skip_retrieval)
+    )
     ctx = turn_retrieval or await prefetch_turn_retrieval(
         session,
         user,
@@ -157,7 +137,24 @@ async def run_converse_turn(
     )
 
     hist_text = format_router_history(history)
+    evidence_pack = getattr(ctx, "evidence_pack", None)
+    if evidence_pack is None:
+        from backend.services.agents.core.contracts.from_turn_retrieval import (
+            evidence_pack_from_turn_retrieval,
+        )
+
+        evidence_pack = evidence_pack_from_turn_retrieval(ctx)
+
     if not ctx.has_context and not hist_text and not plan_style:
+        if sole_greeting:
+            answer = _GREETING_FALLBACK
+            if gateway is not None and gateway.mode != LlmMode.DEGRADED:
+                prompt = f"{_CONVERSE_SYSTEM}\n\nUser: {message}"
+                try:
+                    answer = await _synth_stream(gateway, prompt, on_partial=on_partial) or answer
+                except Exception:
+                    pass
+            return {"message": message, "answer": answer, "sources": [], "mode": "converse"}
         if gateway is None or gateway.mode == LlmMode.DEGRADED:
             return {
                 "message": message,
@@ -180,53 +177,113 @@ async def run_converse_turn(
         )
         return {"message": message, "answer": answer, "sources": [], "mode": "converse"}
 
-    system = (
-        "You are MindOS assistant. Answer from Context and Recent conversation. "
-        f"{CONVERSE_EXECUTIVE_TONE}"
-        f"{ANSWER_LAYOUT_CORE}"
+    prompt = _compile_prompt(
+        message=message,
+        hist_text=hist_text,
+        evidence_pack=evidence_pack,
+        plan_style=plan_style,
+        ctx=ctx,
     )
-    if plan_style:
-        system += CONVERSE_PLAN_STYLE_EXTRA
-    if ctx.has_context and plan_style:
-        system += f" {SOURCE_CITATION_RULE}"
-    if not ctx.has_context:
-        base = system if plan_style else _CONVERSE_SYSTEM
-        parts = [base]
-        if hist_text:
-            parts.append(f"Recent conversation:\n{hist_text}")
-        parts.append(f"User: {message}")
-    else:
-        parts = [system, f"Context:\n{ctx.context_text}"]
-        pre = preflight_prompt_block(ctx.preflight_actions)
-        if pre:
-            parts.append(pre)
-        if hist_text:
-            parts.append(f"Recent conversation:\n{hist_text}")
-        parts.append(f"User: {message}")
-    prompt = "\n\n".join(parts)
 
     mode = "synth"
     answer = ""
+    verifier_ok = None
+    verifier_violations: list[str] = []
     if gateway is None or gateway.mode == LlmMode.DEGRADED:
         mode = "retrieval_only"
-        answer = _fallback_answer(ctx)
+        answer = _fallback_answer(ctx, greeting=sole_greeting)
     else:
         try:
             answer = await _synth_stream(gateway, prompt, on_partial=on_partial)
-            answer = await _finish_synth_answer(gateway, answer)
             if not answer:
                 mode = "retrieval_only"
-                answer = _fallback_answer(ctx)
+                answer = _fallback_answer(ctx, greeting=sole_greeting)
         except Exception:
             mode = "retrieval_only"
-            answer = _fallback_answer(ctx)
+            answer = _fallback_answer(ctx, greeting=sole_greeting)
+
+    sources = ctx.sources
+    if mode != "retrieval_only" and evidence_pack is not None and answer:
+        from backend.services.verification.grounding import verify_grounded_answer
+
+        report = verify_grounded_answer(answer, evidence_pack)
+        verifier_ok = report.ok
+        verifier_violations = list(report.violations)
+        if report.cited_eids:
+            sources = [
+                {
+                    "eid": eid,
+                    **(
+                        {
+                            "artifact_id": evidence_pack.by_eid()[eid].artifact_id,
+                            "title": evidence_pack.by_eid()[eid].title,
+                        }
+                        if eid in evidence_pack.by_eid()
+                        else {}
+                    ),
+                }
+                for eid in report.cited_eids
+            ]
+        elif evidence_pack.items:
+            sources = [
+                {
+                    "eid": e.eid,
+                    "artifact_id": e.artifact_id,
+                    "title": e.title,
+                }
+                for e in evidence_pack.items[:8]
+            ]
+        if not report.ok and report.violations:
+            answer = (
+                f"{answer.rstrip()}\n\n"
+                "_(Some claims could not be verified against retrieved evidence.)_"
+            )
 
     return {
         "message": message,
         "answer": _ensure_table_rows(
             normalize_markdown_tables(polish_agent_answer(answer)), ctx
         ),
-        "sources": ctx.sources,
+        "sources": sources,
         "mode": mode,
         "filter_source": source,
+        "verifier_ok": verifier_ok,
+        "verifier_violations": verifier_violations,
+        "evidence_eids": (
+            [e.eid for e in evidence_pack.items] if evidence_pack is not None else []
+        ),
     }
+
+
+def _compile_prompt(
+    *,
+    message: str,
+    hist_text: str,
+    evidence_pack,
+    plan_style: bool,
+    ctx: TurnRetrieval,
+) -> str:
+    """Build a budgeted prompt via ContextCompiler."""
+    from backend.services.context.compiler import ContextCompiler
+    from backend.services.context.prompts import load_prompt_module
+
+    core = load_prompt_module("core_system")
+    core += f"\n{CONVERSE_EXECUTIVE_TONE}{ANSWER_LAYOUT_CORE}"
+    if plan_style:
+        core += CONVERSE_PLAN_STYLE_EXTRA
+        core += f" {SOURCE_CITATION_RULE}"
+    domain = ""
+    if ctx.has_context:
+        domain = "Domain: mail and workspace retrieval. Prefer Evidence ids over memory."
+    pre = preflight_prompt_block(ctx.preflight_actions)
+    task = f"User: {message}"
+    if pre:
+        task = f"{pre}\n\n{task}"
+    compiled = ContextCompiler().compile_turn(
+        core_system=core,
+        domain_modules=[domain] if domain else None,
+        evidence=evidence_pack,
+        recent_turns=f"Recent conversation:\n{hist_text}" if hist_text else "",
+        task=task,
+    )
+    return compiled.text

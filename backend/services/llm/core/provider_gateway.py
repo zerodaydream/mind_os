@@ -6,12 +6,24 @@ from backend.common.utils.exceptions import BudgetExceededError, LlmDisabledErro
 from backend.common.config_loader.settings import Settings
 from backend.services.agents.core.render.chat_stream import emit_chat_stream, merge_chat_stream_text
 from backend.services.llm.core.budget import BudgetGuard
-from backend.services.llm.providers.google import build_gemini_thinking_config, stream_google
+from backend.services.llm.providers.google import stream_google
 from backend.services.llm.providers.mock import MockProvider
 from backend.services.llm.core.types import CompletionResult
 
 _MAX_INPUT_CHARS = 32_000
-_MAX_OUTPUT_TOKENS = 2_048
+# Output budget must sit above typical thinking budgets so answers are not cut mid-sentence.
+_MAX_OUTPUT_TOKENS = 4_096
+
+
+def _clamp_prompt_keep_tail(prompt: str, max_chars: int) -> str:
+    """Drop the head of an oversize prompt so the task/question at the end survives."""
+    if len(prompt) <= max_chars:
+        return prompt
+    marker = "…\n"
+    keep = max_chars - len(marker)
+    if keep < 1:
+        return prompt[-max_chars:]
+    return marker + prompt[-keep:]
 
 
 class ProviderGateway:
@@ -29,6 +41,10 @@ class ProviderGateway:
     def mode(self) -> LlmMode:
         return self._mode
 
+    @property
+    def budget(self) -> BudgetGuard:
+        return self._budget
+
     def model_for(self, task: LlmTask, override: str | None = None) -> str:
         if override:
             return override
@@ -39,19 +55,20 @@ class ProviderGateway:
         return self._settings.mindos_synth_model
 
     def thinking_config_for(self, task: LlmTask, model: str) -> dict | None:
-        if task != LlmTask.SYNTH:
-            return None
-        return build_gemini_thinking_config(
-            model,
-            self._settings.mindos_thinking_level,
-            budget=self._settings.mindos_thinking_budget,
-        )
+        # User-visible chat (router/synth) must not stream Gemini thought blocks to the TUI.
+        del model  # deep agent sets its own thinking_config on the graph path.
+        return None
 
     def _prepare(self, prompt: str, *, task: LlmTask, model: str | None, max_output_tokens: int):
-        prompt = prompt[:_MAX_INPUT_CHARS]
+        prompt = _clamp_prompt_keep_tail(prompt, _MAX_INPUT_CHARS)
         max_output_tokens = min(max_output_tokens, _MAX_OUTPUT_TOKENS)
         resolved_model = self.model_for(task, model)
         return prompt, resolved_model, max_output_tokens
+
+    def _record_completion(self, prompt: str, text: str) -> None:
+        input_tokens = max(1, len(prompt) // 4)
+        output_tokens = max(1, len(text) // 4) if text else 0
+        self._budget.record_usage(input_tokens, output_tokens)
 
     async def _iter_live_chunks(
         self,
@@ -128,8 +145,10 @@ class ProviderGateway:
                     emit_chat_stream(on_partial, "".join(answer), phase="answer")
                     yield piece
         finally:
+            text = "".join(answer)
+            if self._mode == LlmMode.LIVE:
+                self._record_completion(prompt, text)
             if ls_run is not None:
-                text = "".join(answer)
                 ls_run.end(outputs={"text": text[:8000], "chars": len(text)})
             if ls_cm is not None:
                 ls_cm.__exit__(None, None, None)
@@ -158,6 +177,8 @@ class ProviderGateway:
         text = "".join(parts).strip()
         if self._mode == LlmMode.MOCK:
             provider = "mock"
+            # Mock path skips live stream accounting; still record for budget tests.
+            self._record_completion(prompt, text)
         elif self._mode == LlmMode.DEGRADED:
             raise LlmDisabledError("LLM calls disabled in degraded mode")
         else:

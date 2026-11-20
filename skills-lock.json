@@ -79,6 +79,24 @@
       "skillPath": "skills/codebase-modernizer/SKILL.md",
       "computedHash": "006669885a81e55f3dfa58713b725a2f7cd50a48052830bfdd4c643a38a8c2e5"
     },
+    "context-compression": {
+      "source": "muratcankoylan/agent-skills-for-context-engineering",
+      "sourceType": "github",
+      "skillPath": "skills/context-compression/SKILL.md",
+      "computedHash": "34637ce388c2e61fa4b9b0cdbb719d67f46853322b0e2c75796306c70f3affa3"
+    },
+    "context-degradation": {
+      "source": "muratcankoylan/agent-skills-for-context-engineering",
+      "sourceType": "github",
+      "skillPath": "skills/context-degradation/SKILL.md",
+      "computedHash": "f8d161a299d4ae6de5516125ac5063f241a179c49b6905427fe6ccafac18310b"
+    },
+    "context-optimization": {
+      "source": "muratcankoylan/agent-skills-for-context-engineering",
+      "sourceType": "github",
+      "skillPath": "skills/context-optimization/SKILL.md",
+      "computedHash": "8f88a8b9aa7e78d0e8bae571ff452dec0c037f8c20275540d396291aeea43606"
+    },
     "design-optimizer": {
       "source": "luongnv89/skills",
       "sourceType": "github",
@@ -114,6 +132,12 @@
       "sourceType": "github",
       "skillPath": "skills/dont-make-me-think/SKILL.md",
       "computedHash": "9d917826b4667b573772b5769736b502d4a1593f4d0504fc0d228273d5478767"
+    },
+    "filesystem-context": {
+      "source": "muratcankoylan/agent-skills-for-context-engineering",
+      "sourceType": "github",
+      "skillPath": "skills/filesystem-context/SKILL.md",
+      "computedHash": "252934028fb6d7e76b96eb2d27324006918affe12b6a09439212adcf18833969"
     },
     "frontend-design": {
       "source": "anthropics/skills",
@@ -157,11 +181,53 @@
       "skillPath": "skills/landing-page-generator/SKILL.md",
       "computedHash": "5d336000d6e75285ed4a234b454d087e4390aa85402f3c54b9b37bf6541b8442"
     },
+    "langchain-agent-experiments": {
+      "source": "langchain-ai/langchain-skills",
+      "sourceType": "github",
+      "skillPath": "skills/langchain-agent-experiments/SKILL.md",
+      "computedHash": "b3c5841d159620a661a6ec910863761827512ed116ab67f8244c4ed9609dc894"
+    },
+    "langchain-agent-monitoring": {
+      "source": "langchain-ai/langchain-skills",
+      "sourceType": "github",
+      "skillPath": "skills/langchain-agent-monitoring/SKILL.md",
+      "computedHash": "9b6eb50d3a872233a85f50b4a6809f7137db32e94203063673fb0e8df5916f09"
+    },
+    "langchain-agent-tracing": {
+      "source": "langchain-ai/langchain-skills",
+      "sourceType": "github",
+      "skillPath": "skills/langchain-agent-tracing/SKILL.md",
+      "computedHash": "9b99f451b3e6959fc5073f9ee65be171d29cd8d63c2e27ad86bb4879c4bdd7a8"
+    },
+    "langchain-build-agent": {
+      "source": "langchain-ai/langchain-skills",
+      "sourceType": "github",
+      "skillPath": "skills/langchain-build-agent/SKILL.md",
+      "computedHash": "7c3ab47b01f678f36140ee1df94c49488f4a3b050e2ba3a8375102a66e0c5301"
+    },
+    "langchain-eval-engineering": {
+      "source": "langchain-ai/langchain-skills",
+      "sourceType": "github",
+      "skillPath": "skills/langchain-eval-engineering/SKILL.md",
+      "computedHash": "b9275614b927fdde66cc888fb1cbba251ab72371438ab4d7dc38bd09e9256095"
+    },
     "logo-designer": {
       "source": "luongnv89/skills",
       "sourceType": "github",
       "skillPath": "skills/logo-designer/SKILL.md",
       "computedHash": "77230f1ee7f55fa8c88fb6806c255c98e65996aea3f9de5456d0776cb576798e"
+    },
+    "memory-systems": {
+      "source": "muratcankoylan/agent-skills-for-context-engineering",
+      "sourceType": "github",
+      "skillPath": "skills/memory-systems/SKILL.md",
+      "computedHash": "7dc4a0ba6456e277660ab93892fe3fbfe05c80cfbbea637ea23bbc5a4810703f"
+    },
+    "multi-agent-patterns": {
+      "source": "muratcankoylan/agent-skills-for-context-engineering",
+      "sourceType": "github",
+      "skillPath": "skills/multi-agent-patterns/SKILL.md",
+      "computedHash": "b66e7cd7d4f434e8c8d1ca95207ef1a90033aeaa31f1b46fdf3865bd4faf2a41"
     },
     "ollama-optimizer": {
       "source": "luongnv89/skills",
@@ -252,6 +318,12 @@
       "sourceType": "github",
       "skillPath": "skills/tmux-agent-comms/SKILL.md",
       "computedHash": "974d3f73a8e202dffd046d01beab462219f28be09040b66702b5160017fac476"
+    },
+    "tool-design": {
+      "source": "muratcankoylan/agent-skills-for-context-engineering",
+      "sourceType": "github",
+      "skillPath": "skills/tool-design/SKILL.md",
+      "computedHash": "680d5fb4eaf540b1ac4067a6c4b16be6fe9a73f32423c7c8eeccb73cab6d4982"
     },
     "user-test": {
       "source": "luongnv89/skills",

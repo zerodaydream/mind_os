@@ -25,12 +25,13 @@ def test_build_thinking_config_off() -> None:
     assert build_gemini_thinking_config("gemini-3.5-flash-lite", "OFF") is None
 
 
-def test_gateway_thinking_only_on_synth() -> None:
+def test_gateway_thinking_disabled_for_chat_tasks() -> None:
     gw = build_provider_gateway(
         Settings(mindos_llm_mode=LlmMode.MOCK, mindos_thinking_level="MEDIUM")
     )
     m = "gemini-3.5-flash-lite"
-    assert gw.thinking_config_for(LlmTask.SYNTH, m)["thinking_level"] == "MEDIUM"
+    assert gw.thinking_config_for(LlmTask.SYNTH, m) is None
+    assert gw.thinking_config_for(LlmTask.ROUTER, m) is None
     assert gw.thinking_config_for(LlmTask.EXTRACT, m) is None
 
 

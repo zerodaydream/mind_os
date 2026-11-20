@@ -1095,6 +1095,9 @@ def _split_plan_prefix(text: str) -> tuple[str, str]:
     if not plan:
         return "", text
     rest = "\n".join(lines[i:]).lstrip("\n")
+    if not rest.strip():
+        # Whole message is list/meta lines (e.g. retrieval dump) — show once, not as plan+answer.
+        return "", text
     return "\n".join(plan).strip(), rest
 
 

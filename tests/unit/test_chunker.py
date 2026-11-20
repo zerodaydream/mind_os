@@ -16,14 +16,14 @@ def test_chunker_overlap_carries_tail() -> None:
     assert "alpha" in chunks[1][1]
 
 
-def test_chunker_v2_splits_attachments() -> None:
+def test_chunker_splits_attachments() -> None:
     body = "Subject line\n\n### Attachment: a.yml\nversion: 1\n\n### Attachment: b.yml\nversion: 2"
     chunks = chunk_text(body, version="v2", embedding_model=_BGE)
     assert len(chunks) == 3
     assert "### Attachment: a.yml" in chunks[1][1]
 
 
-def test_chunker_v2_small_single_chunk() -> None:
+def test_chunker_small_single_chunk() -> None:
     body = "### Attachment: tiny.txt\nhello"
     assert len(chunk_text(body, version="v2", embedding_model=_BGE)) == 1
 

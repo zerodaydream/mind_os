@@ -43,6 +43,8 @@ def extract_pdf(raw: bytes) -> str:
 
     doc = pymupdf.open(stream=raw, filetype="pdf")
     try:
+        if doc.needs_pass or doc.is_encrypted:
+            raise AttachmentExtractError("password_protected")
         parts = [_page_text(page) for page in doc]
         text = "\n\n".join(part for part in parts if part)
         llm_kwargs = {

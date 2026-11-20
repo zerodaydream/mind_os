@@ -4,13 +4,13 @@
       "name": "personal",
       "enabled": true,
       "transport": "builtin",
-      "guidance": "Indexed mail and Drive first: Preloaded context and mindos_mail_lookup for Gmail bodies/attachments; mindos_search for mixed sources. Before filesystem tools when the user names attachments, people, or threads. Do not mindos_gmail_sync or mindos_process_outbox when Preloaded context or lookup/search already has [gmail] hits, or when sync returns ingested=0. mindos_calendar_* for schedule; mindos_summarize_url for URL/PDF content; only if Preloaded+lookup/search lack mail: mindos_gmail_sync(query=<Gmail q>, max_messages≈25) then mindos_process_outbox only if ingested>0, then mindos_mail_lookup—not blank mindos_gmail_sync unless user wants full inbox refresh."
+      "guidance": "Indexed mail and Drive first. Use search (detail=concise|full), calendar_query, calendar_change, commitments, memory_search, memory_write, read_url. Sync/outbox/auth are not agent tools. Prefer Evidence [E#] from the lead system prompt before filesystem when the user names attachments, people, or threads."
     },
     {
       "name": "filesystem",
       "enabled": true,
       "transport": "builtin",
-      "guidance": "Local disk only—not Gmail/Drive ingested mail. Use mindos_mail_lookup or mindos_search first for mail/Drive. Default search is MINDOS_HOME (project), not whole ~. For personal files: mindos_fs_list(\"~\") then glob/grep with root=~/Downloads|Desktop|Documents; deep=True only if they want a wide scan. Configure agents.filesystem.search_paths for your usual folders. Destructive: preview then confirmed=True."
+      "guidance": "Local disk only—not Gmail/Drive ingested mail. Use search (personal pack) first for mail/Drive. Default search is MINDOS_HOME (project), not whole ~. For personal files: mindos_fs_list(\"~\") then glob/grep with root=~/Downloads|Desktop|Documents; deep=True only if they want a wide scan. Configure agents.filesystem.search_paths for your usual folders. Destructive: preview then confirmed=True."
     },
     {
       "name": "convert",
@@ -24,7 +24,7 @@
       "transport": "stdio",
       "command": "npx",
       "args": ["-y", "@zhafron/mcp-web-search"],
-      "guidance": "Backend for mindos_summarize_url (PDF/HTML pagination). Do not call fetch_* directly for user summarize requests—use mindos_summarize_url instead. search_web only for open-web queries without a URL."
+      "guidance": "Backend for read_url (PDF/HTML pagination). Do not call fetch_* directly for user summarize requests—use read_url instead. search_web only for open-web queries without a URL."
     }
   ]
 }

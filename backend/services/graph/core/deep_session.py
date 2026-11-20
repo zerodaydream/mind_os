@@ -62,23 +62,63 @@ def read_notes_preview(thread_id) -> str:
 
 
 def memory_sources_for_thread(thread_id) -> list[str]:
-    """Virtual FS paths the agent may read (SESSION.md, AGENTS.md)."""
+    """Virtual FS paths the agent may read as memory sources.
+
+    Never loads repo AGENTS.md — that contaminates the assistant with coding-agent
+    instructions when MINDOS_HOME defaults to the cwd.
+    """
     sources = ["/SESSION.md"]
-    if (mindos_home() / "AGENTS.md").is_file():
-        sources.append("/project/AGENTS.md")
     ensure_session_workspace(thread_id)
     return sources
 
 
 @lru_cache(maxsize=1)
 def deep_checkpointer() -> object | None:
-    """Process-wide LangGraph checkpointer or None if unavailable."""
-    # shortcut: process-wide MemorySaver; upgrade to PostgresSaver for multi-replica
+    """Process-wide LangGraph checkpointer (Postgres when available, else MemorySaver)."""
+    pg = _postgres_checkpointer()
+    if pg is not None:
+        return pg
     try:
         from langgraph.checkpoint.memory import MemorySaver
 
         return MemorySaver()
     except ImportError:
+        return None
+
+
+_postgres_cm: object | None = None
+
+
+def _postgres_checkpointer() -> object | None:
+    """Postgres checkpointer for durable interrupts across process restarts."""
+    global _postgres_cm
+    url = os.environ.get("DATABASE_URL", "").strip()
+    if not url:
+        try:
+            from backend.common.config_loader.settings import get_settings
+
+            url = get_settings().database_url
+        except Exception:
+            return None
+    if not url:
+        return None
+    # langgraph-checkpoint-postgres expects a psycopg conn string (not +asyncpg).
+    sync_url = url.replace("postgresql+asyncpg://", "postgresql://").replace(
+        "postgres+asyncpg://", "postgresql://"
+    )
+    try:
+        from langgraph.checkpoint.postgres import PostgresSaver
+
+        # from_conn_string returns a context manager; keep it process-wide.
+        cm = PostgresSaver.from_conn_string(sync_url)
+        saver = cm.__enter__()
+        _postgres_cm = cm
+        try:
+            saver.setup()
+        except Exception:
+            pass
+        return saver
+    except Exception:
         return None
 
 
@@ -94,18 +134,22 @@ def deep_store() -> object | None:
 
 
 def build_deep_backend(thread_id) -> BackendProtocol:
-    """Composite deepagents backend: session FS, project, optional store."""
+    """Composite deepagents backend: session FS, optional explicit project root."""
     from deepagents.backends import CompositeBackend, FilesystemBackend, StoreBackend
 
     session_root = ensure_session_workspace(thread_id)
-    project = mindos_home()
     store = deep_store()
     tid = str(thread_id)
 
     session_be = FilesystemBackend(root_dir=str(session_root), virtual_mode=True)
-    routes: dict[str, BackendProtocol] = {
-        "/project/": FilesystemBackend(root_dir=str(project), virtual_mode=True),
-    }
+    routes: dict[str, BackendProtocol] = {}
+    # Only expose /project/ when explicitly configured — never the MindOS repo cwd.
+    project_root = os.environ.get("MINDOS_PROJECT_ROOT", "").strip()
+    if project_root:
+        routes["/project/"] = FilesystemBackend(
+            root_dir=str(Path(project_root).expanduser().resolve()),
+            virtual_mode=True,
+        )
     if store is not None:
         routes["/store/"] = StoreBackend(
             store=store,

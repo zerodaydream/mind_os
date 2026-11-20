@@ -1,5 +1,7 @@
+from backend.services.agents.core.contracts.evidence import EvidencePack
+from backend.services.agents.core.contracts.turn_plan import TurnPlan
 from backend.services.agents.core.routing.turn_prep import TurnPrep
-from backend.services.agents.core.turn.orchestrate import needs_deep_agent
+from backend.services.agents.core.turn.orchestrate import resolve_deep_tier
 from backend.services.agents.core.turn.turn_retrieval import TurnRetrieval
 
 
@@ -17,26 +19,51 @@ def _prep(intent: str = "plan", **kw) -> TurnPrep:
     return TurnPrep(**base)  # type: ignore[arg-type]
 
 
-def test_execute_intent_needs_deep() -> None:
-    assert needs_deep_agent(_prep("execute"), "list calendar", None) is True
+def _plan(**kw) -> TurnPlan:
+    defaults = {
+        "scope": "in",
+        "intent": "plan",
+        "writes_external": False,
+        "task": "x",
+    }
+    defaults.update(kw)
+    return TurnPlan(**defaults)
+
+
+def test_execute_intent_tier_2() -> None:
+    plan = _plan(intent="execute", writes_external=True)
+    use_deep, tier = resolve_deep_tier(
+        plan, "list calendar", None, evidence_pack=EvidencePack(), turn_retrieval=TurnRetrieval(message="x")
+    )
+    assert use_deep is True
+    assert tier == 2
 
 
 def test_slash_command_needs_deep() -> None:
-    assert needs_deep_agent(_prep("plan"), "/do sync gmail", None) is True
+    plan = _plan(intent="plan")
+    use_deep, _ = resolve_deep_tier(
+        plan, "/do sync gmail", None, evidence_pack=EvidencePack(), turn_retrieval=TurnRetrieval(message="x")
+    )
+    assert use_deep is True
 
 
 def test_plan_list_mail_uses_synth() -> None:
     ctx = TurnRetrieval(message="x", has_context=True)
-    assert needs_deep_agent(
-        _prep("plan", prefetch_mail=True),
-        "list gmails to Krishna",
-        None,
-        ctx,
-    ) is False
+    plan = _plan(intent="plan", writes_external=False)
+    use_deep, tier = resolve_deep_tier(
+        plan, "list gmails to Krishna", None, evidence_pack=EvidencePack(items=[]), turn_retrieval=ctx
+    )
+    assert use_deep is False
+    assert tier == 1
 
 
 def test_converse_greeting_uses_synth() -> None:
-    assert needs_deep_agent(_prep("converse"), "Hi", None) is False
+    plan = _plan(intent="converse")
+    use_deep, tier = resolve_deep_tier(
+        plan, "Hi", None, evidence_pack=EvidencePack(insufficient=True), turn_retrieval=TurnRetrieval(message="x")
+    )
+    assert use_deep is False
+    assert tier == 1
 
 
 def test_yes_after_execute_needs_deep() -> None:
@@ -44,26 +71,45 @@ def test_yes_after_execute_needs_deep() -> None:
         {"role": "user", "content": "schedule meeting tomorrow", "intent": "execute"},
         {"role": "assistant", "content": "What time?", "intent": "execute"},
     ]
-    assert needs_deep_agent(_prep("plan"), "yes", hist) is True
+    plan = _plan(intent="plan")
+    use_deep, tier = resolve_deep_tier(
+        plan, "yes", hist, evidence_pack=EvidencePack(), turn_retrieval=TurnRetrieval(message="x")
+    )
+    assert use_deep is True
+    assert tier == 2
 
 
-def test_schedule_verbs_need_deep() -> None:
-    assert needs_deep_agent(_prep("plan"), "schedule standup tomorrow 10am", None) is True
+def test_calendar_write_forces_deep() -> None:
+    plan = _plan(intent="plan", writes_external=True)
+    use_deep, tier = resolve_deep_tier(
+        plan, "schedule standup tomorrow 10am", None, evidence_pack=EvidencePack(), turn_retrieval=TurnRetrieval(message="x")
+    )
+    assert use_deep is True
+    assert tier == 2
 
 
-def test_named_attachment_without_context_needs_deep() -> None:
-    assert needs_deep_agent(
-        _prep("plan"),
-        "summarize Propico deck.pdf from mail",
-        None,
-        TurnRetrieval(message="x", has_context=False),
-    ) is True
+def test_calendar_read_tier_1() -> None:
+    plan = _plan(intent="plan", writes_external=False, domains=["calendar"])
+    use_deep, tier = resolve_deep_tier(
+        plan, "what's on my calendar tomorrow", None, evidence_pack=EvidencePack(), turn_retrieval=TurnRetrieval(message="x")
+    )
+    assert use_deep is False
+    assert tier == 1
 
 
-def test_named_attachment_with_context_uses_synth() -> None:
-    assert needs_deep_agent(
-        _prep("plan"),
-        "summarize Propico deck.pdf from mail",
-        None,
-        TurnRetrieval(message="x", has_context=True, gmail_ctx=[{"title": "x"}]),
-    ) is False
+def test_create_summary_tier_1() -> None:
+    plan = _plan(intent="plan", writes_external=False)
+    use_deep, tier = resolve_deep_tier(
+        plan, "create a summary of that mail", None, evidence_pack=EvidencePack(), turn_retrieval=TurnRetrieval(message="x")
+    )
+    assert use_deep is False
+    assert tier == 1
+
+
+def test_create_meeting_tier_2() -> None:
+    plan = _plan(intent="plan", writes_external=True)
+    use_deep, tier = resolve_deep_tier(
+        plan, "create a meeting with Alex tomorrow", None, evidence_pack=EvidencePack(), turn_retrieval=TurnRetrieval(message="x")
+    )
+    assert use_deep is True
+    assert tier == 2

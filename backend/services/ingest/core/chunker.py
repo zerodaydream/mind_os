@@ -95,7 +95,7 @@ def _chunk_paragraphs(text: str, *, model_id: str, start_ord: int = 0) -> list[t
     return chunks or [(start_ord, _split_by_token_budget(text, model_id)[0])]
 
 
-def _chunk_v2(text: str, model_id: str) -> list[tuple[int, str]]:
+def _chunk_embed_model(text: str, model_id: str) -> list[tuple[int, str]]:
     parts = re.split(r"(?=\n" + re.escape(_ATTACHMENT_HEAD) + ")", text.strip())
     if len(parts) <= 1:
         return _chunk_paragraphs(text, model_id=model_id)
@@ -128,5 +128,5 @@ def chunk_text(
     model_id = embedding_model or get_settings().embedding_model
     ver = (version or "v1").strip().lower()
     if ver == "v2":
-        return _chunk_v2(text, model_id)
+        return _chunk_embed_model(text, model_id)
     return _chunk_paragraphs(text, model_id=model_id)

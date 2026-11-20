@@ -195,17 +195,21 @@ def rich_chat_span_lines(text: str, width: int) -> list[MdChatRow] | None:
 def prepare_chat_text(text: str) -> str:
     from backend.services.agents.core.render.markdown_tables import polish_agent_answer
 
-    text = polish_agent_answer(text)
     out: list[str] = []
     prev_key = ""
-    for raw in text.splitlines():
-        line = prepare_chat_line(raw)
-        urls = _line_urls(raw)
-        key = urls[0] if len(urls) == 1 else ""
-        if key and key == prev_key:
-            continue
-        prev_key = key if len(urls) == 1 else ""
-        out.append(line)
+    blocks = text.split("\n\n")
+    for bi, block in enumerate(blocks):
+        if bi > 0:
+            out.append("")
+        polished = polish_agent_answer(block)
+        for raw in polished.splitlines():
+            line = prepare_chat_line(raw)
+            urls = _line_urls(raw)
+            key = urls[0] if len(urls) == 1 else ""
+            if key and key == prev_key:
+                continue
+            prev_key = key if len(urls) == 1 else ""
+            out.append(line)
     return "\n".join(out)
 
 

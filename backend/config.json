@@ -1,0 +1,26 @@
+{
+  "environment": "local",
+  "services": [
+    { "name": "llm", "enabled": true, "required": true },
+    { "name": "ingest", "enabled": true, "required": true },
+    { "name": "commitments", "enabled": true, "required": true },
+    { "name": "tensions", "enabled": true, "required": false },
+    { "name": "memories", "enabled": true, "required": false },
+    { "name": "retrieval", "enabled": true, "required": false },
+    { "name": "graph", "enabled": true, "required": false },
+    {
+      "name": "agents",
+      "enabled": true,
+      "required": false,
+      "settings": {
+        "filesystem": {
+          "enabled": true,
+          "roots": ["/"],
+          "search_paths": ["~"],
+          "deep_search_on_miss": false
+        }
+      }
+    },
+    { "name": "integrations", "enabled": true, "required": false }
+  ]
+}

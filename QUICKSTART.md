@@ -14,8 +14,9 @@ Local-only MVP. Consumer ChatGPT/Claude subscriptions do **not** include API bil
 
 ```bash
 cp .env.example .env
-cp backend/config.json.example backend/config.json
 ```
+
+Edit `backend/config.json` for per-service flags (graph, agents, retrieval, etc.).
 
 | Variable | Meaning |
 |----------|---------|

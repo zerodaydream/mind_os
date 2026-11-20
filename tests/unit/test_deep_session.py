@@ -22,13 +22,13 @@ def test_session_dir_under_mindos_home(tmp_path, monkeypatch):
     assert (root / "tool-dumps").is_dir()
 
 
-def test_memory_sources_include_agents_md(tmp_path, monkeypatch):
+def test_memory_sources_exclude_agents_md(tmp_path, monkeypatch):
     monkeypatch.setenv("MINDOS_HOME", str(tmp_path))
     (tmp_path / "AGENTS.md").write_text("# agents\n", encoding="utf-8")
     tid = uuid.uuid4()
     sources = memory_sources_for_thread(tid)
     assert "/SESSION.md" in sources
-    assert "/project/AGENTS.md" in sources
+    assert "/project/AGENTS.md" not in sources
 
 
 def test_append_session_turn_appends(tmp_path, monkeypatch):

@@ -1,5 +1,4 @@
 .env
-backend/config.json
 .venv/
 uv.lock.bak
 __pycache__/
@@ -16,3 +15,16 @@ backend.egg-info/
 .mindos/
 *.tgz
 *.example
+
+# Agent skills (local installs; same as ~/.agents/skills — not product source)
+.agents/
+.claude/
+
+# Markdown: ignore by default; allowlist what ships with the repo
+*.md
+!README.md
+!QUICKSTART.md
+!AGENTS.md
+!SHIP_CHECKLIST.md
+!docs/NAMING.md
+!backend/services/context/prompts/core_system.md

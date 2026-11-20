@@ -21,7 +21,8 @@ DEEP_CHAT_HISTORY_TURNS = 4
 # Router LLM: fewer turns than synth — TASK merges prior context.
 ROUTER_HISTORY_TURNS = 4
 ROUTER_LLM_MAX_CHARS = 1_200
-SYNTH_MAX_OUTPUT_TOKENS = 2_048
+# Keep answer headroom above mindos_thinking_budget (default 1024).
+SYNTH_MAX_OUTPUT_TOKENS = 3_072
 EXTRACT_MAX_OUTPUT_TOKENS = 32
 # Router TASK lines can merge several turns; 32 tokens truncates merged tasks.
 ROUTER_MAX_OUTPUT_TOKENS = 256

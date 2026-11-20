@@ -529,18 +529,187 @@ def build_personal_tools(
         except Exception as exc:
             return f"Free/busy error: {exc}"
 
+    # --- consolidated agent tools ---
+
+    async def search(query: str, sources: str = "", detail: str = "concise") -> str:
+        """Search indexed mail and notes. Use when the user asks about mail, people, or documents.
+
+        Args:
+            query: Natural-language search question.
+            sources: Optional filter — gmail, manual, or empty for all.
+            detail: concise (ranked hits) or full (mail bodies when gmail matches).
+        """
+        q = (query or "").strip()
+        if not q:
+            return "Query required. Pass a non-empty search question."
+        src = (sources or "").strip().lower()
+        if src in {"mail", "email"}:
+            src = "gmail"
+        if src and src not in {"gmail", "manual"}:
+            return (
+                f"Unknown sources={sources!r}. Use 'gmail', 'manual', or omit for all."
+            )
+        want_full = (detail or "concise").strip().lower() == "full"
+        if want_full and src in {"", "gmail"}:
+            full = await mindos_mail_lookup(q)
+            if not full.startswith("No matching"):
+                return full
+            if src == "gmail":
+                return (
+                    "No indexed Gmail hits for that query. "
+                    "Try a sender name, subject keywords, or a shorter phrase. "
+                    "Index freshness depends on scheduled sync — do not call sync tools."
+                )
+        return await mindos_search(q, source=src)
+
+    async def calendar_query(
+        mode: str = "upcoming",
+        calendar_id: str = "primary",
+        time_min_iso: str = "",
+        time_max_iso: str = "",
+        query: str = "",
+        max_results: int = 15,
+        calendar_ids: str = "primary",
+    ) -> str:
+        """Read calendar data. mode: upcoming | free_busy | calendars."""
+        m = (mode or "upcoming").strip().lower()
+        if m == "calendars":
+            return await mindos_calendar_list_calendars()
+        if m in {"free_busy", "freebusy", "busy"}:
+            if not time_min_iso or not time_max_iso:
+                return (
+                    "free_busy requires time_min_iso and time_max_iso "
+                    "(ISO datetimes in the user timezone)."
+                )
+            return await mindos_calendar_free_busy(
+                time_min_iso, time_max_iso, calendar_ids=calendar_ids or calendar_id
+            )
+        if m not in {"upcoming", "list", "events"}:
+            return (
+                f"Unknown mode={mode!r}. Use upcoming, free_busy, or calendars."
+            )
+        return await mindos_calendar_list_upcoming(
+            calendar_id=calendar_id,
+            time_min_iso=time_min_iso,
+            time_max_iso=time_max_iso,
+            query=query,
+            max_results=max_results,
+        )
+
+    async def calendar_change(
+        action: str,
+        title: str = "",
+        start_iso: str = "",
+        end_iso: str = "",
+        event_id: str = "",
+        description: str = "",
+        location: str = "",
+        time_zone: str = "",
+        calendar_id: str = "primary",
+        all_day: bool = False,
+        recurrence: str = "",
+        attendees: str = "",
+        reminders_minutes: int = -1,
+        confirmed: bool = False,
+    ) -> str:
+        """Create, update, or delete calendar events. action: create | update | delete.
+
+        Prefer showing a preview to the user before delete/bulk. Pass confirmed=True
+        only after the user approves destructive actions.
+        """
+        act = (action or "").strip().lower()
+        if act == "create":
+            if not title or not start_iso:
+                return "create requires title and start_iso."
+            return await mindos_calendar_create_event(
+                title=title,
+                start_iso=start_iso,
+                end_iso=end_iso,
+                description=description,
+                location=location,
+                time_zone=time_zone,
+                calendar_id=calendar_id,
+                all_day=all_day,
+                recurrence=recurrence,
+                attendees=attendees,
+                reminders_minutes=reminders_minutes,
+            )
+        if act == "update":
+            if not event_id:
+                return "update requires event_id from calendar_query."
+            return await mindos_calendar_update_event(
+                event_id=event_id,
+                calendar_id=calendar_id,
+                title=title,
+                start_iso=start_iso,
+                end_iso=end_iso,
+                description=description,
+                location=location,
+                time_zone=time_zone or "UTC",
+                all_day=all_day,
+                recurrence=recurrence,
+                attendees=attendees,
+                reminders_minutes=reminders_minutes,
+            )
+        if act == "delete":
+            if not event_id:
+                return "delete requires event_id."
+            return await mindos_calendar_delete_event(
+                event_id=event_id,
+                calendar_id=calendar_id,
+                confirmed=confirmed,
+            )
+        return f"Unknown action={action!r}. Use create, update, or delete."
+
+    async def read_url(url: str, focus: str = "") -> str:
+        """Fetch and summarize a public URL or PDF. Use when the user pastes a link."""
+        return await mindos_summarize_url(url, focus=focus)
+
+    async def memory_search(query: str, limit: int = 8) -> str:
+        """Search approved long-term memories for preferences and facts."""
+        from backend.services.retrieval.core.search_memories import search_memories_ilike
+
+        q = (query or "").strip()
+        if not q:
+            return "Query required."
+        hits = await search_memories_ilike(
+            session, user_id=user.id, query=q, limit=max(1, min(limit, 20))
+        )
+        if not hits:
+            return "No matching memories."
+        return "\n".join(
+            f"- [{h.get('kind')}] {h.get('content')} (score {float(h.get('rank') or 0):.2f})"
+            for h in hits
+        )
+
+    async def memory_write(content: str, kind: str = "fact") -> str:
+        """Store a memory only when the user explicitly asks to remember something."""
+        from backend.common.database.models import Memory
+
+        text = (content or "").strip()
+        if not text:
+            return "content required."
+        k = (kind or "fact").strip().lower() or "fact"
+        session.add(
+            Memory(
+                user_id=user.id,
+                kind=k,
+                content=text[:500],
+                source="user_stated",
+                approved=True,
+                evidence=[],
+            )
+        )
+        await session.commit()
+        return f"Remembered ({k}): {text[:200]}"
+
+    # Sync/outbox/auth are infrastructure — not agent tools.
     return [
-        trace_tool(mindos_mail_lookup),
-        trace_tool(mindos_search),
-        trace_tool(mindos_gmail_sync),
-        trace_tool(mindos_process_outbox),
+        trace_tool(search),
         trace_tool(mindos_commitments),
-        trace_tool(mindos_summarize_url),
-        trace_tool(mindos_google_integration_status),
-        trace_tool(mindos_calendar_create_event),
-        trace_tool(mindos_calendar_list_upcoming),
-        trace_tool(mindos_calendar_update_event),
-        trace_tool(mindos_calendar_delete_event),
-        trace_tool(mindos_calendar_list_calendars),
-        trace_tool(mindos_calendar_free_busy),
+        trace_tool(memory_search),
+        trace_tool(memory_write),
+        trace_tool(calendar_query),
+        trace_tool(calendar_change),
+        trace_tool(read_url),
     ]

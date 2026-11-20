@@ -1,0 +1,5 @@
+{"id": "route-cal-read", "message": "what's on my calendar tomorrow", "expect_tier": 1, "expect_not_tier": 2}
+{"id": "route-create-summary", "message": "create a summary of that mail", "expect_tier": 1}
+{"id": "route-schedule", "message": "schedule standup tomorrow 10am", "expect_tier": 2}
+{"id": "route-create-meeting", "message": "create a meeting with Alex tomorrow", "expect_tier": 2}
+{"id": "route-greeting", "message": "Hi", "expect_tier": 0}

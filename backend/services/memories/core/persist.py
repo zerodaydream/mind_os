@@ -33,13 +33,16 @@ async def add_new_memories_from_artifact(
         kind = draft["kind"]
         if (kind, content) in existing:
             continue
+        # Doc-derived memories stay proposed until the user approves.
+        approved = bool(draft.get("approved", False))
+        source = str(draft.get("origin") or draft.get("source") or "doc_derived")
         session.add(
             Memory(
                 user_id=user_id,
                 kind=kind,
                 content=content,
-                source="user",
-                approved=True,
+                source=source,
+                approved=approved,
                 evidence=[{"artifact_id": str(artifact_id)}],
             )
         )

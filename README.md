@@ -18,6 +18,7 @@
 
 [Architecture](#architecture) ·
 [Agent turn flow](#agent-turn-flow) ·
+[Five-plane stack](#five-plane-stack) ·
 [Layout](#repository-layout) ·
 [Lifecycle](#lifecycle) ·
 [Config](#config) ·
@@ -92,27 +93,30 @@ flowchart TB
 
 Every chat turn (TUI `mindos chat`, `POST /v1/chat`, or `POST /v1/agents/run`) goes through **`handle_turn`** in `services/agents/core/turn/orchestrate.py`. Sessions and messages live in Postgres; the worker path (ingest → outbox → embed) feeds retrieval the agent reads on later turns.
 
+Every turn uses the **five-plane** stack: structured **`TurnPlan`**, RRF **`EvidencePack`**, **ContextCompiler**, verifier, and subagents ([Five-plane stack](#five-plane-stack)). Run **`uv run alembic upgrade head`** once for `turn_logs` / `chat_session_state`.
+
 ```mermaid
 flowchart TB
     in["CLI or HTTP<br/>handle_turn"]:::in
     sess["Session + history<br/>sessions.py"]:::core
-    prep["prepare_turn<br/>fast path · LLM router · fallback"]:::route
-    gate{"In scope?<br/>blocks_chat_turn"}:::dec
-    oos["clarify / sorry<br/>no LLM agent"]:::end
-    ret["prefetch_turn_retrieval<br/>search · mail · commitments · memories"]:::ret
-    deep{"needs_deep_agent?<br/>execute · /do · confirms · tools"}:::dec
-    synth["run_converse_turn<br/>converse or plan_synth"]:::synth
-    da["run_deep_agent<br/>deepagents + integrations"]:::deep
-    fb["synth fallback<br/>if deep offline"]:::synth
-    out["append assistant message<br/>mode + sources"]:::end
+    prep["Turn plan<br/>TurnPlan JSON"]:::route
+    gate{"In scope?"}:::dec
+    oos["Tier 0<br/>clarify / sorry"]:::end
+    ret["Retrieval<br/>prefetch and/or RRF EvidencePack"]:::ret
+    deep{"Tier 2?<br/>writes / tools / escalate"}:::dec
+    synth["Tier 1<br/>grounded converse / plan_synth"]:::synth
+    da["Tier 2<br/>deepagents + subagents"]:::deep
+    verify["Verifier<br/>citations / filenames"]:::ret
+    fb["synth fallback<br/>deep_error / unavailable"]:::synth
+    out["append message<br/>sources · turn_log · session_state"]:::end
 
     in --> sess --> prep --> gate
     gate -->|no| oos
     gate -->|yes| ret --> deep
-    deep -->|no| synth --> out
+    deep -->|no| synth --> verify --> out
     deep -->|yes| da
     da -->|error / unavailable| fb --> out
-    da -->|ok| out
+    da -->|ok| verify --> out
     oos --> out
 
     classDef in fill:#6366F1,color:#fff
@@ -127,43 +131,77 @@ flowchart TB
 
 | Step | Code | What it decides |
 | --- | --- | --- |
-| **Turn prep** | `routing/turn_prep.py` | One router LLM call (or regex fast-path): workspace **scope**, **intent** (`converse` \| `plan` \| `execute`), rewritten **task**, **search** line, and **prefetch** flags (mail / commitments / memories). |
-| **Retrieval bundle** | `turn/turn_retrieval.py` | Hybrid artifact search, optional live Gmail rows, commitments, memories—shared context for both downstream paths. |
-| **Converse synth** | `converse/converse_synth.py` | Streamed answer over prefetched context only; no calendar/file mutations. Modes `converse` or `plan_synth`. |
-| **Deep agent** | `graph/core/deep_agent.py` | Tool loop (calendar, Gmail, files, etc.) when intent is execute, message starts with `/`, user confirms a pending action, or named attachments need fetch. Requires `agents` + `graph` + `llm` in `config.json` and `deepagents` extra. |
-| **Persistence** | `session/sessions.py` | User + assistant rows per turn; optional async session title on first message. |
+| **Turn plan** | `routing/turn_plan_llm.py` | Scope, intent, task, retrieval queries; **`TurnPlan`** JSON (`writes_external`, `domains`, `confidence`). |
+| **Retrieval** | `retrieval/core/pipeline.py` + `turn/turn_retrieval.py` (mail live legs) | **RRF** fusion → **`EvidencePack`**; Gmail live prefetch without duplicating hybrid search. |
+| **Tier 1 synth** | `converse/converse_synth.py` + `context/compiler.py` | **ContextCompiler** budgets + deterministic **verifier**. |
+| **Tier 2 deep** | `graph/core/deep_agent.py` + `graph/core/subagents.py` | **researcher**, **calendar-operator**, **file-scout**; `interrupt_on` for destructive ops. |
+| **Persistence** | `session/sessions.py`, session state, `turn_logs` | Messages, session state, citations, `turn_log`. |
 
-**Gates:** `config.json` must enable `agents`, `retrieval`, and `llm` for chat; deep execution additionally needs `graph` and installed agent extras (`uv sync --extra agents`).
+**Gates:** `config.json` must enable `agents`, `retrieval`, and `llm` for chat; deep execution needs `graph` and `uv sync --extra agents` (or `--extra cli`).
 
 ### Tools (deep agent only)
 
-**Converse / plan synth** has no callable tools—only the prefetched context from `turn_retrieval` and the LLM.
+**Converse / plan synth** has no callable tools—only prefetched / compiled evidence and the LLM.
 
-**Deep agent** loads LangChain tools from `backend/mcp_servers.json` via `integrations/mcp/registry.py` (`load_mcp_for_agent`). Built-in packs are in-process; stdio MCP servers in the JSON are listed for guidance but are **not** mounted on the agent loop (URL fetch is loaded on demand inside `mindos_summarize_url`). The `deepagents` runtime also exposes **`write_todos`** for multi-step plans.
+**Deep agent** loads tools from `backend/mcp_servers.json` via `integrations/mcp/registry.py`. Built-in packs are in-process. The `deepagents` runtime also exposes **`write_todos`** and **`task`** for subagents.
 
-| Pack | Tool | Purpose |
+#### Personal pack (agent-facing)
+
+| Tool | Notes |
+| --- | --- |
+| `search` | Indexed mail + notes; `sources`, `detail=concise\|full` |
+| `calendar_query` / `calendar_change` | Reads / writes; `interrupt_on` for writes |
+| `memory_search` / `memory_write` | Explicit remember; scored recall |
+| `read_url` | Public URL/PDF |
+| `commitments` | Open commitments |
+
+Gmail sync, outbox, and OAuth status are **CLI/HTTP/worker only**, not agent tools. Filesystem + convert packs unchanged (`mindos_fs_*`, `mindos_convert_*`). Filesystem honors `agents.filesystem` / `MINDOS_FS_ROOTS`.
+
+---
+
+## Five-plane stack
+
+Bootstrap:
+
+```bash
+uv sync --extra agents   # or --extra cli (includes Postgres checkpointer)
+uv run alembic upgrade head
+```
+
+### Five planes
+
+| Plane | What changed |
+| --- | --- |
+| **Engine** | Structured **`TurnPlan`** JSON planner; three tiers (0 clarify, 1 grounded answer, 2 agent). Verb-regex deep overrides narrowed; `deep_error` falls back to synth. |
+| **Retrieval** | Parallel hybrid / memories / commitments → **RRF** fusion → local embed rerank → **`EvidencePack`** with `eid` citations. |
+| **Context** | **`ContextCompiler`**: token budgets, stable prefix first, evidence ephemeral on deep path (not re-injected into checkpointed user text). Prompts in `services/context/prompts/`. |
+| **Memory** | Sentence-level proposed memories (sent mail / user chat only); scored recall; post-turn extractor; `chat_session_state` + extended `memories` / `session_summaries` schema. |
+| **Verification** | Deterministic checks for cited `eid`s, filenames, URLs, emails, amounts, dates; caveat when claims fail. |
+
+### Subagents
+
+| Subagent | Role | Tools |
 | --- | --- | --- |
-| **personal** | `mindos_search` | Hybrid keyword + vector search over indexed Gmail and manual notes |
-| | `mindos_mail_lookup` | Ranked indexed Gmail hits with body and Drive attachment lines |
-| | `mindos_gmail_sync` | Pull new Gmail into the vault (`integrations` + OAuth) |
-| | `mindos_process_outbox` | Drain ingest/embed worker after sync |
-| | `mindos_commitments` | List open commitments from Postgres |
-| | `mindos_summarize_url` | Fetch and summarize a public URL/PDF (on-demand web fetch) |
-| | `mindos_google_integration_status` | Gmail/Calendar OAuth and connection state |
-| | `mindos_calendar_list_upcoming` | Upcoming events |
-| | `mindos_calendar_free_busy` | Free/busy windows |
-| | `mindos_calendar_list_calendars` | Calendar list |
-| | `mindos_calendar_create_event` | Create event |
-| | `mindos_calendar_update_event` | Update event |
-| | `mindos_calendar_delete_event` | Delete one or more events |
-| **filesystem** | `mindos_fs_roots` | Allowed search roots (`agents.filesystem` in config) |
-| | `mindos_fs_list` / `mindos_fs_read` | List and read under an allowed root |
-| | `mindos_fs_glob` / `mindos_fs_grep` / `mindos_fs_find` / `mindos_fs_locate` | Search by name, content, or fuzzy locate |
-| | `mindos_fs_write` / `mindos_fs_rename` / `mindos_fs_delete` | Mutations (destructive ops need confirmation in tool args) |
-| **convert** | `mindos_convert_capabilities` | Supported local conversions |
-| | `mindos_convert_file` / `mindos_convert_batch` | Single or batch format conversion on disk |
+| **researcher** | Multi-hop evidence; keeps noise out of lead context | `search`, mail/URL read |
+| **calendar-operator** | Schedule reads/writes + approvals | `calendar_query`, `calendar_change` (`interrupt_on`) |
+| **file-scout** | Local disk hunt when the index misses | `files_find`, `files_read` (read-only; no `/` scans) |
 
-Toggle packs in `backend/mcp_servers.json` (`personal`, `filesystem`, `convert`). Filesystem and convert honor `agents.filesystem.enabled` and `search_paths` in config; default search root is the project home unless you widen roots in env/config.
+### Observability and durability
+
+- **`turn_logs`** — tier, evidence ids, verifier result, spend
+- **`BudgetGuard`** — records estimated USD spend (caps actually fire)
+- **Gateway** — keeps prompt **tail** (user question); higher synth output budget
+- **Checkpointer** — Postgres when `langgraph-checkpoint-postgres` is installed; else in-memory
+- **Eval seed** — `backend/eval/datasets/routing_smoke.jsonl` (expand with Phase 1 retrieval metrics)
+
+### Improvements shipped (summary)
+
+- Fix: invented-filename path has a code verifier, not prompt-only rules
+- Fix: `/project/AGENTS.md` no longer contaminates the assistant; `/project/` only if `MINDOS_PROJECT_ROOT` is set
+- Fix: memory ingest no longer stores 1000-char artifact slices as approved “user” memories
+- Speed: one retrieval pipeline per turn (vs sequential prefetch legs + duplicate embeds on the hot path as before)
+- UX: calendar/file destructive tools pause via `interrupt_on` when a durable checkpointer is available
+- Cost: smaller domain-scoped tool set; sync tools removed from the agent loop
 
 ---
 
@@ -184,6 +222,7 @@ backend/
 ├── app.py                      # create_app() — uvicorn backend.app:app
 ├── plugin.py                   # ServicePlugin
 ├── loader.py                   # load_services(), mount_routers()
+├── eval/                       # datasets + eval notes (routing smoke seed)
 ├── api/
 │   ├── health.py               # GET /health
 │   └── meta.py                 # GET /v1/meta
@@ -194,13 +233,16 @@ backend/
 │   ├── api/deps.py             # db_session, require_integrations, llm_gateway
 │   └── domain/                 # shared DTOs
 ├── services/
-│   ├── llm/                    # gateway, providers, budget · plugin.py
-│   ├── retrieval/              # search, embed · api/routes.py
-│   ├── commitments/            # rules, extract · api/routes.py
-│   ├── ingest/                 # manual ingest, chunker · api/routes.py
-│   ├── integrations/           # Google OAuth, Gmail sync · api/routes.py
-│   ├── graph/                  # stub plugin
-│   └── agents/                 # stub plugin
+│   ├── llm/                    # gateway, providers, budget
+│   ├── retrieval/              # hybrid, RRF pipeline, embed, search
+│   ├── context/                # ContextCompiler + versioned prompts
+│   ├── verification/           # deterministic grounding checks
+│   ├── commitments/            # rules, extract
+│   ├── ingest/                 # manual ingest, chunker
+│   ├── memories/               # rules, persist, post-turn extract
+│   ├── integrations/           # Google OAuth, Gmail, MCP tools
+│   ├── graph/                  # deep_agent, deep_session, subagents
+│   └── agents/                 # orchestrate, TurnPlan, converse, contracts
 └── worker/
     ├── consumer.py
     └── handlers/artifact_process.py
@@ -267,6 +309,12 @@ flowchart LR
 
 **`.env`** — `DATABASE_URL`, `MINDOS_*`, `GOOGLE_*`, OAuth vars. See QUICKSTART.
 
+| Env | Purpose |
+| --- | --- |
+| `MINDOS_PROJECT_ROOT` | Optional explicit `/project/` mount (never the repo cwd by default) |
+| `MINDOS_FS_ROOTS` | Allowed local filesystem roots for FS tools / file-scout |
+| `MINDOS_LLM_*` | Mode, model names, daily/monthly USD caps (spend is recorded) |
+
 Docker mounts host `./backend/config.json` over the packaged copy.
 
 ---
@@ -325,7 +373,7 @@ uv run alembic upgrade head
 
 ---
 
-## Phases (MVP)
+## Phases (MVP + turn stack)
 
 | Phase | Scope | Status |
 | --- | --- | --- |
@@ -334,6 +382,7 @@ uv run alembic upgrade head
 | 4 | Tensions | done |
 | 5 | Memories + integration hardening | done |
 | 6 | Hybrid search, `due_at`, agents/graph | done |
+| **Turn stack** | TurnPlan, RRF retrieval, ContextCompiler, verifier, memory plane, subagents (researcher / calendar-operator / file-scout), Postgres checkpointer | **default** (requires `alembic upgrade head`) |
 
-Pre-ship: **[SHIP_CHECKLIST.md](./SHIP_CHECKLIST.md)**. Tests: `tests/unit` + import sweep `tests/src/test_mirror.py`.
+Pre-ship: **[SHIP_CHECKLIST.md](./SHIP_CHECKLIST.md)**. Tests: `tests/unit` + import sweep `tests/src/test_mirror.py`. Overview: **[docs/PROJECT_OVERVIEW.md](./docs/PROJECT_OVERVIEW.md)**.
 

@@ -359,7 +359,12 @@ def _fmt_entry(path: Path) -> str:
     return f"{path.name}\t{mode}\t{st.st_size}"
 
 
-def build_filesystem_tools(*, on_partial: ChatStreamCallback | None = None, user_task: str = ""):
+def build_filesystem_tools(
+    *,
+    on_partial: ChatStreamCallback | None = None,
+    user_task: str = "",
+    scout_only: bool = False,
+):
     async def mindos_fs_roots() -> str:
         """List directory roots the agent may read or modify."""
         return f"Allowed filesystem roots:\n" + "\n".join(f"- {r}" for r in filesystem_roots())
@@ -558,6 +563,51 @@ def build_filesystem_tools(*, on_partial: ChatStreamCallback | None = None, user
             return text[:limit] + f"\n… [truncated at {limit} chars]"
         return text
 
+    async def files_find(
+        query: str,
+        root: str = "",
+        max_results: int = 12,
+        deep: bool = False,
+    ) -> str:
+        """Find local files by name under configured roots (file-scout primary tool).
+
+        Prefer an explicit root (~/Downloads, ~/Desktop, ~/Documents). Never use /.
+        Returns absolute paths; keep answers concise for the lead agent.
+        """
+        q = (query or "").strip()
+        if not q:
+            return (
+                "query required (filename stem or glob). "
+                "Example: query='invoice.pdf' root='~/Downloads'."
+            )
+        if root.strip() in {"/", "\\"}:
+            return (
+                "Refuse whole-disk scan. Pass root=~/Downloads|Desktop|Documents "
+                "or omit for home-scoped search."
+            )
+        result = await _run_find(q, root=root, max_results=max(1, min(max_results, 24)), deep=deep)
+        if result.startswith("No ") or result.startswith("pattern too"):
+            return (
+                f"{result}\n"
+                "Next: try another root, a shorter stem, or deep=True only if the user asked "
+                "for a wide scan."
+            )
+        # Annotate for subagent → lead handoff (one-line reasons).
+        lines = []
+        for line in result.splitlines():
+            p = line.strip()
+            if not p or p.startswith("…") or p.startswith("Pick"):
+                lines.append(p)
+                continue
+            reason = _path_reason(p)
+            lines.append(f"{p} — {reason}" if reason else p)
+        return "\n".join(lines)
+
+    async def files_read(path: str, max_chars: int = 8_000) -> str:
+        """Range-limited local file read for confirming a file-scout candidate."""
+        cap = max(500, min(int(max_chars), 24_000))
+        return await mindos_fs_read(path, max_chars=cap)
+
     async def mindos_fs_write(
         path: str,
         content: str,
@@ -633,7 +683,21 @@ def build_filesystem_tools(*, on_partial: ChatStreamCallback | None = None, user
             return f"Delete failed: {exc}"
         return f"Deleted {resolved}"
 
+    if scout_only:
+        return [
+            trace_tool(files_find),
+            trace_tool(files_read),
+            trace_tool(mindos_fs_roots),
+            trace_tool(mindos_fs_list),
+            trace_tool(mindos_fs_glob),
+            trace_tool(mindos_fs_grep),
+            trace_tool(mindos_fs_locate),
+            trace_tool(mindos_fs_find),
+            trace_tool(mindos_fs_read),
+        ]
     return [
+        trace_tool(files_find),
+        trace_tool(files_read),
         trace_tool(mindos_fs_roots),
         trace_tool(mindos_fs_list),
         trace_tool(mindos_fs_grep),
@@ -645,3 +709,19 @@ def build_filesystem_tools(*, on_partial: ChatStreamCallback | None = None, user
         trace_tool(mindos_fs_rename),
         trace_tool(mindos_fs_delete),
     ]
+
+
+def _path_reason(path_str: str) -> str:
+    """One-line mtime/size hint for file-scout handoff."""
+    try:
+        p = Path(path_str).expanduser()
+        if not p.is_file():
+            return "candidate"
+        st = p.stat()
+        from datetime import datetime, timezone
+
+        mtime = datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).strftime("%Y-%m-%d")
+        kb = max(1, st.st_size // 1024)
+        return f"{kb}KB, mtime {mtime}"
+    except OSError:
+        return "candidate"

@@ -126,9 +126,35 @@ class Memory(Base):
     source: Mapped[str] = mapped_column(Text, nullable=False)
     approved: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
     evidence: Mapped[list] = mapped_column(JSONB, nullable=False, server_default="[]")
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default="active")
+    origin: Mapped[str] = mapped_column(Text, nullable=False, server_default="user")
+    confidence: Mapped[float] = mapped_column(Float, nullable=False, server_default="0.5")
+    valid_from: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    valid_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    supersedes_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("memories.id", ondelete="SET NULL")
+    )
+    use_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(768))
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class SessionSummary(Base):
+    """Episodic summaries of past chat sessions."""
+
+    __tablename__ = "session_summaries"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    session_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("chat_sessions.id", ondelete="SET NULL")
+    )
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(768))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class Tension(Base):
@@ -179,6 +205,42 @@ class ChatMessage(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     session: Mapped[ChatSession] = relationship(back_populates="messages")
+
+
+class ChatSessionStateRow(Base):
+    """Structured rolling state for one chat session (context plane)."""
+
+    __tablename__ = "chat_session_state"
+
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("chat_sessions.id", ondelete="CASCADE"), primary_key=True
+    )
+    state: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default="{}")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class TurnLog(Base):
+    """Per-turn observability for routing, retrieval, and verification."""
+
+    __tablename__ = "turn_logs"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    session_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("chat_sessions.id", ondelete="SET NULL")
+    )
+    user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    tier: Mapped[int | None] = mapped_column(Integer)
+    mode: Mapped[str | None] = mapped_column(Text)
+    timings_ms: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default="{}")
+    token_counts: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default="{}")
+    evidence_eids: Mapped[list] = mapped_column(JSONB, nullable=False, server_default="[]")
+    rerank_margin: Mapped[float | None] = mapped_column(Float)
+    verifier_ok: Mapped[bool | None] = mapped_column(Boolean)
+    verifier_violations: Mapped[list] = mapped_column(JSONB, nullable=False, server_default="[]")
+    spend_usd: Mapped[float | None] = mapped_column(Float)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class OutboxEvent(Base):    
