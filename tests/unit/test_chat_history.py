@@ -1,9 +1,9 @@
-from backend.services.agents.core.converse.converse_synth import _format_history
+from backend.services.agents.core.routing.turn_prep import format_router_history
 from backend.services.agents.core.session.sessions import _title_from
 
 
 def test_format_history_roles() -> None:
-    text = _format_history(
+    text = format_router_history(
         [
             {"role": "user", "content": "hi"},
             {"role": "assistant", "content": "hello"},

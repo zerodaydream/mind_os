@@ -34,3 +34,44 @@ def test_latest_todos_from_tool_call() -> None:
         }
     ]
     assert _latest_todos(msgs) == [{"content": "x", "status": "pending"}]
+
+
+def test_latest_todos_ignores_prior_turn() -> None:
+    msgs = [
+        {
+            "tool_calls": [
+                {
+                    "name": "write_todos",
+                    "args": {
+                        "todos": [{"content": "old", "status": "completed"}],
+                    },
+                }
+            ]
+        },
+        {"type": "human", "content": "next question"},
+        {"type": "ai", "content": "checking"},
+    ]
+    assert _latest_todos(msgs) is None
+
+
+def test_latest_todos_current_turn_wins() -> None:
+    msgs = [
+        {
+            "tool_calls": [
+                {
+                    "name": "write_todos",
+                    "args": {"todos": [{"content": "old", "status": "completed"}]},
+                }
+            ]
+        },
+        {"type": "human", "content": "next"},
+        {
+            "tool_calls": [
+                {
+                    "name": "write_todos",
+                    "args": {"todos": [{"content": "new", "status": "pending"}]},
+                }
+            ]
+        },
+    ]
+    assert _latest_todos(msgs) == [{"content": "new", "status": "pending"}]

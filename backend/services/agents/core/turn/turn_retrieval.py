@@ -25,7 +25,11 @@ from backend.services.retrieval.core.mail_lookup import (
     lookup_indexed_mail,
 )
 from backend.services.agents.core.render.mail_display import format_mail_display_when
-from backend.services.agents.core.routing.turn_prep import TurnPrep
+from backend.services.agents.core.routing.turn_prep import (
+    TurnPrep,
+    is_short_confirm,
+    is_vague_thread_followup,
+)
 from backend.services.integrations.core.gmail.live_fetch import fetch_live_gmail_turn_rows
 from backend.services.retrieval.core.hybrid import hybrid_search_artifacts
 from backend.services.retrieval.core.search_memories import search_memories_ilike
@@ -249,14 +253,44 @@ def preloaded_mail_is_indexed(turn: TurnRetrieval) -> bool:
     return any((h.get("source") or "").lower() == "gmail" for h in turn.results)
 
 
+def _gmail_ctx_has_live_preview(gmail_ctx: list[dict]) -> bool:
+    """Live peek rows use message id as artifact_id and set external_id."""
+    for g in gmail_ctx:
+        ext = g.get("external_id")
+        aid = str(g.get("artifact_id") or "")
+        if ext and (aid == str(ext) or len(aid) < 36):
+            return True
+    return False
+
+
 def preloaded_mail_agent_hint(turn: TurnRetrieval) -> str:
     if not preloaded_mail_is_indexed(turn):
         return ""
-    return (
+    base = (
         "Indexed Gmail for this question is in Preloaded context below. "
         "Answer from that text and mindos_mail_lookup or mindos_search—do not "
         "mindos_gmail_sync or mindos_process_outbox unless lookup/search lack relevant hits."
     )
+    if _gmail_ctx_has_live_preview(turn.gmail_ctx):
+        return (
+            f"{base} Some rows are live Gmail preview only (may not be fully indexed yet)."
+        )
+    return base
+
+
+def turn_search_query(
+    message: str,
+    history: list[dict] | None,
+    prep: TurnPrep | None,
+) -> str:
+    """Build hybrid/mail search query; prepend prior topic only for vague follow-ups."""
+    base_q = (prep.search_query if prep else message).strip()
+    topic = _mail_followup_topic(message, history)
+    if not topic:
+        return base_q
+    if is_vague_thread_followup(message, history) or is_short_confirm(message):
+        return f"{topic} {base_q}".strip()
+    return base_q
 
 
 def preflight_prompt_block(actions: list[str]) -> str:
@@ -356,50 +390,73 @@ async def _approved_memories(session: AsyncSession, user_id) -> list[str]:
     return [f"[{k}] {c}" for k, c in rows.all() if c]
 
 
+def _gmail_row_block(g: dict) -> str:
+    title = g.get("title") or "(no subject)"
+    sender = g.get("from_addr") or "?"
+    recip = (g.get("to_addr") or "").strip()
+    direction = (g.get("direction") or "?").strip()
+    mail_at = format_mail_display_when(g.get("mail_at"))
+    header = (
+        f"- {title} | {direction} | {mail_at or '?'} | "
+        f"To: {recip or '?'} | From: {sender}"
+    )
+    body = (g.get("body") or g.get("preview") or "").strip()
+    block = header
+    drive_lines = _gmail_attachment_url_lines(g.get("metadata"))
+    if body:
+        prev = clip_text(body, PREFETCH_GMAIL_BODY)
+        block = f"{block}\n  {prev}"
+    block += "".join(f"\n{ln}" for ln in drive_lines)
+    return block
+
+
 def format_context_text(
     *,
     results: list[dict],
     commitments: list[str],
     memories: list[str],
     gmail_ctx: list[dict],
+    max_chars: int | None = None,
 ) -> str:
-    ctx_lines: list[str] = []
+    """Assemble preloaded context; when max_chars set, keep newest mail first within budget."""
+    budget = max_chars if max_chars is not None else PREFETCH_CONTEXT_MAX
+    parts: list[str] = []
+    used = 0
+
+    def _append(chunk: str) -> bool:
+        nonlocal used
+        if not chunk:
+            return True
+        add = len(chunk) + (1 if parts else 0)
+        if used + add > budget and parts:
+            return False
+        parts.append(chunk)
+        used += add
+        return True
+
     if memories:
-        ctx_lines.append("Approved memories:")
-        ctx_lines.extend(f"- {s}" for s in memories)
+        block = "Approved memories:\n" + "\n".join(f"- {s}" for s in memories)
+        _append(block)
     if gmail_ctx:
-        ctx_lines.append(f"Gmail messages ({len(gmail_ctx)}, newest first):")
+        header = f"Gmail messages ({len(gmail_ctx)}, newest first):"
+        if not _append(header):
+            return "\n".join(parts) if parts else "(no retrieval hits)"
         for g in gmail_ctx:
-            title = g.get("title") or "(no subject)"
-            sender = g.get("from_addr") or "?"
-            recip = (g.get("to_addr") or "").strip()
-            direction = (g.get("direction") or "?").strip()
-            mail_at = format_mail_display_when(g.get("mail_at"))
-            header = (
-                f"- {title} | {direction} | {mail_at or '?'} | "
-                f"To: {recip or '?'} | From: {sender}"
-            )
-            body = (g.get("body") or g.get("preview") or "").strip()
-            block = header
-            drive_lines = _gmail_attachment_url_lines(g.get("metadata"))
-            if body:
-                prev = clip_text(body, PREFETCH_GMAIL_BODY)
-                block = f"{block}\n  {prev}"
-            block += "".join(f"\n{ln}" for ln in drive_lines)
-            ctx_lines.append(block)
+            if not _append(_gmail_row_block(g)):
+                break
     if commitments:
-        ctx_lines.append("Open commitments:")
-        ctx_lines.extend(f"- {s}" for s in commitments)
+        block = "Open commitments:\n" + "\n".join(f"- {s}" for s in commitments)
+        _append(block)
     if results:
-        ctx_lines.append("Search hits:")
+        if not _append("Search hits:"):
+            return "\n".join(parts) if parts else "(no retrieval hits)"
         for h in results[:PREFETCH_CTX_ARTIFACTS]:
             head = f"- [{h.get('source')}] {h.get('title') or h['artifact_id']}"
             snip = (h.get("snippet") or "").strip().replace("\n", " ")
-            if snip:
-                ctx_lines.append(f"{head}\n  {clip_text(snip, PREFETCH_MAIL_PREVIEW)}")
-            else:
-                ctx_lines.append(head)
-    return "\n".join(ctx_lines) if ctx_lines else "(no retrieval hits)"
+            row = f"{head}\n  {clip_text(snip, PREFETCH_MAIL_PREVIEW)}" if snip else head
+            if not _append(row):
+                break
+    return "\n".join(parts) if parts else "(no retrieval hits)"
 
 
 async def prefetch_turn_retrieval(
@@ -416,6 +473,7 @@ async def prefetch_turn_retrieval(
     message = message.strip()
     if prep is not None and prep.skip_retrieval:
         return TurnRetrieval(message=message, has_context=False)
+    actions: list[str] = []
     mail_flag = prep.prefetch_mail if prep else None
     commit_flag = prep.prefetch_commitments if prep else None
     mem_flag = prep.prefetch_memories if prep else None
@@ -423,8 +481,7 @@ async def prefetch_turn_retrieval(
     if looks_like_named_attachment(message):
         wants_mail = True
     topic = _mail_followup_topic(message, history)
-    base_q = (prep.search_query if prep else message).strip()
-    search_query = f"{topic} {base_q}".strip() if topic else base_q
+    search_query = turn_search_query(message, history, prep)
     hybrid_hits = await hybrid_search_artifacts(
         session,
         user_id=user.id,
@@ -434,6 +491,8 @@ async def prefetch_turn_retrieval(
         source=source,
     )
     results = list(hybrid_hits)
+    if hybrid_hits:
+        actions.append(f"Indexed search: {len(hybrid_hits)} hit(s) for query")
     load_commitments = wants_commitment_context(message, prefetch_commitments=commit_flag)
     commitments = (
         await _open_commitment_summaries(session, user.id) if load_commitments else []
@@ -465,12 +524,14 @@ async def prefetch_turn_retrieval(
     gmail_ids = [
         h["artifact_id"] for h in results if (h.get("source") or "").lower() == "gmail"
     ]
+    live_gmail_count = 0
     if wants_mail:
         mail_limit = min(10, PREFETCH_GMAIL_ROWS)
         gmail_ctx = await lookup_indexed_mail(
             session, user.id, settings, search_query, limit=mail_limit
         )
         if recipient:
+            before = len(gmail_ctx)
             low = recipient.lower()
             gmail_ctx = [
                 g
@@ -479,6 +540,8 @@ async def prefetch_turn_retrieval(
                 or low in (g.get("title") or "").lower()
                 or low in (g.get("body") or "").lower()
             ]
+            if before and len(gmail_ctx) < before:
+                actions.append(f"Filtered mail to recipient: {recipient}")
         if not gmail_ctx and recipient:
             bare = await _ingested_gmail(
                 session, user.id, to_needle=recipient, sent_only=True, limit=40
@@ -549,6 +612,17 @@ async def prefetch_turn_retrieval(
                     if key not in seen:
                         gmail_ctx.append(row)
                         seen.add(key)
+                        live_gmail_count += 1
+        if gmail_ctx and live_gmail_count == 0:
+            actions.append(f"Prefetched {len(gmail_ctx)} indexed Gmail message(s)")
+        elif live_gmail_count:
+            actions.append(
+                f"Live Gmail preview: {live_gmail_count} message(s) "
+                "(may not be indexed yet; do not call sync unless lookup still misses)"
+            )
+            indexed_n = len(gmail_ctx) - live_gmail_count
+            if indexed_n > 0:
+                actions.append(f"Prefetched {indexed_n} indexed Gmail message(s)")
     else:
         gmail_ctx = []
 
@@ -573,14 +647,12 @@ async def prefetch_turn_retrieval(
         for h in results[:10]
     ]
 
-    context_text = clip_text(
-        format_context_text(
-            results=results,
-            commitments=commitments,
-            memories=memories,
-            gmail_ctx=gmail_ctx,
-        ),
-        PREFETCH_CONTEXT_MAX,
+    context_text = format_context_text(
+        results=results,
+        commitments=commitments,
+        memories=memories,
+        gmail_ctx=gmail_ctx,
+        max_chars=PREFETCH_CONTEXT_MAX,
     )
     has = bool(results or commitments or gmail_ctx or memories)
     return TurnRetrieval(
@@ -593,6 +665,7 @@ async def prefetch_turn_retrieval(
         context_text=context_text,
         has_context=has,
         hybrid_hit_count=len(hybrid_hits),
+        preflight_actions=actions[:4],
     )
 
 

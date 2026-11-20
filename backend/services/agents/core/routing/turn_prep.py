@@ -2,24 +2,26 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
+from typing import Literal
 
 from backend.common.utils.enums import LlmMode, LlmTask
 from backend.services.agents.core.render.prompt_budget import (
     CHAT_HISTORY_MSG_CHARS,
     CHAT_HISTORY_TURNS,
+    ROUTER_HISTORY_TURNS,
     ROUTER_LLM_MAX_CHARS,
     ROUTER_MAX_OUTPUT_TOKENS,
     clip_text,
 )
-from typing import Literal
-
 from backend.services.agents.core.routing.router import (
     Intent,
-    looks_like_thread_continuation,
     thread_pending_execute,
 )
+
+logger = logging.getLogger(__name__)
 
 ScopeBlock = Literal["sorry", "clarify"]
 
@@ -34,6 +36,21 @@ _WORKSPACE_HINT = re.compile(
     r"sync|outbox|owe|owing|owes|delete|schedule)\b",
     re.I,
 )
+_VAGUE_ANAPHORA = re.compile(
+    r"\b(that|this|those|it|them|more|details?|link|above)\b",
+    re.I,
+)
+_EXECUTE_VERBS = re.compile(
+    r"\b(calendar|schedule|create|delete|rename|sync)\b",
+    re.I,
+)
+_SHORT_CONFIRM = frozenset(
+    {"yes", "y", "ok", "okay", "sure", "done", "go ahead", "do it", "please do"}
+)
+
+
+def is_short_confirm(message: str) -> bool:
+    return (message or "").strip().lower() in _SHORT_CONFIRM
 
 
 @dataclass(frozen=True)
@@ -50,9 +67,9 @@ class TurnPrep:
 
     @property
     def skip_retrieval(self) -> bool:
-        return self.in_scope and not (
+        return self.in_scope and self.intent == "converse" and not (
             self.prefetch_mail or self.prefetch_commitments or self.prefetch_memories
-        ) and self.intent == "converse"
+        )
 
     def blocks_chat_turn(self) -> bool:
         """Stop before the agent only on trivia sorry or an explicit CLARIFY line."""
@@ -91,11 +108,11 @@ def _parse_yes_no(line: str) -> bool | None:
     return None
 
 
-def _parse_prefetch(text: str) -> tuple[bool, bool, bool]:
-    mail = commitments = memories = False
+def _parse_prefetch(text: str) -> tuple[bool, bool, bool] | None:
+    """None when PREFETCH line is absent; otherwise the three flags."""
     upper = (text or "").upper()
     if "PREFETCH:" not in upper:
-        return mail, commitments, memories
+        return None
     for line in (text or "").splitlines():
         if not line.strip().upper().startswith("PREFETCH:"):
             continue
@@ -106,8 +123,8 @@ def _parse_prefetch(text: str) -> tuple[bool, bool, bool]:
         mail = "mail" in parts or "gmail" in parts
         commitments = "commitments" in parts or "commitment" in parts
         memories = "memories" in parts or "memory" in parts
-        break
-    return mail, commitments, memories
+        return mail, commitments, memories
+    return None
 
 
 def _parse_clarify_reply(text: str) -> str:
@@ -130,14 +147,13 @@ def _parse_scope_block(text: str) -> ScopeBlock:
 
 
 def _parse_intent_line(text: str) -> Intent | None:
-    line = (text or "").strip().lower()
     for row in (text or "").splitlines():
-        if row.strip().upper().startswith("INTENT:"):
-            line = row.split(":", 1)[1].strip().lower()
-            break
-    for candidate in ("execute", "plan", "converse"):
-        if candidate in line:
-            return candidate  # type: ignore[return-value]
+        if not row.strip().upper().startswith("INTENT:"):
+            continue
+        token = row.split(":", 1)[1].strip().lower().split(None, 1)[0] if ":" in row else ""
+        if token in ("converse", "plan", "execute"):
+            return token  # type: ignore[return-value]
+        return None
     return None
 
 
@@ -166,20 +182,27 @@ def parse_turn_prep(text: str, *, message: str, history: list[dict] | None) -> T
             if line.strip().upper().startswith("SEARCH:"):
                 search = line.split(":", 1)[1].strip() or task
                 break
-    mail, commitments, memories = _parse_prefetch(text)
-    if not mail and not commitments and not memories and in_scope:
-        if intent in ("plan", "execute"):
+    parsed_prefetch = _parse_prefetch(text)
+    if parsed_prefetch is None:
+        if intent == "converse":
+            mail = commitments = memories = False
+        elif in_scope and intent in ("plan", "execute"):
             memories = True
             mail = bool(_WORKSPACE_HINT.search(task))
-        elif _WORKSPACE_HINT.search(task):
-            mail = "mail" in task.lower() or "gmail" in task.lower()
-    if (
-        history
-        and looks_like_thread_continuation(message)
-        and thread_pending_execute(history)
-    ):
-        in_scope = True
-    if history and is_vague_thread_followup(message, history):
+            commitments = False
+        else:
+            mail = commitments = memories = False
+            if in_scope and _WORKSPACE_HINT.search(task):
+                mail = "mail" in task.lower() or "gmail" in task.lower()
+    else:
+        mail, commitments, memories = parsed_prefetch
+        if not mail and not commitments and not memories and in_scope:
+            if intent in ("plan", "execute"):
+                memories = True
+                mail = bool(_WORKSPACE_HINT.search(task))
+            elif intent != "converse" and _WORKSPACE_HINT.search(task):
+                mail = "mail" in task.lower() or "gmail" in task.lower()
+    if history and is_short_confirm(message) and thread_pending_execute(history):
         in_scope = True
     scope_block = _parse_scope_block(text) if not in_scope else "clarify"
     clarify_reply = _parse_clarify_reply(text) if not in_scope else ""
@@ -233,14 +256,33 @@ def fast_path_turn_prep(message: str) -> TurnPrep | None:
 
 
 def is_vague_thread_followup(message: str, history: list[dict] | None) -> bool:
-    """Short user line after at least one assistant reply — may need retrieval to recover scope."""
+    """Short anaphoric / continuation line after an assistant reply — may need retrieval."""
     msg = (message or "").strip()
     if not history or len(msg) > 100:
         return False
     saw_assistant = any(
         (h.get("role") or "") == "assistant" for h in (history or [])[-8:]
     )
-    return saw_assistant
+    if not saw_assistant:
+        return False
+    # Do not use looks_like_thread_continuation (any ≤32 chars) — that catches trivia.
+    if is_short_confirm(msg):
+        return True
+    if _VAGUE_ANAPHORA.search(msg):
+        return True
+    # Pure stubs ("hmm", "ok?") — not multi-word trivia questions.
+    if (
+        len(msg) <= 32
+        and len(msg.split()) <= 2
+        and not _WORKSPACE_HINT.search(msg)
+        and not _HTTP_URL.search(msg)
+    ):
+        return True
+    return False
+
+
+def has_execute_verbs(text: str) -> bool:
+    return bool(_EXECUTE_VERBS.search(text or ""))
 
 
 def fallback_turn_prep(message: str, history: list[dict] | None) -> TurnPrep:
@@ -250,13 +292,11 @@ def fallback_turn_prep(message: str, history: list[dict] | None) -> TurnPrep:
     if fast is not None:
         return fast
     in_scope = bool(_WORKSPACE_HINT.search(msg) or _HTTP_URL.search(msg))
-    if history and looks_like_thread_continuation(msg) and thread_pending_execute(history):
-        in_scope = True
-    if history and is_vague_thread_followup(msg, history):
+    if history and is_short_confirm(msg) and thread_pending_execute(history):
         in_scope = True
     mail = bool(_WORKSPACE_HINT.search(msg) and re.search(r"\b(mail|gmail|inbox)\b", msg, re.I))
     commitments = bool(re.search(r"\b(commit|todo|deadline|promise)\b", msg, re.I))
-    intent: Intent = "execute" if re.search(r"\b(calendar|schedule|create|delete|rename)\b", msg, re.I) else "plan"
+    intent: Intent = "execute" if has_execute_verbs(msg) else "plan"
     return TurnPrep(
         in_scope=in_scope,
         intent=intent,
@@ -276,7 +316,7 @@ async def prepare_turn(gateway, message: str, history: list[dict] | None) -> Tur
         return fast
     if gateway is None or gateway.mode == LlmMode.DEGRADED:
         return fallback_turn_prep(msg, history)
-    hist = format_router_history(history)
+    hist = format_router_history(history, max_turns=ROUTER_HISTORY_TURNS)
     parts = [
         "You route user turns for MindOS (personal mail, calendar, files, indexed notes only).",
         "General knowledge unrelated to the user's mail/calendar/files: SCOPE: no and BLOCK: sorry.",
@@ -310,5 +350,5 @@ async def prepare_turn(gateway, message: str, history: list[dict] | None) -> Tur
         if parsed is not None:
             return parsed
     except Exception:
-        pass
+        logger.warning("router_turn_prep_failed", exc_info=True)
     return fallback_turn_prep(msg, history)

@@ -11,12 +11,25 @@ from collections.abc import Callable
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.services.agents.core.converse.converse_synth import run_converse_turn
-from backend.services.agents.core.routing.router import url_from_thread
+from backend.services.agents.core.routing.router import (
+    thread_pending_execute,
+    url_from_thread,
+)
 from dataclasses import replace
 
 from backend.services.agents.core.routing.turn_prep import (
+    TurnPrep,
+    has_execute_verbs,
+    is_short_confirm,
     is_vague_thread_followup,
     prepare_turn,
+)
+from backend.services.agents.core.turn.turn_retrieval import (
+    TurnRetrieval,
+    looks_like_named_attachment,
+    prefetch_turn_retrieval,
+    scope_block_reply,
+    turn_in_scope,
 )
 from backend.services.agents.core.session.sessions import (
     append_message,
@@ -31,13 +44,30 @@ from backend.services.agents.core.session.title import (
 )
 from backend.services.agents.core.render.chat_stream import emit_chat_stream_reveal
 from backend.services.agents.core.render.prompt_budget import CHAT_HISTORY_TURNS
-from backend.services.agents.core.turn.turn_retrieval import (
-    prefetch_turn_retrieval,
-    scope_block_reply,
-    turn_in_scope,
-)
 from backend.common.langsmith_setup import begin_turn_trace, flush_traces, tracing_active, unique_run_name
 from backend.services.graph.core.deep_agent import run_deep_agent
+
+
+def needs_deep_agent(
+    prep: TurnPrep,
+    task: str,
+    history: list[dict] | None,
+    turn_retrieval: TurnRetrieval | None = None,
+) -> bool:
+    """True when calendar/fs/tools or a pending execute thread need the deep agent."""
+    if prep.intent == "execute":
+        return True
+    if (task or "").strip().startswith("/"):
+        return True
+    if is_short_confirm(task) and thread_pending_execute(history):
+        return True
+    if has_execute_verbs(task):
+        return True
+    if looks_like_named_attachment(task) and (
+        turn_retrieval is None or not turn_retrieval.has_context
+    ):
+        return True
+    return False
 
 
 async def _finish_out_of_scope(
@@ -254,62 +284,82 @@ async def _handle_turn_body(
             on_partial=on_partial,
         )
 
-    try:
-        out = await run_deep_agent(
+    use_deep = needs_deep_agent(prep, body, history, turn_retrieval)
+    if not use_deep:
+        out = await run_converse_turn(
             session,
             user,
             settings,
             gateway,
             body,
-            intent=intent,
-            thread_id=chat.thread_id,
-            turn_retrieval=turn_retrieval,
+            source=source,
             history=history,
-            on_partial=on_partial,
-            client_tz=client_tz,
-        )
-    except asyncio.CancelledError:
-        if title_task is not None:
-            title_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await title_task
-        return {
-            "message": user_line,
-            "answer": "",
-            "sources": [],
-            "mode": "cancelled",
-            "intent": intent,
-            "session_id": str(chat.id),
-            "thread_id": str(chat.thread_id),
-            "title": display_session_title(chat.title),
-        }
-    except OSError as exc:
-        out, mode = await _synth_plan(
-            session, user, settings, gateway, body,
-            source=source, history=history, turn_retrieval=turn_retrieval,
+            turn_retrieval=turn_retrieval,
             prep=prep,
+            plan_style=(prep.intent == "plan"),
             on_partial=on_partial,
         )
+        mode = "plan_synth" if prep.intent == "plan" else (out.get("mode") or "converse")
         answer = out.get("answer") or ""
-        if answer:
-            answer = f"{answer}\n\n_(deep agent offline: {exc})_"
         raw_sources = out.get("sources")
         sources = list(raw_sources) if raw_sources is not None else []
     else:
-        mode = out.get("mode") or "deep_agent"
-        if (
-            mode == "deep_unavailable"
-            and (turn_retrieval.has_context or gateway is not None)
-        ):
+        try:
+            out = await run_deep_agent(
+                session,
+                user,
+                settings,
+                gateway,
+                body,
+                intent=intent,
+                thread_id=chat.thread_id,
+                turn_retrieval=turn_retrieval,
+                history=history,
+                on_partial=on_partial,
+                client_tz=client_tz,
+            )
+        except asyncio.CancelledError:
+            if title_task is not None:
+                title_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await title_task
+            return {
+                "message": user_line,
+                "answer": "",
+                "sources": [],
+                "mode": "cancelled",
+                "intent": intent,
+                "session_id": str(chat.id),
+                "thread_id": str(chat.thread_id),
+                "title": display_session_title(chat.title),
+            }
+        except OSError as exc:
             out, mode = await _synth_plan(
                 session, user, settings, gateway, body,
                 source=source, history=history, turn_retrieval=turn_retrieval,
                 prep=prep,
                 on_partial=on_partial,
             )
-        answer = out.get("answer") or ""
-        raw_sources = out.get("sources")
-        sources = list(raw_sources) if raw_sources is not None else []
+            answer = out.get("answer") or ""
+            if answer:
+                answer = f"{answer}\n\n_(deep agent offline: {exc})_"
+            raw_sources = out.get("sources")
+            sources = list(raw_sources) if raw_sources is not None else []
+        else:
+            mode = out.get("mode") or "deep_agent"
+            if (
+                mode == "deep_unavailable"
+                and (turn_retrieval.has_context or gateway is not None)
+            ):
+                out, mode = await _synth_plan(
+                    session, user, settings, gateway, body,
+                    source=source, history=history, turn_retrieval=turn_retrieval,
+                    prep=prep,
+                    on_partial=on_partial,
+                )
+            answer = out.get("answer") or ""
+            raw_sources = out.get("sources")
+            sources = list(raw_sources) if raw_sources is not None else []
 
     if title_task is not None:
         try:

@@ -90,3 +90,76 @@ async def test_hybrid_non_gmail_hits_still_load_gmail_ctx(monkeypatch):
     )
     assert ctx.gmail_ctx
     assert "deck.pdf" in ctx.context_text
+    assert any("Prefetched" in a or "Indexed search" in a for a in ctx.preflight_actions)
+
+
+@pytest.mark.asyncio
+async def test_live_gmail_preflight_and_hint(monkeypatch):
+    from backend.services.agents.core.turn.turn_retrieval import preloaded_mail_agent_hint
+
+    user = MagicMock(id=uuid.uuid4())
+    settings = MagicMock()
+
+    async def fake_hybrid(*_a, **_k):
+        return []
+
+    async def fake_lookup(*_a, **_k):
+        return []
+
+    async def fake_live(*_a, **_k):
+        return [
+            {
+                "artifact_id": "msg123",
+                "external_id": "msg123",
+                "title": "Propico",
+                "from_addr": "a@b.co",
+                "to_addr": "",
+                "direction": "received",
+                "mail_at": "",
+                "body": "see deck",
+                "preview": "see deck",
+                "metadata": {},
+            }
+        ]
+
+    monkeypatch.setattr(
+        "backend.services.agents.core.turn.turn_retrieval.hybrid_search_artifacts",
+        fake_hybrid,
+    )
+    monkeypatch.setattr(
+        "backend.services.agents.core.turn.turn_retrieval.lookup_indexed_mail",
+        fake_lookup,
+    )
+    monkeypatch.setattr(
+        "backend.services.agents.core.turn.turn_retrieval.fetch_live_gmail_turn_rows",
+        fake_live,
+    )
+    monkeypatch.setattr(
+        "backend.services.agents.core.turn.turn_retrieval._open_commitment_summaries",
+        AsyncMock(return_value=[]),
+    )
+    monkeypatch.setattr(
+        "backend.services.agents.core.turn.turn_retrieval.search_memories_ilike",
+        AsyncMock(return_value=[]),
+    )
+    monkeypatch.setattr(
+        "backend.services.agents.core.turn.turn_retrieval._ingested_gmail",
+        AsyncMock(return_value=[]),
+    )
+    session = AsyncMock()
+    ctx = await prefetch_turn_retrieval(
+        session,
+        user,
+        settings,
+        "deck.pdf from Propico mail",
+        prep=MagicMock(
+            skip_retrieval=False,
+            prefetch_mail=True,
+            prefetch_commitments=False,
+            prefetch_memories=False,
+            search_query="deck.pdf Propico",
+        ),
+    )
+    assert ctx.gmail_ctx
+    assert any("Live Gmail preview" in a for a in ctx.preflight_actions)
+    assert "live" in preloaded_mail_agent_hint(ctx).lower()

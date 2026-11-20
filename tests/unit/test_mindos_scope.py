@@ -124,3 +124,39 @@ def test_preloaded_mail_hint_absent_without_mail() -> None:
     ctx = TurnRetrieval(message="hello", results=[{"source": "manual", "artifact_id": "1"}])
     assert not preloaded_mail_is_indexed(ctx)
     assert preloaded_mail_agent_hint(ctx) == ""
+
+
+def test_trivia_after_assistant_stays_out_of_scope_without_hits() -> None:
+    hist = [
+        {"role": "user", "content": "show gmail from alex"},
+        {"role": "assistant", "content": "Here are 3 threads."},
+    ]
+    raw = (
+        "SCOPE: no\nBLOCK: sorry\nINTENT: converse\n"
+        "TASK: capital of France?\nSEARCH: capital France"
+    )
+    prep = parse_turn_prep(raw, message="capital of France?", history=hist)
+    assert prep is not None
+    assert prep.in_scope is False
+    assert turn_in_scope(prep, "capital of France?", history=hist) is False
+
+
+def test_vague_more_with_hits_widens_scope() -> None:
+    from backend.services.agents.core.routing.turn_prep import is_vague_thread_followup
+
+    hist = [
+        {"role": "user", "content": "show gmail from alex"},
+        {"role": "assistant", "content": "Found 3 messages."},
+    ]
+    assert is_vague_thread_followup("tell me more", hist) is True
+    prep = TurnPrep(
+        in_scope=False,
+        intent="converse",
+        task="tell me more",
+        search_query="tell me more",
+        prefetch_mail=False,
+        prefetch_commitments=False,
+        prefetch_memories=False,
+    )
+    ctx = TurnRetrieval(message="x", has_context=True)
+    assert turn_in_scope(prep, "tell me more", history=hist, turn_retrieval=ctx) is True

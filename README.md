@@ -17,6 +17,7 @@
 <br/>
 
 [Architecture](#architecture) ·
+[Agent turn flow](#agent-turn-flow) ·
 [Layout](#repository-layout) ·
 [Lifecycle](#lifecycle) ·
 [Config](#config) ·
@@ -84,6 +85,85 @@ flowchart TB
 2. `common/` does not import `services/` (except via FastAPI deps at request time).
 3. Core pipeline routes (**ingest**, **search**, **commitments**) stay mounted so the MVP works without flipping every flag.
 4. Secrets and LLM keys come from **`.env`**; feature flags from **`config.json`**.
+
+---
+
+## Agent turn flow
+
+Every chat turn (TUI `mindos chat`, `POST /v1/chat`, or `POST /v1/agents/run`) goes through **`handle_turn`** in `services/agents/core/turn/orchestrate.py`. Sessions and messages live in Postgres; the worker path (ingest → outbox → embed) feeds retrieval the agent reads on later turns.
+
+```mermaid
+flowchart TB
+    in["CLI or HTTP<br/>handle_turn"]:::in
+    sess["Session + history<br/>sessions.py"]:::core
+    prep["prepare_turn<br/>fast path · LLM router · fallback"]:::route
+    gate{"In scope?<br/>blocks_chat_turn"}:::dec
+    oos["clarify / sorry<br/>no LLM agent"]:::end
+    ret["prefetch_turn_retrieval<br/>search · mail · commitments · memories"]:::ret
+    deep{"needs_deep_agent?<br/>execute · /do · confirms · tools"}:::dec
+    synth["run_converse_turn<br/>converse or plan_synth"]:::synth
+    da["run_deep_agent<br/>deepagents + integrations"]:::deep
+    fb["synth fallback<br/>if deep offline"]:::synth
+    out["append assistant message<br/>mode + sources"]:::end
+
+    in --> sess --> prep --> gate
+    gate -->|no| oos
+    gate -->|yes| ret --> deep
+    deep -->|no| synth --> out
+    deep -->|yes| da
+    da -->|error / unavailable| fb --> out
+    da -->|ok| out
+    oos --> out
+
+    classDef in fill:#6366F1,color:#fff
+    classDef core fill:#E0E7FF,color:#1E1B4B
+    classDef route fill:#A78BFA,color:#fff
+    classDef dec fill:#FDE68A,color:#78350F
+    classDef ret fill:#10B981,color:#fff
+    classDef synth fill:#38BDF8,color:#1E3A8A
+    classDef deep fill:#F97316,color:#fff
+    classDef end fill:#94A3B8,color:#fff
+```
+
+| Step | Code | What it decides |
+| --- | --- | --- |
+| **Turn prep** | `routing/turn_prep.py` | One router LLM call (or regex fast-path): workspace **scope**, **intent** (`converse` \| `plan` \| `execute`), rewritten **task**, **search** line, and **prefetch** flags (mail / commitments / memories). |
+| **Retrieval bundle** | `turn/turn_retrieval.py` | Hybrid artifact search, optional live Gmail rows, commitments, memories—shared context for both downstream paths. |
+| **Converse synth** | `converse/converse_synth.py` | Streamed answer over prefetched context only; no calendar/file mutations. Modes `converse` or `plan_synth`. |
+| **Deep agent** | `graph/core/deep_agent.py` | Tool loop (calendar, Gmail, files, etc.) when intent is execute, message starts with `/`, user confirms a pending action, or named attachments need fetch. Requires `agents` + `graph` + `llm` in `config.json` and `deepagents` extra. |
+| **Persistence** | `session/sessions.py` | User + assistant rows per turn; optional async session title on first message. |
+
+**Gates:** `config.json` must enable `agents`, `retrieval`, and `llm` for chat; deep execution additionally needs `graph` and installed agent extras (`uv sync --extra agents`).
+
+### Tools (deep agent only)
+
+**Converse / plan synth** has no callable tools—only the prefetched context from `turn_retrieval` and the LLM.
+
+**Deep agent** loads LangChain tools from `backend/mcp_servers.json` via `integrations/mcp/registry.py` (`load_mcp_for_agent`). Built-in packs are in-process; stdio MCP servers in the JSON are listed for guidance but are **not** mounted on the agent loop (URL fetch is loaded on demand inside `mindos_summarize_url`). The `deepagents` runtime also exposes **`write_todos`** for multi-step plans.
+
+| Pack | Tool | Purpose |
+| --- | --- | --- |
+| **personal** | `mindos_search` | Hybrid keyword + vector search over indexed Gmail and manual notes |
+| | `mindos_mail_lookup` | Ranked indexed Gmail hits with body and Drive attachment lines |
+| | `mindos_gmail_sync` | Pull new Gmail into the vault (`integrations` + OAuth) |
+| | `mindos_process_outbox` | Drain ingest/embed worker after sync |
+| | `mindos_commitments` | List open commitments from Postgres |
+| | `mindos_summarize_url` | Fetch and summarize a public URL/PDF (on-demand web fetch) |
+| | `mindos_google_integration_status` | Gmail/Calendar OAuth and connection state |
+| | `mindos_calendar_list_upcoming` | Upcoming events |
+| | `mindos_calendar_free_busy` | Free/busy windows |
+| | `mindos_calendar_list_calendars` | Calendar list |
+| | `mindos_calendar_create_event` | Create event |
+| | `mindos_calendar_update_event` | Update event |
+| | `mindos_calendar_delete_event` | Delete one or more events |
+| **filesystem** | `mindos_fs_roots` | Allowed search roots (`agents.filesystem` in config) |
+| | `mindos_fs_list` / `mindos_fs_read` | List and read under an allowed root |
+| | `mindos_fs_glob` / `mindos_fs_grep` / `mindos_fs_find` / `mindos_fs_locate` | Search by name, content, or fuzzy locate |
+| | `mindos_fs_write` / `mindos_fs_rename` / `mindos_fs_delete` | Mutations (destructive ops need confirmation in tool args) |
+| **convert** | `mindos_convert_capabilities` | Supported local conversions |
+| | `mindos_convert_file` / `mindos_convert_batch` | Single or batch format conversion on disk |
+
+Toggle packs in `backend/mcp_servers.json` (`personal`, `filesystem`, `convert`). Filesystem and convert honor `agents.filesystem.enabled` and `search_paths` in config; default search root is the project home unless you widen roots in env/config.
 
 ---
 

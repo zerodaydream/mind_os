@@ -282,8 +282,8 @@ async def run_deep_agent(
             "If it is unclear whether files are in indexed mail/Drive or on local disk, ask one short "
             "question (mail/indexed vs local workspace) and do not call tools until they answer—"
             "unless Preloaded context already shows Drive · or mail hits for those names. "
-            "mindos_mail_lookup first (then mindos_summarize_url on Drive URLs); never mindos_fs_* for those. "
-            "mindos_search first (then mindos_summarize_url on Drive URLs); never mindos_fs_* for those. "
+            "Indexed/mail/Drive: mindos_mail_lookup then mindos_search then mindos_summarize_url on Drive "
+            "URLs—never mindos_fs_* for those. "
             "Filesystem (local): iterate mindos_fs_list, mindos_fs_glob, mindos_fs_grep with explicit "
             "folders (e.g. ~/Downloads); multiple narrow searches beat one wide scan. "
             "mindos_fs_read after you have a path. "
@@ -579,10 +579,37 @@ def _tool_call_args(tc) -> dict:
     return raw if isinstance(raw, dict) else {}
 
 
+def _is_human_message(msg) -> bool:
+    """True when the message is from the user/human role."""
+    kind = getattr(msg, "type", None)
+    if kind in ("human", "user"):
+        return True
+    if isinstance(msg, dict) and msg.get("type") in ("human", "user"):
+        return True
+    role = getattr(msg, "role", None)
+    if role in ("human", "user"):
+        return True
+    if isinstance(msg, dict) and msg.get("role") in ("human", "user"):
+        return True
+    return type(msg).__name__ == "HumanMessage"
+
+
+def _messages_after_last_human(msgs) -> list:
+    """LangGraph messages after the latest human input (this turn only)."""
+    if not msgs:
+        return []
+    start = 0
+    for i in range(len(msgs) - 1, -1, -1):
+        if _is_human_message(msgs[i]):
+            start = i + 1
+            break
+    return list(msgs[start:])
+
+
 def _latest_todos(msgs) -> list[dict] | None:
-    """Read the newest todo list from agent message state."""
+    """Read the newest todo list from the current turn's agent state."""
     latest: list[dict] | None = None
-    for m in msgs or []:
+    for m in _messages_after_last_human(msgs):
         tool_calls = getattr(m, "tool_calls", None)
         if tool_calls is None and isinstance(m, dict):
             tool_calls = m.get("tool_calls")
@@ -894,21 +921,6 @@ def _message_stream_piece(msg) -> tuple[str, str] | None:
             return "answer", text
     text = _message_text(msg).strip()
     return ("answer", text) if text else None
-
-
-def _is_human_message(msg) -> bool:
-    """True when the message is from the user/human role."""
-    kind = getattr(msg, "type", None)
-    if kind in ("human", "user"):
-        return True
-    if isinstance(msg, dict) and msg.get("type") in ("human", "user"):
-        return True
-    role = getattr(msg, "role", None)
-    if role in ("human", "user"):
-        return True
-    if isinstance(msg, dict) and msg.get("role") in ("human", "user"):
-        return True
-    return type(msg).__name__ == "HumanMessage"
 
 
 def _is_tool_message(msg) -> bool:

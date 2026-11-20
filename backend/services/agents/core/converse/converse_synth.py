@@ -5,16 +5,12 @@ from collections.abc import Callable
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.common.utils.enums import LlmMode, LlmTask
-from backend.services.agents.core.render.prompt_budget import (
-    CHAT_HISTORY_MSG_CHARS,
-    CHAT_HISTORY_TURNS,
-    SYNTH_MAX_OUTPUT_TOKENS,
-    clip_text,
-)
+from backend.services.agents.core.render.prompt_budget import SYNTH_MAX_OUTPUT_TOKENS
 from backend.services.agents.core.render.prompts import (
     ANSWER_LAYOUT_CORE,
     CONVERSE_EXECUTIVE_TONE,
     CONVERSE_PLAN_STYLE_EXTRA,
+    SOURCE_CITATION_RULE,
 )
 from backend.services.agents.core.render.markdown_tables import (
     answer_has_empty_table_shell,
@@ -22,7 +18,7 @@ from backend.services.agents.core.render.markdown_tables import (
     normalize_markdown_tables,
     polish_agent_answer,
 )
-from backend.services.agents.core.routing.turn_prep import TurnPrep
+from backend.services.agents.core.routing.turn_prep import TurnPrep, format_router_history
 from backend.services.agents.core.turn.turn_retrieval import (
     TurnRetrieval,
     preflight_prompt_block,
@@ -93,21 +89,6 @@ async def _finish_synth_answer(gateway, answer: str) -> str:
     return answer
 
 
-def _format_history(history: list[dict] | None) -> str:
-    """Format recent turns for synth prompts."""
-    if not history:
-        return ""
-    lines: list[str] = []
-    for m in history[-CHAT_HISTORY_TURNS:]:
-        role = m.get("role") or "user"
-        content = (m.get("content") or "").strip()
-        if not content:
-            continue
-        label = "User" if role == "user" else "Assistant"
-        lines.append(f"{label}: {clip_text(content, CHAT_HISTORY_MSG_CHARS)}")
-    return "\n".join(lines)
-
-
 def _ensure_table_rows(answer: str, ctx: TurnRetrieval) -> str:
     """Backfill empty markdown tables from gmail_ctx."""
     if not answer_has_empty_table_shell(answer) or not ctx.gmail_ctx:
@@ -157,7 +138,7 @@ async def run_converse_turn(
     *,
     source: str | None = None,
     history: list[dict] | None = None,
-    turn_context: TurnRetrieval | None = None,
+    turn_retrieval: TurnRetrieval | None = None,
     prep: TurnPrep | None = None,
     plan_style: bool = False,
     on_partial: Callable[[str], None] | None = None,
@@ -175,7 +156,7 @@ async def run_converse_turn(
         prep=prep,
     )
 
-    hist_text = _format_history(history)
+    hist_text = format_router_history(history)
     if not ctx.has_context and not hist_text and not plan_style:
         if gateway is None or gateway.mode == LlmMode.DEGRADED:
             return {
@@ -206,6 +187,8 @@ async def run_converse_turn(
     )
     if plan_style:
         system += CONVERSE_PLAN_STYLE_EXTRA
+    if ctx.has_context and plan_style:
+        system += f" {SOURCE_CITATION_RULE}"
     if not ctx.has_context:
         base = system if plan_style else _CONVERSE_SYSTEM
         parts = [base]

@@ -106,6 +106,7 @@ Google model ids (see [Models](https://ai.google.dev/gemini-api/docs/models)): d
 
 | Issue | Fix |
 |-------|-----|
+| `404 NOT_FOUND` for `gemini-2.0-flash-lite` | Model shut down 2026-06-01 — set `MINDOS_ROUTER_MODEL=gemini-3.1-flash-lite` and restart chat |
 | `live` mode fails on startup | Set `MINDOS_SECRET_KEY` to a non-`change-me` value |
 | `role "mindos" does not exist` on migrate | Host `alembic` hit **local** Postgres on 5432, not Docker — use `DATABASE_URL=...@localhost:5433/mindos` (compose maps **5433→5432**) |
 | Port 5432 in use | Default Docker publish is **5433** on the host (see `docker-compose.yml`) |
