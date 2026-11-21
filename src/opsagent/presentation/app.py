@@ -179,7 +179,9 @@ class OpsApp(App[None]):
             return
         self._set_state(lambda s: viewmodel.add_user_message(s, text))
         self._application.submit_message(
-            SubmitMessage(text=text, conversation_id=self.state.conversation_id)
+            SubmitMessage(
+                text=text, conversation_id=self.state.conversation_id, effort=self.state.effort
+            )
         )
         self.transcript.jump_to_tail()
 

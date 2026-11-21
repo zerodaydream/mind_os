@@ -86,7 +86,7 @@ async def test_runtime_error_becomes_run_failed_with_redacted_message() -> None:
 async def test_unavailable_runtime_fails_cleanly() -> None:
     _, seen = await _run(UnavailableRuntime())  # type: ignore[arg-type]
     assert isinstance(seen[-1], events.RunFailed)
-    assert "Phase 3" in seen[-1].message
+    assert "not connected" in seen[-1].message
 
 
 async def test_cancel_publishes_run_cancelled_once() -> None:

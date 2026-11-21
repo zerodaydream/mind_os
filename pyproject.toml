@@ -17,6 +17,8 @@ dependencies = [
   "langchain-core>=1.8",
   "langchain-google-genai>=4.5",
   "langgraph-checkpoint-postgres>=3.2",
+  "langchain>=1.5",
+  "langgraph>=1.2",
 ]
 
 [project.scripts]
@@ -131,6 +133,22 @@ forbidden_modules = [
   "opsagent.integrations", "opsagent.persistence", "opsagent.infra",
   "opsagent.presentation", "opsagent.bootstrap",
 ]
+
+[[tool.importlinter.contracts]]
+name = "tools depend on the domain only"
+type = "forbidden"
+source_modules = ["opsagent.tools"]
+forbidden_modules = [
+  "opsagent.agents", "opsagent.application", "opsagent.integrations", "opsagent.persistence",
+  "opsagent.infra", "opsagent.presentation", "opsagent.bootstrap", "opsagent.sandbox",
+  "opsagent.workers",
+]
+
+[[tool.importlinter.contracts]]
+name = "tools are framework-free"
+type = "forbidden"
+source_modules = ["opsagent.tools"]
+forbidden_modules = ["langchain", "langchain_core", "langgraph", "langchain_google_genai"]
 
 [[tool.importlinter.contracts]]
 name = "persistence and integrations are independent"

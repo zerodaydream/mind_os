@@ -26,3 +26,6 @@ ARCHITECTURE §14 forbids framework filesystem/shell tools. Open question (§17.
 
 ## Open
 - Verify the allowlist also covers subagents created through our own `delegate` (Phase 03).
+
+## Update (Phase 04)
+Superseded for the runtime choice by ADR 0003: Phase 04 ships the plain LangChain adapter. The allowlist invariant above is kept and tested there.

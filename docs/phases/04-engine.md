@@ -35,3 +35,23 @@ Maps to ARCHITECTURE §3, §4.1–4.3, §9.1 (checkpoints). First real agent wir
 
 ## Don't
 - No framework fs/shell tools exposed. No subagent-spawns-subagent.
+
+## Status (built 2026-11-22)
+Built and passing the gate. Decision record: `docs/adr/0003-langchain-runtime.md` (plain LangChain agent adapter; DeepAgents deferred).
+
+Done:
+- **Engine** (`tools/`): `ToolSpec` registry (duplicate or malformed names fail startup, grants naming unknown tools fail startup); `ToolExecutionEngine.execute` runs lookup, per-agent grant, run budget, validation, risk, policy, execute (timeout, jittered retry for read tools only), normalize, audit. Every refusal is a structured result the model can read. `ReadOnlyPolicy` allows R0 and denies the rest (fail closed until Phase 05).
+- **Normalization**: secrets redacted, oversized results offloaded to `artifacts` and read back with `read_artifact`, untrusted output wrapped in `<untrusted>` tags with forged tags defused, evidence collected from raw results.
+- **Calendar namespace, read-only**: `calendar.search_events`, `calendar.get_event`. Times are resolved and rendered in code (zone, offset, weekday). Backed by `FixtureCalendar` (sample week) until Phase 06.
+- **Agents** (`agents/`): orchestrator with `delegate`, `write_todos`, `read_artifact`; calendar subagent; `TaskBrief` in, code-built `SubagentResult` out; depth 1; limits for steps, tool calls, deadline, parallel subagents. Hitting a limit ends the run as a partial result with a notice, and the next turn repairs dangling tool calls.
+- **Events**: the runtime emits `ThinkingDelta/Complete`, `AssistantText*`, `PlanUpdated`, `Subagent*`, `ToolCall*`, `UsageUpdated` (session totals, cost when `OPS_PRICE_*` are set). `/think` now reaches the orchestrator through `SubmitMessage.effort`. Follow-up messages reuse the conversation thread, so history survives.
+- **Persistence**: migration `0002` (`artifacts`), `ArtifactRepository`, `UsageRepository` (`provider_usage` incl. reasoning tokens), async checkpointer with a restricted deserializer (`open_checkpointer`).
+- **Contracts**: `tools` depend on the domain only and are framework-free; a test fails if anything but the engine calls a tool handler.
+
+Gate results: 170 tests (unit, UI, integration on Postgres, architecture), `ruff`, `mypy`, 9 import contracts. Fake-LLM plumbing evals cover delegation, allowlists, forced calls, budgets, step limit, deadline, cancel, usage, history, and a full run on the real checkpointer.
+
+Not done, with owner:
+- **Real-model eval scenario**: `tests/unit/test_live_agent.py` is written and skipped unless `OPS_TEST_LIVE=1`. The Gemini key in `.env` returned `403 PERMISSION_DENIED` for every configured model on 2026-11-22, so no live run was recorded. Replace the key, run `OPS_TEST_LIVE=1 uv run pytest -m live`, and record the result here. Per-role effort evals at two or more levels wait on the same thing.
+- **`tool_executions` table, approvals, resume, startup reconciliation**: Phase 05. `AgentRuntime.resume` raises until then.
+- **Google Calendar adapter and keychain credentials**: Phase 06. `ask_user` and `search_tools`: later phases.
+- **Context percentage and per-model pricing in the status line**: `UsageUpdated.context_pct` is unset; one price pair applies to all roles.

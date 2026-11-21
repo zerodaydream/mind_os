@@ -112,7 +112,7 @@ Selected direction (versions are resolved at implementation time and pinned in `
 | Concern | Choice |
 |---|---|
 | Language | Python |
-| Agents | DeepAgents on LangGraph |
+| Agents | LangChain `create_agent` on LangGraph, behind `AgentRuntime` (ADR 0003; DeepAgents deferred) |
 | LLM | Google Gemini 3.x family (model IDs in config) via LangChain integration, behind a provider port |
 | TUI | Textual |
 | Database | PostgreSQL + `pgvector` + `pg_trgm` (built-in FTS for memory only) |

@@ -400,7 +400,7 @@ async def test_unavailable_runtime_shows_a_clear_failure() -> None:
         await send(app, pilot, "hello")
         await until(pilot, lambda: any(isinstance(r, NoticeRow) for r in app.state.rows))
         await asyncio.sleep(0.05)
-        assert "Phase 3" in all_text(app)
+        assert "not connected" in all_text(app)
 
 
 def test_transcript_is_a_scrollview_subclass() -> None:

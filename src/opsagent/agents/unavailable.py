@@ -1,4 +1,4 @@
-"""Placeholder runtime until the real one lands in Phase 3 (docs/phases/04-agent-core.md)."""
+"""Stand-in runtime for a container built without a database or checkpointer."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from opsagent.domain.commands import Decide
 class UnavailableRuntime:
     """Fails every run with a clear message instead of pretending to work."""
 
-    _MESSAGE = "The agent runtime is not built yet (arrives in Phase 3)."
+    _MESSAGE = "The agent runtime is not connected. Start the database and run `ops db migrate`."
 
     def start(self, run: RunSpec) -> AsyncIterator[AppEvent]:
         raise NotImplementedError(self._MESSAGE)

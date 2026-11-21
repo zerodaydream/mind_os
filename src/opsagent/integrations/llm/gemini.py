@@ -28,6 +28,8 @@ from opsagent.domain import (
 )
 
 ChatFactory = Callable[..., BaseChatModel]
+MAX_RETRIES = 2
+REQUEST_TIMEOUT_S = 90
 
 
 class MissingCredentialError(RuntimeError):
@@ -71,6 +73,18 @@ class GeminiProvider:
             )
         return self._capabilities[model_id]
 
+    def model_id(self, role: ModelRole) -> str:
+        return self._model_id(role)
+
+    def chat(self, role: ModelRole, effort: ReasoningEffort | None) -> BaseChatModel:
+        """A tool-calling chat model for the agent runtime, with effort mapped for this model.
+
+        Outside the `LLMProvider` port on purpose: only the agent adapter needs framework types.
+        """
+        caps = self.capabilities(role)
+        resolved = resolve_effort(effort, caps.effort_levels) if effort is not None else None
+        return self._build(caps.model_id, effort=resolved.effort if resolved else None)
+
     async def complete(self, request: LLMRequest) -> LLMResult:
         caps = self.capabilities(request.role)
         resolved = (
@@ -111,6 +125,8 @@ class GeminiProvider:
             "model": model_id,
             "google_api_key": key,
             "include_thoughts": self._include_thoughts,
+            "max_retries": MAX_RETRIES,  # section 11.2: at most 3 attempts per call
+            "timeout": REQUEST_TIMEOUT_S,
         }
         if effort is not None:
             kwargs["thinking_level"] = effort.value

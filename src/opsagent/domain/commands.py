@@ -6,6 +6,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
+from opsagent.domain.reasoning import ReasoningEffort
 from opsagent.domain.risk import ApprovalMode
 
 
@@ -16,6 +17,7 @@ class _Command(BaseModel):
 class SubmitMessage(_Command):
     text: str
     conversation_id: str | None = None  # None starts a new conversation
+    effort: ReasoningEffort | None = None  # session `/think` override
 
 
 class Decide(_Command):

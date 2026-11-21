@@ -7,7 +7,7 @@ from pathlib import Path
 from pydantic import AliasChoices, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from opsagent.domain import ModelRole, ReasoningEffort
+from opsagent.domain import ModelRole, Pricing, ReasoningEffort
 
 
 class ConfigError(RuntimeError):
@@ -43,6 +43,16 @@ class Settings(BaseSettings):
     # Agent limits
     max_parallel_subagents: int = Field(default=3, ge=1, le=16)
     run_deadline_seconds: int = Field(default=900, gt=0)
+    max_agent_steps: int = Field(default=25, ge=1, le=200)
+    subagent_max_steps: int = Field(default=12, ge=1, le=100)
+    max_tool_calls: int = Field(default=40, ge=1, le=500)
+
+    # Time zone (IANA name). Unset: use the system zone.
+    timezone: str | None = None
+
+    # Cost estimate shown in the status line. Both unset: cost is not reported.
+    price_input_per_mtok: float | None = Field(default=None, ge=0)
+    price_output_per_mtok: float | None = Field(default=None, ge=0)
 
     # Observability
     log_level: str = "INFO"
@@ -84,6 +94,11 @@ class Settings(BaseSettings):
             except ConfigError:
                 continue
         return out
+
+    def pricing(self) -> Pricing | None:
+        if self.price_input_per_mtok is None or self.price_output_per_mtok is None:
+            return None
+        return Pricing(self.price_input_per_mtok, self.price_output_per_mtok)
 
     def reasoning_for(self, role: ModelRole) -> ReasoningEffort:
         return {

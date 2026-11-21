@@ -46,6 +46,7 @@ class Application:
         self._new_id = new_id
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._awaiting: dict[str, _RunContext] = {}  # approval_id -> suspended run
+        self._threads: dict[str, str] = {}  # conversation_id -> thread_id (history lives there)
 
     @property
     def bus(self) -> EventBus:
@@ -54,12 +55,12 @@ class Application:
     # ---- commands --------------------------------------------------------------------------
     def submit_message(self, command: SubmitMessage) -> str:
         """Start a run and return its ID. Events arrive on the bus; this call does not wait."""
+        conversation_id = command.conversation_id or self._new_id("conv")
+        thread_id = self._threads.setdefault(conversation_id, self._new_id("thr"))
         ctx = _RunContext(
-            run_id=self._new_id("run"),
-            conversation_id=command.conversation_id or self._new_id("conv"),
-            thread_id=self._new_id("thr"),
+            run_id=self._new_id("run"), conversation_id=conversation_id, thread_id=thread_id
         )
-        spec = RunSpec(**vars(ctx), user_text=command.text)
+        spec = RunSpec(**vars(ctx), user_text=command.text, effort=command.effort)
 
         def started() -> AppEvent:  # built inside the run's correlation context
             return events.RunStarted(

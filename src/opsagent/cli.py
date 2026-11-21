@@ -8,7 +8,7 @@ import typer
 from rich.console import Console
 
 from opsagent import __version__
-from opsagent.bootstrap import has_failure, run_doctor, run_tui
+from opsagent.bootstrap import StartupError, has_failure, run_doctor, run_tui
 from opsagent.infra import ConfigError, configure_logging, load_settings
 from opsagent.persistence import current_revision, head_revision, upgrade
 
@@ -41,7 +41,11 @@ def main(
     ] = False,
 ) -> None:
     if ctx.invoked_subcommand is None:
-        run_tui(load_settings(), demo=demo)
+        try:
+            run_tui(load_settings(), demo=demo)
+        except StartupError as exc:
+            console.print(f"[red]cannot start:[/] {exc}")
+            raise typer.Exit(1) from exc
 
 
 @app.command()

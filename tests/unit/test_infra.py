@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from opsagent.bootstrap import StartupError
+from opsagent.bootstrap.tui import _preflight
 from opsagent.domain import ModelRole, ReasoningEffort, bind
 from opsagent.infra import (
     ConfigError,
@@ -68,3 +70,8 @@ def test_logs_are_json_with_correlation_and_redaction(tmp_path: Path) -> None:
     assert entry["level"] == "info"
     assert "supersecret" not in json.dumps(entry)
     assert "hf_" + "a" * 30 not in json.dumps(entry)
+
+
+def test_startup_preflight_names_the_missing_model() -> None:
+    with pytest.raises(StartupError, match="OPS_MODEL_ORCHESTRATOR"):
+        _preflight(Settings(_env_file=None, model_orchestrator=None, model_subagent="m"))

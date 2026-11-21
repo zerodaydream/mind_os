@@ -4,7 +4,7 @@ import asyncio
 
 from opsagent.agents.fake import FakeRuntime
 from opsagent.application import Application, EventBus
-from opsagent.domain import events
+from opsagent.domain import ReasoningEffort, RunSpec, events
 from opsagent.domain.commands import Decide, SetMode, SubmitMessage
 from opsagent.domain.risk import ApprovalMode
 from opsagent.infra import SystemClock, new_id
@@ -78,3 +78,35 @@ async def test_set_mode_publishes_event() -> None:
         app.set_mode(SetMode(mode=ApprovalMode.PLAN))
         ev = await asyncio.wait_for(sub.__anext__(), 2)
     assert isinstance(ev, events.ModeChanged) and ev.mode == ApprovalMode.PLAN
+
+
+async def test_follow_up_messages_reuse_the_conversation_thread() -> None:
+    seen: list[RunSpec] = []
+
+    class Recording:
+        def start(self, run: RunSpec):  # type: ignore[no-untyped-def]
+            seen.append(run)
+            return _empty()
+
+        def resume(self, thread_id, decision):  # type: ignore[no-untyped-def]
+            raise AssertionError
+
+        async def cancel(self, run_id: str) -> None:
+            return None
+
+    async def _empty():  # type: ignore[no-untyped-def]
+        return
+        yield
+
+    app = Application(runtime=Recording(), bus=EventBus(SystemClock()), new_id=new_id)
+    with app.bus.subscribe() as sub:
+        app.submit_message(SubmitMessage(text="one", effort=ReasoningEffort.LOW))
+        await asyncio.wait_for(collect_until(sub, ("run.finished",)), 5)
+        first = seen[0]
+        app.submit_message(SubmitMessage(text="two", conversation_id=first.conversation_id))
+        app.submit_message(SubmitMessage(text="other"))
+        await asyncio.wait_for(collect_until(sub, ("run.finished",)), 5)
+        await asyncio.wait_for(collect_until(sub, ("run.finished",)), 5)
+    assert first.effort is ReasoningEffort.LOW
+    assert seen[1].thread_id == first.thread_id and seen[1].conversation_id == first.conversation_id
+    assert seen[2].thread_id != first.thread_id

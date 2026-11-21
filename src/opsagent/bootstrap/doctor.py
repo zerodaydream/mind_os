@@ -103,7 +103,10 @@ def _check_models(settings: Settings) -> Check:
             missing.append(f"OPS_MODEL_{role.name}")
     if missing:
         return Check(
-            "models", "warn", f"not set: {', '.join(missing)}", "Set them in .env before Phase 3."
+            "models",
+            "warn",
+            f"not set: {', '.join(missing)}",
+            "Set them in .env before starting `ops`.",
         )
     return Check("models", "ok", "orchestrator and subagent models configured")
 
