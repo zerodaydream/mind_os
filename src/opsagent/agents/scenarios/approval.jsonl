@@ -1,0 +1,11 @@
+{"delay": 0.1, "event": {"type": "assistant.text.delta", "message_id": "m1", "text": "I drafted the email. I need your approval to send it."}}
+{"delay": 0.02, "event": {"type": "assistant.message.complete", "message_id": "m1", "text": "I drafted the email. I need your approval to send it."}}
+{"delay": 0.1, "event": {"type": "tool.started", "tool_call_id": "t1", "tool": "gmail.send", "args_preview": "to=sam@example.com, subject=\"Q3 numbers\""}}
+{"delay": 0.1, "event": {"type": "approval.requested", "approval": {"approval_id": "apr_demo1", "tool": "gmail.send", "risk": "R2", "summary": "Send an email to sam@example.com", "payload_preview": "{\"to\": \"sam@example.com\", \"subject\": \"Q3 numbers\", \"body\": \"Hi Sam, the Q3 numbers are attached.\"}", "payload_hash": "sha256:9f2c1ab7", "tainted": false}}}
+{"suspend": true}
+{"when": "approve", "delay": 0.3, "event": {"type": "tool.finished", "tool_call_id": "t1", "tool": "gmail.send", "status": "ok", "duration_ms": 640, "result_preview": "Sent to sam@example.com"}}
+{"when": "edit", "delay": 0.3, "event": {"type": "tool.finished", "tool_call_id": "t1", "tool": "gmail.send", "status": "ok", "duration_ms": 640, "result_preview": "Sent with your edits"}}
+{"when": "reject", "delay": 0.1, "event": {"type": "tool.finished", "tool_call_id": "t1", "tool": "gmail.send", "status": "rejected", "result_preview": "You declined this action"}}
+{"when": "approve", "delay": 0.1, "event": {"type": "assistant.message.complete", "message_id": "m2", "text": "Done. The email is on its way."}}
+{"when": "edit", "delay": 0.1, "event": {"type": "assistant.message.complete", "message_id": "m2", "text": "Done. I sent the edited version."}}
+{"when": "reject", "delay": 0.1, "event": {"type": "assistant.message.complete", "message_id": "m2", "text": "Understood. I did not send anything."}}

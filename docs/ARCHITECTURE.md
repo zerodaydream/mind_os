@@ -223,6 +223,23 @@ stateDiagram-v2
 
 Each subagent is defined declaratively (name, description, system prompt, owned namespace, always-loaded tools, `interrupt` policy hook, model tier). Subagents can use a cheaper model tier from config.
 
+### 3.5 Reasoning (thinking) models
+
+Gemini thinking models are used so the agent plans and verifies before acting. Reasoning is a **quality and cost control**, never a security boundary (MISSION principle 5 still holds: code decides whether and how a tool runs).
+
+| Topic | Rule |
+|---|---|
+| Control parameter | Gemini 3+ uses `thinking_level` (`minimal`, `low`, `medium`, `high`, and `xhigh` on models that list it). Gemini 2.5 uses `thinking_budget` (`0` off, `-1` dynamic, or a token cap). Only the LLM adapter knows this difference. The domain sees one value, `reasoning_effort`. |
+| Capability discovery | Supported levels and the default come from the model profile at startup (`reasoning_effort_levels`, `reasoning_effort_default`), not from hardcoded tables. An unsupported level falls back to the nearest lower supported level and logs a warning. |
+| Per-role defaults (config) | Orchestrator planning and result verification: high. Subagent tool-selection steps: low or medium. Routing, titling, summarization: minimal or low. Defaults are chosen from eval results (§16), not guesses. |
+| Per-run override | The user may raise or lower effort with `/think <level>`. This changes cost and latency only. It cannot change policy. |
+| Visibility | `include_thoughts=true` returns thought **summaries**. They stream as `ThinkingDelta` events and render collapsed (§13). They are display data only. |
+| Thought signatures | Gemini 3+ returns encrypted signatures that must be sent back with the original message during a tool-calling loop; a reconstructed message can be rejected. Rule: within a run, the **original provider message object is stored in the checkpoint and replayed unchanged**. Context compaction and summarization must never rewrite messages of the active tool loop. Only the LLM adapter handles signatures. |
+| Trust | Thought text is model output: untrusted, redacted before logging, not stored in audit bodies by default (hash and token count only), and never passed between agents. A subagent returns only its `SubagentResult`, never its thoughts. |
+| Cost and latency | Thinking tokens are billed as output tokens. `provider_usage` records reasoning tokens separately. Token budgets (§3.3) count them. The run deadline covers them. `UsageUpdated` carries them to the status line. |
+| Retry | Same as other LLM calls (§11.2). A step that exhausts its thinking budget without output is a provider error, retried at most once at a lower level. |
+| Evaluation | Golden-dataset evals run each role at two or more levels and report pass rate, steps, and cost. A level is raised only when it measurably improves pass rate. |
+
 ---
 
 ## 4. Tool Architecture and Programmatic Execution
@@ -511,15 +528,22 @@ For each integration: the **adapter** implements a domain port; **provider capab
 
 ### 8.1 Tiers
 
+**Design basis.** Files live in many unrelated places on the Mac, not in one repository. The approach follows the two reference agents: Claude Code searches live (a fresh scan every time, no index), and Cursor adds a local trigram-style index that only *narrows candidates* before a live regex check, plus a semantic index for questions in natural language. We use live scan as the default, the Cursor-style index as an accelerator that turns on per root only when live scan is too slow, and semantic search for meaning. The earlier FTS tier is removed: Spotlight covers keyword search inside documents, and `pg_trgm` covers exact text.
+
+**Measured on the target Mac (Nov 2026):** `rg` over Desktop + Downloads + Documents took 0.66 s with default ignore rules, but 6.6 s on Desktop alone with `--no-ignore --hidden` (it then scans `node_modules`, caches, and similar). `mdfind` took about 1 s for both a name and a content query across the home folder (includes process start). Conclusion: live scan is fast when exclusion rules are good; the index is needed only for large or noisy roots.
+
 | Tier | Mechanism | Responsibility | Fresh by nature? |
 |---|---|---|---|
-| 0 | macOS Spotlight (`mdfind`) | Native metadata/name/content search across the system | Yes (OS-maintained) |
-| 1 | PostgreSQL `pg_trgm` | Fuzzy filename/path retrieval | Index-lagged |
-| 2 | `ripgrep` | Live exact-text/regex search in a scoped tree | Yes (live) |
-| 3 | PostgreSQL FTS (`tsvector`) | Keyword retrieval over extracted content | Index-lagged |
-| 4 | `pgvector` | Semantic retrieval over chunk embeddings | Index-lagged |
+| 0 | macOS Spotlight (`mdfind -onlyin <root>`) | Names, and text inside PDFs/Office/Pages and other documents that grep cannot read; system-wide | Yes (OS-maintained) |
+| 1 | `ripgrep`, live | Exact text/regex over registered roots, argv only, with exclusion rules (`node_modules`, `.venv`, `.git`, caches, `Library`, build output) | Yes (live) |
+| 2 | PostgreSQL `pg_trgm` GIN index (accelerator) | Narrow a root to candidate files for exact/regex queries; candidates are then verified live with `rg` (Cursor-style). Also fuzzy filename/path. Enabled **per root** by the promotion rule below | Index-lagged, but results are re-verified live |
+| 3 | `pgvector` | Semantic retrieval over chunk embeddings (including documents grep cannot read) | Index-lagged |
 
-All tiers sit behind one port: `FileSearch.search(query, mode=auto|name|exact|keyword|semantic, roots, filters, limit)` returning `SearchHit{path, score, tier_sources[], snippet, mtime, content_hash, freshness}`.
+All tiers sit behind one port: `FileSearch.search(query, mode=auto|name|exact|semantic, roots, filters, limit)` returning `SearchHit{path, score, tier_sources[], snippet, mtime, content_hash, freshness}`.
+
+**Root registry.** The user registers roots (`OPS_ALLOWED_ROOTS`, `ops roots add|remove`). Each root has a state: `LIVE` (default) or `INDEXED`. Search runs per root, **in parallel across roots**, under one latency budget.
+
+**Promotion rule.** If live `rg` for a root exceeds a configured p95 (default 1.5 s) over the last N queries, the root is promoted to `INDEXED` (tier 2 candidates, then live verify). A root is demoted if the index lags or is rarely used. The thresholds are measured values in config, not guesses.
 
 ### 8.2 Indexing pipeline
 
@@ -548,17 +572,18 @@ Run applicable tiers concurrently under a latency budget; merge with **Reciproca
 
 | Query shape | Tiers used |
 |---|---|
-| Looks like a filename/path | 0, 1 |
-| Quoted phrase / code identifier / regex | 2 (scoped), 3 |
-| Keywords | 3, 0 |
-| Natural-language/concept | 4, 3 |
+| Looks like a filename/path | 0, 2 (fuzzy name) |
+| Quoted phrase / code identifier / regex | 1 live, or 2 → live verify on `INDEXED` roots |
+| Keywords | 0 (documents), 1 (text/code) |
+| Natural-language/concept | 3, 0 |
 | Ambiguous | all, fused |
 
 ### 8.4 Freshness, permissions, live-vs-indexed
 
 - **Freshness validation:** before returning or reading any indexed hit, `stat` the file; if `mtime/size` differ from the index, mark the hit `stale`, re-read live content, and enqueue reindex. Deleted files are dropped.
 - **Permission checks:** every hit is re-checked against allowed roots and denylist at return time.
-- **Prefer live search (ripgrep/Spotlight)** when: the user just changed files; the scope is small; exact strings/regex are needed; the index is not yet built or is behind; the target root is not indexed. **Prefer indexed retrieval** for fuzzy/semantic/large-scope queries and cross-root recall.
+- **Live search is the default** (ripgrep/Spotlight): it is always fresh and needs no indexer. Use the index only on `INDEXED` roots, for semantic queries, and for fuzzy names. An indexed hit is always re-verified against the live file before it is returned.
+- **Spotlight caveats:** it respects Spotlight exclusions and privacy settings, does not index every hidden or developer directory, and has no regex. `ops doctor` checks `mdutil -s` per volume and reports roots Spotlight does not cover; those roots fall back to tier 1.
 
 ---
 
@@ -633,7 +658,7 @@ PostgreSQL is the **single system of record** and coordination mechanism. Requir
 
 | Topic | Approach |
 |---|---|
-| Indexes | GIN on `tsvector`; GIN trigram on `files.name/path`; HNSW or IVFFlat for vectors (choice and parameters measured, not assumed); B-tree for FKs and timeline queries. |
+| Indexes | GIN on `tsvector` (memory retrieval only); GIN trigram on `files.name/path` and, for `INDEXED` roots, on extracted file text (candidate narrowing for regex, per PostgreSQL docs `~`/`~*` are index-supported; patterns with no extractable trigrams degrade to a full index scan, so the router sends those to live `rg`); HNSW or IVFFlat for vectors (choice and parameters measured, not assumed); B-tree for FKs and timeline queries. |
 | Transactions | State transition + audit event + execution record commit together. External side effects happen **outside** DB transactions, bracketed by `STARTED`/`FINISHED` records. |
 | Concurrency/locking | `SELECT … FOR UPDATE SKIP LOCKED` for jobs; advisory locks for OAuth refresh and per-resource serialization; optimistic `version` columns on approvals/jobs. |
 | Connection pooling | One async pool (psycopg pool) per process, sized small; separate pool/priority for checkpointer vs. app queries; statement timeouts set. |
@@ -741,7 +766,7 @@ The TUI depends only on **application events**, never on LangGraph/DeepAgents ty
 | `AuthRequired/AuthRestored` | provider, scope delta |
 | `JobEvent`, `Notification`, `Degraded/Recovered` | |
 | `ThinkingDelta` / `ThinkingComplete` | message_id, text chunk (collapsed by default in UI) |
-| `UsageUpdated` | tokens in/out/cached, context %, estimated cost (run and session) |
+| `UsageUpdated` | tokens in/out/cached/**reasoning**, context %, estimated cost (run and session), current reasoning effort |
 | `ModeChanged` | permission/approval mode (user-initiated only; can only tighten relative to `policy.toml`) |
 | `CommandOutput` | slash-command id, rendered result (e.g. `/status`, `/cost`) |
 | `Rewound` | target message_id; transcript truncated to that point, run state restored from checkpoint |
@@ -766,7 +791,7 @@ presentation/tui/
 
 - **Data flow:** `AppEvent → reducer → immutable view-model → widgets` (message passing between widgets; Textual workers for async I/O). Widgets never call services directly except via application commands.
 - **Streaming without flicker:** text deltas are **coalesced** (batch on a ~30–60 Hz tick) and appended to a single block; scroll anchoring pins to bottom only while the user is at bottom ("sticky tail"); manual scroll detaches and shows a "jump to latest" affordance. Re-layout is confined to the active block.
-- **Transcript scale:** long sessions use windowed/virtualized rendering and collapse finished tool blocks.
+- **Transcript scale (measured, ADR 0002):** the transcript is a single virtualized, line-rendered view over the view-model, not one widget per block. A widget-per-block prototype took 544 ms per streaming flush at 5,000 blocks; the virtualized prototype stayed at about 25 ms at 100,000 lines. Only the prompt, spinner, status line, and active approval dialog are real widgets. Finished tool blocks collapse in the view-model.
 - **Concurrency:** tool and subagent updates are keyed by `tool_call_id`/`subagent_id` and update in place (no re-ordering of already rendered content). Parallel subagents render as grouped, individually collapsible blocks.
 
 ### 13.4 UX specification
@@ -874,7 +899,7 @@ Each run tracks a `taint` set: `{external_email, external_doc, web, mcp, ...}`, 
 | 5 | Auth lifecycle (Google, Microsoft), reauth resume | Failure-injection tests |
 | 6 | Mail, Calendar writes, Teams, Files (basic), Convert, System, one namespace at a time | Per-namespace evals |
 | 7 | **Background jobs, scheduling, worker** (indexer depends on this) | Job recovery tests |
-| 8 | Filesystem intelligence tiers 0–4 + watcher/reconciliation | Retrieval benchmarks |
+| 8 | Filesystem search: live tiers 0–1 first, then per-root `pg_trgm` accelerator (promotion rule, §8.1) and `pgvector`, with watcher/reconciliation | Latency gate: p95 < 1 s for name and exact search on registered roots; retrieval benchmarks |
 | 9 | Persistent memory + provenance/supersession | Injection tests on memory |
 | 10 | Dynamic `search_tools` / `load_tools` (only if measured need) | Measured tool-selection benefit |
 | 11 | MCP integrations | Server allowlist + classification |
@@ -899,6 +924,7 @@ Ordering rule: a phase may depend only on earlier phases. (Jobs precede file ind
 **Verified against current documentation during design:**
 
 - Gemini 3.x model IDs change quickly (earlier 3.x Flash variants are deprecated/auto-routed to newer ones; function-response `id/name/count` must match the call; `temperature/top_p/top_k` are no longer recommended). ⇒ **Model IDs are configuration; adapter handles protocol rules.** Google also documents a newer *Interactions API* (Beta) alongside the stable `generateContent` API; the adapter should target the stable path unless/until a decision records otherwise.
+- `langchain-google-genai` exposes `thinking_level` (Gemini 3+), `thinking_budget` (2.5), `include_thoughts`, and a raw `thinking_config`. `thinking_level` wins over `thinking_budget` on Gemini 3+. The `reasoning_effort` alias needs `>=4.3.1`; `xhigh` needs `>=4.5.1`. Thought signatures must be preserved by replaying the original `AIMessage` (§3.5). **Partly verified (offline test, `langgraph-checkpoint 4.3.1`):** an `AIMessage` carrying thinking blocks, `extras.signature`, tool calls, and signature entries in `additional_kwargs` round-trips through `JsonPlusSerializer` unchanged, including with `allowed_msgpack_modules` restricted to `AIMessage`. **Still to verify in the spike:** the same with a real Gemini response, and a resume in a new process against PostgreSQL.
 - DeepAgents supports `interrupt_on` (approve/edit/reject/respond), conditional interrupts (requires `langchain>=1.3.3`), per-subagent overrides, and **requires a checkpointer and a stable `thread_id`** for resume; denying side-effecting tools should use *reject*, not *respond*.
 - LangGraph PostgreSQL checkpointer and store (with optional pgvector semantic index) exist; manual connections need `autocommit=True` and `dict_row`.
 - Google installed-app OAuth: public client, always PKCE, loopback redirect.

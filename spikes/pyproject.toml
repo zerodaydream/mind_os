@@ -1,0 +1,17 @@
+[project]
+name = "opsagent-spikes"
+version = "0.0.0"
+description = "Throwaway Phase 01 spikes. Not shipped."
+requires-python = ">=3.12"
+dependencies = [
+  "deepagents",
+  "langchain",
+  "langgraph",
+  "langgraph-checkpoint-postgres",
+  "langchain-google-genai",
+  "textual",
+  "psycopg[binary,pool]",
+  "msal",
+  "keyring",
+  "pytest",
+]

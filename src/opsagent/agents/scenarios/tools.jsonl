@@ -1,0 +1,14 @@
+{"delay": 0.1, "event": {"type": "plan.updated", "todos": [{"id": "1", "text": "Find the budget spreadsheet", "status": "in_progress"}, {"id": "2", "text": "Check next week's calendar", "status": "in_progress"}, {"id": "3", "text": "Summarize findings", "status": "pending"}]}}
+{"delay": 0.1, "event": {"type": "tool.started", "tool_call_id": "t1", "tool": "files.search", "args_preview": "query=\"budget 2026\", roots=[Desktop, Documents]"}}
+{"delay": 0.0, "event": {"type": "tool.started", "tool_call_id": "t2", "tool": "calendar.list_events", "args_preview": "range=next_7_days"}}
+{"delay": 0.5, "event": {"type": "tool.finished", "tool_call_id": "t2", "tool": "calendar.list_events", "status": "ok", "duration_ms": 480, "result_preview": "4 events"}}
+{"delay": 0.4, "event": {"type": "tool.finished", "tool_call_id": "t1", "tool": "files.search", "status": "ok", "duration_ms": 910, "result_preview": "Found 3 files\n~/Documents/finance/budget-2026.xlsx\n~/Desktop/budget-draft.numbers\n~/Downloads/budget-2026-v2.pdf\nmatched on name; 1 live, 2 spotlight"}}
+{"delay": 0.1, "event": {"type": "plan.updated", "todos": [{"id": "1", "text": "Find the budget spreadsheet", "status": "done"}, {"id": "2", "text": "Check next week's calendar", "status": "done"}, {"id": "3", "text": "Summarize findings", "status": "in_progress"}]}}
+{"delay": 0.1, "event": {"type": "subagent.started", "subagent_id": "s1", "subagent": "researcher", "brief": "Compare the two budget drafts"}}
+{"delay": 0.2, "event": {"type": "tool.started", "tool_call_id": "t3", "tool": "files.read", "args_preview": "budget-2026.xlsx", "subagent_id": "s1"}}
+{"delay": 0.5, "event": {"type": "tool.finished", "tool_call_id": "t3", "tool": "files.read", "status": "ok", "duration_ms": 420, "result_preview": "12 sheets"}}
+{"delay": 0.2, "event": {"type": "subagent.finished", "subagent_id": "s1", "status": "success", "summary": "The v2 PDF adds a travel line of 4,200."}}
+{"delay": 0.1, "event": {"type": "assistant.text.delta", "message_id": "m1", "text": "Your calendar has 4 events next week. "}}
+{"delay": 0.1, "event": {"type": "assistant.text.delta", "message_id": "m1", "text": "The newest budget is the v2 PDF."}}
+{"delay": 0.02, "event": {"type": "assistant.message.complete", "message_id": "m1", "text": "Your calendar has 4 events next week. The newest budget is the v2 PDF."}}
+{"delay": 0.02, "event": {"type": "plan.updated", "todos": [{"id": "1", "text": "Find the budget spreadsheet", "status": "done"}, {"id": "2", "text": "Check next week's calendar", "status": "done"}, {"id": "3", "text": "Summarize findings", "status": "done"}]}}

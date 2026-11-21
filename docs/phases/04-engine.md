@@ -22,6 +22,12 @@ Maps to ARCHITECTURE §3, §4.1–4.3, §9.1 (checkpoints). First real agent wir
 - Limits: steps, depth=1, deadline, token and tool budgets.
 - Provider usage table + cost shown in status line.
 
+## Reasoning
+- Per-role effort wiring: orchestrator (plan, verify) high; subagent steps low or medium; utility minimal.
+- Stream thought summaries as `ThinkingDelta`; never persist thought text in audit bodies.
+- Active tool-loop messages are never compacted (signatures).
+- Eval each role at 2+ levels; set defaults from pass rate and cost.
+
 ## Gate
 - Forbidden-import test: only engine reaches adapters.
 - Fake-LLM plumbing evals pass; one real-model eval scenario recorded.

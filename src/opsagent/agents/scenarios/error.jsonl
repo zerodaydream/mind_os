@@ -1,0 +1,5 @@
+{"delay": 0.1, "event": {"type": "tool.started", "tool_call_id": "t1", "tool": "calendar.list_events", "args_preview": "range=tomorrow"}}
+{"delay": 0.4, "event": {"type": "tool.finished", "tool_call_id": "t1", "tool": "calendar.list_events", "status": "error", "duration_ms": 400, "result_preview": "Calendar returned 503 (service unavailable)"}}
+{"delay": 0.1, "event": {"type": "notification", "level": "warning", "text": "Retrying calendar.list_events (attempt 2 of 3)"}}
+{"delay": 0.4, "event": {"type": "degraded", "component": "google.calendar", "detail": "3 failures in a row"}}
+{"delay": 0.2, "event": {"type": "run.failed", "code": "ProviderUnavailable", "message": "Calendar returned 503 after 3 retries."}}

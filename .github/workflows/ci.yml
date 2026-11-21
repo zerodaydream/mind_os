@@ -4,13 +4,38 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  test:
+  gate:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      db:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: opsagent
+          POSTGRES_PASSWORD: opsagent
+          POSTGRES_DB: opsagent
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U opsagent -d opsagent"
+          --health-interval 3s --health-timeout 3s --health-retries 20
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.12"
+          enable-cache: true
       - run: uv sync --group dev --frozen
+      - run: uv run ruff check src tests
+      - run: uv run ruff format --check src tests
+      - run: uv run mypy
+      - run: uv run lint-imports
       - run: uv run pytest -q

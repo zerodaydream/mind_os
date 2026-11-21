@@ -39,10 +39,11 @@ Legend: ✅ implemented · 🚧 in progress · 📋 planned
 
 | Area | Capability | Status |
 |---|---|---|
-| Foundation | Layered skeleton, import contracts, config, logging | 📋 |
-| Foundation | PostgreSQL schema + migrations | 📋 |
-| TUI | Chat, streaming, tool/subagent blocks, status line | 📋 |
-| TUI | Approval panel (approve / edit / reject), diff view | 📋 |
+| Foundation | Layered skeleton, import contracts, config, logging | ✅ |
+| Foundation | PostgreSQL schema + migrations | ✅ |
+| TUI | Chat, streaming, tool/subagent blocks, status line (runs against a scripted fake agent: `uv run ops --demo`) | ✅ |
+| TUI | Approval panel (approve / edit / reject) | ✅ |
+| TUI | Diff view, transcript search, text selection | 📋 |
 | Agent | Orchestrator + todo planning | 📋 |
 | Agent | Subagents: Mail, Calendar, Teams, Files, Convert, System | 📋 |
 | Tools | Registry, validation, risk classification, audit | 📋 |
@@ -52,7 +53,7 @@ Legend: ✅ implemented · 🚧 in progress · 📋 planned
 | Auth | Microsoft Graph OAuth (work/school accounts) | 📋 |
 | Mail / Calendar | Search, read, draft, send / list, create, update | 📋 |
 | Teams | Read, send | 📋 |
-| Files | Tiered search (Spotlight, pg_trgm, ripgrep, FTS, pgvector) | 📋 |
+| Files | Multi-root search: live Spotlight + ripgrep by default; per-root pg_trgm accelerator; pgvector for meaning | 📋 |
 | Files | Read / diff-edit / organize | 📋 |
 | Convert | Document conversion | 📋 |
 | macOS | Allowlisted automation | 📋 |
@@ -114,7 +115,7 @@ Selected direction (versions are resolved at implementation time and pinned in `
 | Agents | DeepAgents on LangGraph |
 | LLM | Google Gemini 3.x family (model IDs in config) via LangChain integration, behind a provider port |
 | TUI | Textual |
-| Database | PostgreSQL + `pgvector` + `pg_trgm` + built-in FTS |
+| Database | PostgreSQL + `pgvector` + `pg_trgm` (built-in FTS for memory only) |
 | Persistence for agents | LangGraph PostgreSQL checkpointer and store |
 | Migrations | Alembic |
 | File search | Spotlight (`mdfind`), `ripgrep`, PostgreSQL indexes, FSEvents-based watching |
@@ -181,6 +182,11 @@ OPS_DB_POOL_MAX=10
 # --- Models (IDs are configuration; check provider docs for current IDs) -----
 OPS_MODEL_ORCHESTRATOR=            # e.g. a Gemini 3.x Pro/Flash model ID
 OPS_MODEL_SUBAGENT=                # cheaper/faster tier for subagents
+OPS_REASONING_ORCHESTRATOR=        # minimal|low|medium|high|xhigh (must be in the model profile)
+OPS_REASONING_SUBAGENT=            # usually low or medium
+OPS_REASONING_UTILITY=             # routing/titles/summaries: minimal or low
+OPS_INCLUDE_THOUGHTS=true          # show collapsed thought summaries in the TUI
+# Gemini 2.5 only: OPS_THINKING_BUDGET=  (0 off, -1 dynamic, or token cap)
 OPS_MODEL_EMBEDDING=
 OPS_EMBEDDING_DIMENSIONS=
 # Dev-only fallback; prefer: ops auth gemini  (stores key in Keychain)
@@ -301,7 +307,7 @@ Run `ops worker` in a separate terminal or as a launchd agent so scheduled jobs 
 | Architecture rules | `uv run lint-imports` |
 | New migration | `uv run alembic revision -m "<msg>"` then review; apply with `ops db migrate` |
 | Debug logs | `OPS_LOG_LEVEL=DEBUG` and inspect `OPS_LOG_DIR` (logs never print into the TUI) |
-| TUI dev | `uv run textual run --dev src/opsagent/presentation/tui/app.py` (verify flags for the pinned Textual version) |
+| TUI dev | `uv run ops --demo` replays scripted scenarios (type `stream`, `tools`, `approval`, `error`, or `long`) |
 
 **Conventions:** typed Python, Pydantic models at boundaries, no module-level mutable state, no provider imports outside `integrations/`, no business logic in `presentation/`.
 
@@ -385,7 +391,7 @@ For contributors and AI coding agents:
 5. Google and Microsoft auth lifecycle
 6. Mail, Calendar, Teams, Files, Convert, System subagents
 7. Background jobs, scheduler, worker
-8. Filesystem intelligence tiers and watcher
+8. Filesystem search: live tiers first, then per-root accelerator and semantic index
 9. Persistent memory
 10. Dynamic tool discovery (only if measured need)
 11. MCP integrations

@@ -1,0 +1,94 @@
+/* All colors come from presentation/tokens.py via $ops-* variables. */
+
+Screen {
+    layout: vertical;
+    background: transparent;
+    color: $ops-text;
+}
+
+#transcript {
+    height: 1fr;
+    background: transparent;
+    scrollbar-size-vertical: 1;
+    scrollbar-color: $ops-border;
+    scrollbar-color-hover: $ops-dim;
+    scrollbar-background: transparent;
+}
+
+#spinner {
+    height: 1;
+    padding: 0 1;
+}
+
+#approval-host {
+    height: auto;
+}
+
+ApprovalDialog {
+    height: auto;
+    border: round $ops-warn;
+    border-title-color: $ops-warn;
+    padding: 0 1;
+    margin: 0 0;
+}
+
+ApprovalDialog:focus {
+    border: round $ops-accent;
+    border-title-color: $ops-accent;
+}
+
+#approval-options {
+    margin-top: 1;
+}
+
+#approval-input {
+    border: none;
+    background: $ops-user-bg;
+    height: 1;
+    padding: 0 1;
+}
+
+.hidden {
+    display: none;
+}
+
+#prompt-box {
+    height: auto;
+    border: round $ops-border;
+    padding: 0 1;
+}
+
+#prompt-box:focus-within {
+    border: round $ops-accent;
+}
+
+#prompt-glyph {
+    width: 2;
+    color: $ops-dim;
+}
+
+#prompt {
+    width: 1fr;
+    height: 1;
+    border: none;
+    background: transparent;
+    padding: 0;
+}
+
+#prompt:focus {
+    border: none;
+}
+
+#prompt .text-area--cursor-line {
+    background: transparent;
+}
+
+#hint {
+    height: 1;
+    padding: 0 2;
+}
+
+#status {
+    height: 1;
+    padding: 0 2;
+}

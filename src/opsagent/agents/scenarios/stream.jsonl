@@ -1,0 +1,10 @@
+{"delay": 0.15, "event": {"type": "thinking.delta", "message_id": "m1", "text": "The user wants a plan. "}}
+{"delay": 0.15, "event": {"type": "thinking.delta", "message_id": "m1", "text": "Keep it short and give one concrete next step."}}
+{"delay": 0.05, "event": {"type": "thinking.complete", "message_id": "m1", "tokens": 214}}
+{"delay": 0.05, "event": {"type": "usage.updated", "output_tokens": 214, "reasoning_tokens": 214, "reasoning_effort": "high"}}
+{"delay": 0.08, "event": {"type": "assistant.text.delta", "message_id": "m2", "text": "Here is a short plan for the week.\n\n## Priorities\n\n"}}
+{"delay": 0.08, "event": {"type": "assistant.text.delta", "message_id": "m2", "text": "- Finish the **quarterly report**\n- Reply to *two* open threads\n\n"}}
+{"delay": 0.08, "event": {"type": "assistant.text.delta", "message_id": "m2", "text": "```python\ndef next_step(items):\n    return sorted(items)[0]\n```\n\n"}}
+{"delay": 0.08, "event": {"type": "assistant.text.delta", "message_id": "m2", "text": "Want me to draft the first item?"}}
+{"delay": 0.02, "event": {"type": "assistant.message.complete", "message_id": "m2", "text": "Here is a short plan for the week.\n\n## Priorities\n\n- Finish the **quarterly report**\n- Reply to *two* open threads\n\n```python\ndef next_step(items):\n    return sorted(items)[0]\n```\n\nWant me to draft the first item?"}}
+{"delay": 0.02, "event": {"type": "usage.updated", "output_tokens": 412, "reasoning_tokens": 214, "context_pct": 6.5, "cost_usd": 0.0021, "reasoning_effort": "high"}}
