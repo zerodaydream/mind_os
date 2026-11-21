@@ -1,5 +1,4 @@
 .env
-backend/config.json
 .venv/
 uv.lock.bak
 __pycache__/
@@ -10,9 +9,6 @@ __pycache__/
 dist/
 node_modules/
 *.egg-info/
-backend.egg-info/
-
-backend/data/vault/*
-!backend/data/vault/.gitkeep
-
 .DS_Store
+.slop-cleanup/
+.mindos/

@@ -8,7 +8,7 @@
 - Checkpoint-resume via LangGraph + Postgres is verified (docs.langchain.com). `interrupt_on` + `reject` (not `respond`) is correct.
 - Events-only TUI boundary lets us build the whole Claude Code UI against a fake agent first.
 
-## Fixes (apply before coding)
+## Fixes (APPLIED to `docs/ARCHITECTURE.md` and `docs/README.md`)
 | # | Problem | Fix |
 |---|---|---|
 | 1 | **Phase order bug.** Indexer/watcher (Ph 7) needs `jobs` + worker (Ph 9). | Jobs/worker before FS intelligence. |
@@ -32,6 +32,8 @@
 - Glyph/layout details in Phase 03 come from public docs + behavior; **verify against a live `claude` session in Phase 01 spike**.
 
 ## Phases
+File number = architecture phase + 1 (`01-spikes.md` is ARCHITECTURE Phase 0).
+
 | File | Phase |
 |---|---|
 | 01-spikes.md | Verify versions and risks |

@@ -73,6 +73,7 @@ Legend: ✅ implemented · 🚧 in progress · 📋 planned
 ├── AGENTS.md                  # (planned) concise instructions for AI coding agents
 ├── pyproject.toml
 ├── .env.example
+├── docker-compose.yml         # PostgreSQL + pgvector (default dev database)
 ├── alembic.ini
 ├── migrations/                # Alembic revisions (app tables)
 ├── docs/adr/                  # Architecture Decision Records (decisions that amend ARCHITECTURE.md)
@@ -146,16 +147,15 @@ Selected direction (versions are resolved at implementation time and pinned in `
 git clone <repository-url> opsagent && cd opsagent
 
 # 2. Tooling
-brew install uv ripgrep postgresql@16 pgvector     # verify formula names/versions
-brew services start postgresql@16
+brew install uv ripgrep                            # verify formula names/versions
 
 # 3. Project environment and dependencies
 uv sync
 
-# 4. Database
-createdb opsagent
-psql opsagent -c 'CREATE EXTENSION IF NOT EXISTS vector;'
-psql opsagent -c 'CREATE EXTENSION IF NOT EXISTS pg_trgm;'
+# 4. Database (default: docker-compose ships PostgreSQL with pgvector; extensions enabled by init script)
+docker compose up -d db
+# Alternative, native: brew install postgresql@16 pgvector, then
+#   createdb opsagent && psql opsagent -c 'CREATE EXTENSION IF NOT EXISTS vector;' -c 'CREATE EXTENSION IF NOT EXISTS pg_trgm;'
 
 # 5. Configuration
 cp .env.example .env        # then edit (see below)
@@ -377,16 +377,20 @@ For contributors and AI coding agents:
 
 **Roadmap (in order; see [ARCHITECTURE §17](ARCHITECTURE.md#17-architectural-evolution))**
 
-1. Skeleton, config, DB, events, TUI shell, LLM provider port
-2. Tool registry + execution engine + first read-only subagent
-3. Approval broker, policy engine, resume
-4. Google and Microsoft auth lifecycle
-5. Mail, Calendar, Teams, Files, Convert, System subagents
-6. Dynamic tool discovery
-7. Filesystem intelligence tiers and watcher
-8. Persistent memory
-9. Background jobs and scheduler
-10. MCP integrations
-11. Sandboxed programmatic execution — only with evidence of need
+0. Spikes (versions, DeepAgents lockdown, HITL resume, Textual feasibility)
+1. Skeleton, config, DB, events, `ops doctor`, LLM and agent-runtime ports
+2. TUI (Claude Code-style) on a scripted fake event stream
+3. Tool registry + execution engine + first read-only subagent
+4. Approval broker, policy engine, resume, startup reconciliation
+5. Google and Microsoft auth lifecycle
+6. Mail, Calendar, Teams, Files, Convert, System subagents
+7. Background jobs, scheduler, worker
+8. Filesystem intelligence tiers and watcher
+9. Persistent memory
+10. Dynamic tool discovery (only if measured need)
+11. MCP integrations
+12. Sandboxed programmatic execution — only with evidence of need
+
+Per-phase plans: [phases/](phases/00-verdict.md).
 
 License: *to be decided before the first release.*

@@ -152,6 +152,10 @@ Cross-module contracts are **typed**: Pydantic v2 models for commands, events, t
 
 ## 3. Agent Orchestration Architecture
 
+### 3.0 Agent runtime port
+
+DeepAgents is pre-1.0 and changes quickly. The orchestrator and subagents run behind a domain port, `AgentRuntime` (`start(run)`, `resume(thread_id, decision)`, `cancel(run_id)`, event stream out). DeepAgents/LangGraph is one adapter in `agents/`; a plain LangGraph/LangChain agent is the fallback adapter. Nothing outside `agents/` imports framework types. Whether DeepAgents' built-in filesystem/shell tools can be fully removed is decided by the Phase 0 spike (§17.3); if not, DeepAgents is dropped.
+
 ### 3.1 Responsibilities
 
 The orchestrator (a DeepAgents/LangGraph agent) is a **planner and router**, not an executor of integration calls. It:
@@ -595,7 +599,7 @@ LangGraph's PostgreSQL checkpointer and store are used behind `persistence/` ada
 
 ## 10. PostgreSQL Architecture
 
-PostgreSQL is the **single system of record** and coordination mechanism. Required extensions: `pgvector`, `pg_trgm` (plus built-in FTS). Rationale for one database: transactional coupling of approvals/executions/audit; `SKIP LOCKED` job queue; `LISTEN/NOTIFY` between processes; hybrid retrieval in one place. (Cost: the user must run PostgreSQL locally; accepted for a "production-grade" local system. See §17.3.)
+PostgreSQL is the **single system of record** and coordination mechanism. Required extensions: `pgvector`, `pg_trgm` (plus built-in FTS). Rationale for one database: transactional coupling of approvals/executions/audit; `SKIP LOCKED` job queue; `LISTEN/NOTIFY` between processes; hybrid retrieval in one place. (Cost: the user must run PostgreSQL locally; accepted for a "production-grade" local system. See §17.3.) The cost is mitigated, not ignored: the repo ships a `docker-compose.yml` (PostgreSQL + `pgvector`, `pg_trgm` enabled) as the default way to run it, and `ops doctor` verifies connectivity, extensions, schema version, and index lag, printing exact remediation commands.
 
 ### 10.1 Logical ownership
 
@@ -673,6 +677,8 @@ PostgreSQL is the **single system of record** and coordination mechanism. Requir
 
 ### 11.4 Recovery scenarios
 
+**A checkpointer is not crash recovery.** LangGraph persists state but nothing restarts a run whose process died; resuming is the application's job. Therefore **startup reconciliation below is mandatory scope of Phase 4 (approvals)**, not a later hardening task: the app must itself discover runs left in `RUNNING`/`AwaitingApproval`/`AwaitingAuth` and either resume, re-deliver, or mark them `Failed` with an honest report.
+
 | Event | Recovery |
 |---|---|
 | **Terminal closed** | Runs are in the TUI process; unfinished runs persist at the last checkpoint. On next start, the session picker lists resumable runs (`ops resume`). Pending approvals remain `PENDING` (until TTL). Background jobs continue in the worker. |
@@ -718,7 +724,7 @@ PostgreSQL is the **single system of record** and coordination mechanism. Requir
 
 ### 13.1 Design reference and goals
 
-Quality bar: the interaction polish, density, and responsiveness of leading agentic terminal tools (Claude Code is the reference for feel), implemented as an **original** interface with its own naming, palette, and assets. (This design was derived from the stated goals; no proprietary UI assets or code are used or copied. Reference-study notes belong in an ADR when implementation begins.)
+Quality bar: the interaction polish, density, and responsiveness of leading agentic terminal tools (Claude Code is the reference for feel), implemented as an **original** interface with its own naming, palette, and assets. The target is Claude Code's **fullscreen** renderer (alternate screen, fixed input box, in-app scroll/search). Its classic native-scrollback renderer is not reproducible in Textual; a "dump transcript to scrollback" key is provided instead. Detailed layout, keys, and rows: `docs/phases/03-tui.md`. (This design was derived from the stated goals; no proprietary UI assets or code are used or copied. Reference-study notes belong in an ADR when implementation begins.)
 
 ### 13.2 Structured application events
 
@@ -904,6 +910,6 @@ Ordering rule: a phase may depend only on earlier phases. (Jobs precede file ind
 - Google OAuth consent-screen publishing status effects on refresh-token lifetime, and Gmail restricted-scope verification requirements for the intended distribution.
 - macOS sandbox backend (container runtime vs. OS-level mechanism), converter toolset, FSEvents library, OCR engine.
 - Embedding model choice/dimensions and Gemini grounding vs. a dedicated web search API.
-- Whether DeepAgents' built-in filesystem/shell tools can be fully disabled in the pinned version (required by §14).
+- Whether DeepAgents' built-in filesystem/shell tools can be fully disabled in the pinned version (required by §14). **Resolved by Phase 0 spike:** assert the agent's effective tool list equals ours; if it cannot be made so, use the plain LangGraph adapter behind `AgentRuntime` (§3.0). Record as an ADR.
 
 **Open decisions (each needs an ADR):** sandbox backend; HNSW vs IVFFlat; web search provider; whether a lighter embedded-store mode is worth supporting later for users unwilling to run PostgreSQL.
