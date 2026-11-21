@@ -1,0 +1,33 @@
+# 02 · Foundation
+
+Maps to ARCHITECTURE §2, §10, §13.2, §15.
+
+## Skills
+| Skill | Source |
+|---|---|
+| `python-project-structure` | `wshobson/agents` (15.7K) |
+| `postgresql-table-design` | `wshobson/agents` (29K) |
+| `python-testing-patterns` | `wshobson/agents` (41K) |
+| `agent-config` | local → rewrite `AGENTS.md` |
+| `devops-pipeline` | local → pre-commit + lean CI |
+| `cli-builder` | local → `ops` CLI |
+| `security-setup` | local → secret scan hooks |
+
+## Build
+- `pyproject.toml` (uv), `src/opsagent/` layers per README §4, `bootstrap/`, `cli.py` (`ops`, `ops doctor`, `ops db migrate`).
+- `import-linter` contracts (§2.3) green from day one; CI fails on violation.
+- `infra/`: pydantic-settings config, structlog, contextvars correlation IDs, clock, ids.
+- `persistence/`: psycopg pool, Alembic baseline (`conversations`, `messages`, `agent_runs`, `audit_events` insert-only, `integration_states`), LangGraph `setup()`.
+- `domain/`: ports (`LLMProvider`, `AgentRuntime`, `CredentialProvider`), risk enums, event models (**with fixes from 00-verdict #3**).
+- `application/`: in-process event bus, facade stub (`SubmitMessage`, `Cancel`).
+- LLM port + Gemini adapter (model IDs from config only).
+- `docker-compose.yml` for Postgres+pgvector; `.env.example`.
+- Replace root `AGENTS.md` (remove Astryx block; point to MISSION/ARCHITECTURE).
+
+## Gate
+- `lint-imports`, `ruff`, `mypy`, `pytest` green.
+- `ops doctor` reports DB + extensions OK.
+- Audit table rejects UPDATE/DELETE for app role (test).
+
+## Don't
+- No module-level mutable state. No provider imports outside `integrations/`.

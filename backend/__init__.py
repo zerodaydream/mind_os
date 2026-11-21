@@ -1,1 +1,0 @@
-"""MindOS backend package."""
