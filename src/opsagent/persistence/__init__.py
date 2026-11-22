@@ -1,5 +1,6 @@
 """PostgreSQL persistence: pool, migrations, repositories."""
 
+from opsagent.persistence.approval_repo import ApprovalRepository
 from opsagent.persistence.audit import AuditRepository
 from opsagent.persistence.db import open_pool, sqlalchemy_url
 from opsagent.persistence.migrate import (
@@ -13,6 +14,7 @@ from opsagent.persistence.migrate import (
 from opsagent.persistence.repositories import ArtifactRepository, UsageRepository
 
 __all__ = [
+    "ApprovalRepository",
     "ArtifactRepository",
     "AuditRepository",
     "UsageRepository",

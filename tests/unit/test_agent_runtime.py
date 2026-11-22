@@ -9,7 +9,7 @@ from langchain_core.messages import AIMessage, ToolMessage
 from opsagent.agents import CALENDAR, ORCHESTRATOR_TOOLS, RunLimits
 from opsagent.application import Application, EventBus
 from opsagent.domain import Pricing, ReasoningEffort, events
-from opsagent.domain.commands import SubmitMessage
+from opsagent.domain.commands import Decide, SubmitMessage
 from opsagent.infra import SystemClock, new_id
 from tests.support.agent_kit import Kit, make_kit
 from tests.support.scripted_model import ScriptedChatModel, reply, tool_call
@@ -274,10 +274,10 @@ async def test_thinking_is_not_written_to_audit_rows() -> None:
     assert "SECRET-SUB-THOUGHT" not in str(kit.audit.rows)
 
 
-def test_resume_is_not_available_until_approvals_exist() -> None:
+def test_resume_is_available_when_approvals_exist() -> None:
     kit = make_kit(ScriptedChatModel(script=[]))
-    with pytest.raises(NotImplementedError):
-        kit.runtime.resume("thr", None)  # type: ignore[arg-type]
+    stream = kit.runtime.resume("thr", Decide(approval_id="apr_1", decision="reject"))
+    assert hasattr(stream, "__aiter__")
 
 
 async def _until(sub: Any, stop: str) -> list[Any]:

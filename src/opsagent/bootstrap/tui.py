@@ -10,10 +10,16 @@ import psycopg
 
 from opsagent import __version__
 from opsagent.agents.fake import FakeRuntime
+from opsagent.application.reconciliation import run_reconciliation
 from opsagent.bootstrap.container import Container, build_container
 from opsagent.domain import ModelRole, ReasoningEffort
 from opsagent.infra import ConfigError, Settings, configure_logging
-from opsagent.persistence import open_checkpointer, open_pool, schema_is_current
+from opsagent.persistence import (
+    ApprovalRepository,
+    open_checkpointer,
+    open_pool,
+    schema_is_current,
+)
 from opsagent.presentation import OpsApp, SessionInfo
 
 
@@ -88,6 +94,7 @@ async def _run_live(settings: Settings) -> None:
     try:
         async with open_checkpointer(settings.database_url) as saver:
             container = build_container(settings, pool=pool, checkpointer=saver)
+            await run_reconciliation(ApprovalRepository(pool))
             try:
                 await OpsApp(container.app, _info(settings, container)).run_async()
             finally:

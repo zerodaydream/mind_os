@@ -19,6 +19,7 @@ from typing import Any
 from pydantic import BaseModel, ValidationError
 
 from opsagent.domain import (
+    ApprovalBrokerPort,
     ArtifactStore,
     AuditSink,
     EventEmit,
@@ -30,7 +31,9 @@ from opsagent.domain import (
     ToolInvocation,
     ToolResult,
     ToolStatus,
+    approval_payload_hash,
     bind,
+    events,
     redact,
     redact_text,
 )
@@ -61,6 +64,8 @@ class ToolExecutionEngine:
         policy: PolicyEngine,
         audit: AuditSink,
         artifacts: ArtifactStore,
+        broker: ApprovalBrokerPort | None = None,
+        tainted: bool = False,
         max_attempts: int = 3,
         sleep: Sleep = asyncio.sleep,
         jitter: Callable[[], float] = random.random,
@@ -74,6 +79,8 @@ class ToolExecutionEngine:
         self._policy = policy
         self._audit = audit
         self._artifacts = artifacts
+        self._broker = broker
+        self._tainted = tainted
         self._max_attempts = max_attempts
         self._sleep = sleep
         self._jitter = jitter
@@ -101,7 +108,7 @@ class ToolExecutionEngine:
         """
         started = time.monotonic()
         with bind(run_id=invocation.run_id, tool_call_id=invocation.tool_call_id):
-            gate = await self._gate(invocation, started, admit)
+            gate = await self._gate(invocation, started, admit, emit)
             if isinstance(gate, ToolResult):
                 return gate
             spec, args, risk = gate
@@ -132,9 +139,39 @@ class ToolExecutionEngine:
             return await self._succeed(invocation, spec, raw, risk, started)
 
     async def _gate(
+        self, inv: ToolInvocation, started: float, admit: Admit | None, emit: EventEmit
+    ) -> tuple[ToolSpec, BaseModel, RiskClass] | ToolResult:
+        """Stages 1-7: lookup, permission, budget, validation, risk, policy."""
+        basic = await self._check_basic(inv, started, admit)
+        if isinstance(basic, ToolResult):
+            return basic
+        spec, args, risk = basic
+
+        if inv.approval_id is not None:
+            return await self._gate_approved(inv, spec, args, risk, started)
+
+        try:
+            decision = self._policy.decide(
+                tool=spec.name, risk=risk, principal=inv.principal, tainted=self._tainted
+            )
+        except TypeError:
+            decision = self._policy.decide(tool=spec.name, risk=risk, principal=inv.principal)
+        if decision is PolicyDecision.ALLOW:
+            return spec, args, risk
+        if decision is PolicyDecision.REQUIRE_APPROVAL:
+            return await self._request_approval(inv, spec, risk, started, emit)
+        return await self._fail(
+            inv, spec, started,
+            status="denied", code="policy_denied", risk=risk,
+            message=(
+                f"Policy does not allow '{spec.name}' (risk {risk.value}) right now. "
+                "Nothing was executed. Tell the user instead of retrying."
+            ),
+        )  # fmt: skip
+
+    async def _check_basic(
         self, inv: ToolInvocation, started: float, admit: Admit | None
     ) -> tuple[ToolSpec, BaseModel, RiskClass] | ToolResult:
-        """Stages 1-5: lookup, permission, validation, risk, policy. A ToolResult means refused."""
         spec = self._registry.get(inv.tool)
         if spec is None:
             return await self._fail(
@@ -162,18 +199,112 @@ class ToolExecutionEngine:
                 message=f"Invalid arguments: {_describe(exc)} Fix them and try again.",
             )  # fmt: skip
         risk = spec.classify(args) if spec.classify else spec.default_risk
-        if self._policy.decide(tool=spec.name, risk=risk, principal=inv.principal) is not (
-            PolicyDecision.ALLOW
-        ):
+        return spec, args, risk
+
+    async def _gate_approved(
+        self,
+        inv: ToolInvocation,
+        spec: ToolSpec,
+        args: BaseModel,
+        risk: RiskClass,
+        started: float,
+    ) -> tuple[ToolSpec, BaseModel, RiskClass] | ToolResult:
+        if self._broker is None or inv.approval_id is None:
+            return await self._fail(
+                inv, spec, started,
+                status="denied", code="policy_denied", risk=risk,
+                message="No approval broker available to verify approved invocation.",
+            )  # fmt: skip
+        appr = await self._broker.get(inv.approval_id)
+        if appr is None:
+            return await self._fail(
+                inv, spec, started,
+                status="denied", code="approval_not_found", risk=risk,
+                message="Approval record was not found.",
+            )  # fmt: skip
+        current_ph = approval_payload_hash(spec.name, spec.version, inv.principal.value, inv.args)
+        if current_ph != appr.payload_hash:
+            await self._broker.invalidate(inv.approval_id)
+            return await self._fail(
+                inv, spec, started,
+                status="denied", code="approval_invalidated", risk=risk,
+                message="Arguments do not match the approved payload. Execution denied.",
+            )  # fmt: skip
+        claimed = await self._broker.consume(inv.approval_id)
+        if not claimed:
+            return await self._fail(
+                inv, spec, started,
+                status="denied", code="approval_not_consumed", risk=risk,
+                message="Approval could not be claimed (expired, rejected, or already consumed).",
+            )  # fmt: skip
+        return spec, args, risk
+
+    async def _request_approval(
+        self,
+        inv: ToolInvocation,
+        spec: ToolSpec,
+        risk: RiskClass,
+        started: float,
+        emit: EventEmit,
+    ) -> ToolResult:
+        """Create an approval request and return a pending_approval ToolResult."""
+        if self._broker is None:
+            # Fail closed: no broker = no approval path.
             return await self._fail(
                 inv, spec, started,
                 status="denied", code="policy_denied", risk=risk,
                 message=(
-                    f"Policy does not allow '{spec.name}' (risk {risk.value}) right now. "
-                    "Nothing was executed. Tell the user instead of retrying."
+                    f"Policy requires approval for '{spec.name}' (risk {risk.value}), "
+                    "but no approval broker is configured. Nothing was executed."
                 ),
             )  # fmt: skip
-        return spec, args, risk
+        try:
+            view = await self._broker.request(
+                tool=spec.name,
+                tool_version=spec.version,
+                principal=inv.principal,
+                risk=risk,
+                args=inv.args,
+                run_id=inv.run_id,
+                tool_call_id=inv.tool_call_id,
+                tainted=self._tainted,
+            )
+        except Exception:
+            log.exception("approval broker request failed for %s", spec.name)
+            return await self._fail(
+                inv, spec, started,
+                status="denied", code="approval_broker_error", risk=risk,
+                message=(
+                    f"Could not create approval request for '{spec.name}'. "
+                    "Nothing was executed."
+                ),
+            )  # fmt: skip
+
+        emit(events.ApprovalRequested(run_id=inv.run_id, approval=view))
+        await self._audit.append(
+            event_type="tool.approval_requested",
+            actor=inv.principal.value,
+            subject_type="tool",
+            subject_id=spec.name,
+            data={
+                "tool_call_id": inv.tool_call_id,
+                "risk": risk.value,
+                "approval_id": view.approval_id,
+                "tainted": self._tainted,
+            },
+        )
+        return ToolResult(
+            tool_call_id=inv.tool_call_id,
+            tool=inv.tool,
+            status="pending_approval",
+            content=(
+                f"[approval_required:{view.approval_id}] Waiting for user to approve '{spec.name}'."
+            ),
+            preview=f"pending approval for {spec.name}",
+            error_code="approval_required",
+            duration_ms=_elapsed_ms(started),
+            approval_id=view.approval_id,
+        )
 
     # ---- stages ----------------------------------------------------------------------------
     async def _run(self, spec: ToolSpec, args: BaseModel, ctx: ToolContext) -> Any:
@@ -210,6 +341,8 @@ class ToolExecutionEngine:
             evidence=evidence,
             duration_ms=_elapsed_ms(started),
         )
+        if inv.approval_id is not None and self._broker is not None:
+            await self._broker.mark_executed(inv.approval_id, success=True)
         await self._record(inv, spec, risk, result, result_chars=len(text))
         return result
 
@@ -233,6 +366,8 @@ class ToolExecutionEngine:
             error_code=code,
             duration_ms=_elapsed_ms(started),
         )
+        if inv.approval_id is not None and self._broker is not None:
+            await self._broker.mark_executed(inv.approval_id, success=False)
         await self._record(inv, spec, risk, result, result_chars=0)
         return result
 
@@ -246,8 +381,9 @@ class ToolExecutionEngine:
         result_chars: int,
     ) -> None:
         """Write the audit record. A failed write is logged; it never hides the tool result."""
+        status_key = result.status if result.status in ("ok", "denied", "error") else "denied"
         event_type = {"ok": "tool.executed", "denied": "tool.denied", "error": "tool.failed"}[
-            result.status
+            status_key
         ]
         canonical = json.dumps(inv.args, sort_keys=True, default=str, separators=(",", ":"))
         data: dict[str, Any] = {

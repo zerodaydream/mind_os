@@ -19,6 +19,7 @@ from opsagent.domain import (
     TERMINAL_EVENTS,
     AgentRuntime,
     AppEvent,
+    ApprovalBrokerPort,
     IdFactory,
     RunSpec,
     bind,
@@ -40,10 +41,18 @@ class _RunContext:
 
 
 class Application:
-    def __init__(self, *, runtime: AgentRuntime, bus: EventBus, new_id: IdFactory) -> None:
+    def __init__(
+        self,
+        *,
+        runtime: AgentRuntime,
+        bus: EventBus,
+        new_id: IdFactory,
+        broker: ApprovalBrokerPort | None = None,
+    ) -> None:
         self._runtime = runtime
         self._bus = bus
         self._new_id = new_id
+        self._broker = broker
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._awaiting: dict[str, _RunContext] = {}  # approval_id -> suspended run
         self._threads: dict[str, str] = {}  # conversation_id -> thread_id (history lives there)
@@ -78,7 +87,28 @@ class Application:
         ctx = self._awaiting.pop(command.approval_id, None)
         if ctx is None:
             return False
-        self._spawn(ctx, lambda: self._runtime.resume(ctx.thread_id, command))
+
+        async def _resume_stream() -> AsyncIterator[AppEvent]:
+            if self._broker is not None:
+                if command.decision == "approve":
+                    await self._broker.approve(command.approval_id)
+                elif command.decision == "edit":
+                    appr = await self._broker.get(command.approval_id)
+                    if appr:
+                        await self._broker.approve_edited(
+                            command.approval_id,
+                            new_args=command.edited_args or {},
+                            tool=appr.tool,
+                            tool_version=appr.tool_version,
+                            principal=appr.principal,
+                            risk=appr.risk,
+                        )
+                elif command.decision == "reject":
+                    await self._broker.reject(command.approval_id, reason=command.comment)
+            async for ev in self._runtime.resume(ctx.thread_id, command):
+                yield ev
+
+        self._spawn(ctx, _resume_stream)
         return True
 
     def set_mode(self, command: SetMode) -> None:

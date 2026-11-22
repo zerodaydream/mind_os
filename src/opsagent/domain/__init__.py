@@ -1,6 +1,22 @@
 """Pure domain: entities, enums, events, commands, and ports. Imports nothing internal."""
 
 from opsagent.domain import commands, events
+from opsagent.domain.approvals import (
+    ALLOWED_TRANSITIONS,
+    TERMINAL_STATES,
+    ApprovalRecord,
+    ApprovalState,
+    canonical_payload,
+)
+from opsagent.domain.approvals import (
+    TTL as APPROVAL_TTL,
+)
+from opsagent.domain.approvals import (
+    idempotency_key as approval_idempotency_key,
+)
+from opsagent.domain.approvals import (
+    payload_hash as approval_payload_hash,
+)
 from opsagent.domain.calendar import CalendarEvent, CalendarReader
 from opsagent.domain.context import CORRELATION_KEYS, bind, current
 from opsagent.domain.cost import Pricing, estimate_cost
@@ -14,6 +30,8 @@ from opsagent.domain.llm import LLMRequest, LLMResult, ModelCapabilities, ModelR
 from opsagent.domain.ports import (
     GEMINI_API_KEY,
     AgentRuntime,
+    ApprovalBrokerPort,
+    ApprovalRepository,
     ArtifactSlice,
     ArtifactStore,
     AuditSink,
@@ -29,6 +47,7 @@ from opsagent.domain.ports import (
 from opsagent.domain.reasoning import ReasoningEffort, ResolvedEffort, resolve_effort
 from opsagent.domain.redaction import REDACTED, redact, redact_text
 from opsagent.domain.risk import ApprovalMode, PolicyDecision, Principal, RiskClass
+from opsagent.domain.taint import TaintSource
 from opsagent.domain.tools import (
     Evidence,
     SubagentResult,
@@ -41,14 +60,21 @@ from opsagent.domain.tools import (
 )
 
 __all__ = [
+    "ALLOWED_TRANSITIONS",
+    "APPROVAL_TTL",
     "CORRELATION_KEYS",
     "GEMINI_API_KEY",
     "REDACTED",
     "SCHEMA_VERSION",
     "TERMINAL_EVENTS",
+    "TERMINAL_STATES",
     "AgentRuntime",
     "AppEvent",
+    "ApprovalBrokerPort",
     "ApprovalMode",
+    "ApprovalRecord",
+    "ApprovalRepository",
+    "ApprovalState",
     "ArtifactSlice",
     "ArtifactStore",
     "AuditSink",
@@ -74,6 +100,7 @@ __all__ = [
     "RunSpec",
     "SubagentResult",
     "SubagentStatus",
+    "TaintSource",
     "TaskBrief",
     "ToolIdempotency",
     "ToolInvocation",
@@ -81,7 +108,10 @@ __all__ = [
     "ToolStatus",
     "Usage",
     "UsageSink",
+    "approval_idempotency_key",
+    "approval_payload_hash",
     "bind",
+    "canonical_payload",
     "commands",
     "current",
     "estimate_cost",

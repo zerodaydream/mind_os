@@ -36,9 +36,10 @@ class ToolInvocation(_Frozen):
     agent: str  # which agent asks; grants are per agent
     tool_call_id: str
     run_id: str | None = None
+    approval_id: str | None = None
 
 
-ToolStatus = Literal["ok", "error", "denied"]
+ToolStatus = Literal["ok", "error", "denied", "pending_approval"]
 
 
 class ToolResult(_Frozen):
@@ -53,6 +54,7 @@ class ToolResult(_Frozen):
     artifact_ref: str | None = None
     evidence: tuple[Evidence, ...] = ()
     duration_ms: int = 0
+    approval_id: str | None = None  # set when status == "pending_approval"
 
 
 class TaskBrief(_Frozen):

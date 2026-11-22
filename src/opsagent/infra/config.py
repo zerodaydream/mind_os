@@ -57,10 +57,11 @@ class Settings(BaseSettings):
     # Observability
     log_level: str = "INFO"
     log_dir: Path = Path("~/Library/Logs/opsagent")
+    config_dir: Path = Path("~/.config/opsagent")
 
-    @field_validator("log_dir")
+    @field_validator("log_dir", "config_dir")
     @classmethod
-    def _expand_log_dir(cls, value: Path) -> Path:
+    def _expand_path(cls, value: Path) -> Path:
         return value.expanduser()
 
     @field_validator("log_level")

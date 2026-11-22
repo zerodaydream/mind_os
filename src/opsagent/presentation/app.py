@@ -131,7 +131,10 @@ class OpsApp(App[None]):
         self._refresh_hint()
 
     def _tick_ui(self) -> None:
-        self.query_one("#spinner", SpinnerLine).tick(self.state)
+        spinners = self.query("#spinner")
+        if not spinners:
+            return
+        spinners.first(SpinnerLine).tick(self.state)
         if self._hint_notice is not None and time.monotonic() > self._hint_notice[1]:
             self._hint_notice = None
             self._refresh_hint()

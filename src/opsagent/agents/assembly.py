@@ -14,6 +14,7 @@ from opsagent.agents.runtime import ORCHESTRATOR, LangChainRuntime
 from opsagent.agents.subagents import CALENDAR, ChatModels, SubagentRunner, delegate_spec
 from opsagent.agents.usage import UsageTracker
 from opsagent.domain import (
+    ApprovalBrokerPort,
     ArtifactStore,
     AuditSink,
     CalendarReader,
@@ -51,6 +52,7 @@ def build_runtime(
     clock: Clock,
     new_id: IdFactory,
     efforts: Mapping[ModelRole, ReasoningEffort],
+    broker: ApprovalBrokerPort | None = None,
 ) -> LangChainRuntime:
     hub = RunHub()
     tracker = UsageTracker(sink=usage, pricing=pricing)
@@ -74,7 +76,12 @@ def build_runtime(
     )
     grants = {ORCHESTRATOR: ORCHESTRATOR_TOOLS, **{d.name: d.tools for d in runner.definitions}}
     engine = ToolExecutionEngine(
-        registry=registry, grants=grants, policy=policy, audit=audit, artifacts=artifacts
+        registry=registry,
+        grants=grants,
+        policy=policy,
+        audit=audit,
+        artifacts=artifacts,
+        broker=broker,
     )
     runner.bind_engine(engine)
     return LangChainRuntime(

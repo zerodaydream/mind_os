@@ -18,6 +18,7 @@ from langchain.agents import create_agent
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.errors import GraphRecursionError
+from langgraph.types import Command
 
 from opsagent.agents.bridge import EngineMiddleware, stub_tools
 from opsagent.agents.hub import DONE, RunHub, RunState
@@ -79,7 +80,97 @@ class LangChainRuntime:
         return self._stream(run)
 
     def resume(self, thread_id: str, decision: Decide) -> AsyncIterator[AppEvent]:
-        raise NotImplementedError("Approvals and resume arrive in Phase 05.")
+        return self._stream_resume(thread_id, decision)
+
+    async def _stream_resume(
+        self, thread_id: str, decision: Decide
+    ) -> AsyncIterator[AppEvent]:
+        """Resume a graph that was interrupted waiting for an approval decision.
+
+        Uses the thread_id as the hub run_id for the duration of the resume so the bridge
+        can emit events. Events stream just like _stream.
+        """
+        run_id = thread_id
+        state = self._hub.open(run_id, self._limits)
+        outcome_map: dict[str, Any] = {
+            "approve": "approved",
+            "edit": "edited",
+            "reject": "rejected",
+        }
+        outcome = outcome_map.get(decision.decision, "rejected")
+        state.emit(
+            events.ApprovalResolved(
+                run_id=run_id,
+                approval_id=decision.approval_id,
+                outcome=outcome,
+            )
+        )
+        resume_value: dict[str, Any] = {
+            "action": decision.decision,
+            "approval_id": decision.approval_id,
+            "edited_args": decision.edited_args,
+            "comment": decision.comment,
+        }
+        state.task = asyncio.create_task(
+            self._work_resume(thread_id, resume_value, state),
+            name=f"resume-{thread_id}",
+        )
+        try:
+            while True:
+                item = await state.queue.get()
+                if item is DONE:
+                    return
+                if isinstance(item, BaseException):
+                    raise item
+                yield item  # type: ignore[misc]
+        finally:
+            state.task.cancel()
+            await asyncio.gather(state.task, return_exceptions=True)
+            self._hub.close(run_id)
+
+    async def _work_resume(
+        self, thread_id: str, resume_value: dict[str, Any], state: RunState
+    ) -> None:
+        try:
+            async with asyncio.timeout(self._limits.deadline_s):
+                await self._drive_resume(thread_id, resume_value, state)
+        except TimeoutError:
+            self._stop(state, f"the {self._limits.deadline_s:g}s run deadline passed")
+        except GraphRecursionError:
+            self._stop(state, f"the step limit of {self._limits.max_steps} was reached")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            state.queue.put_nowait(exc)
+        finally:
+            state.queue.put_nowait(DONE)
+
+    async def _drive_resume(
+        self, thread_id: str, resume_value: dict[str, Any], state: RunState
+    ) -> None:
+        effort = self._default_effort
+        graph = self.graph(effort)
+        config: dict[str, Any] = {
+            "configurable": {"thread_id": thread_id},
+            "recursion_limit": self._limits.recursion(self._limits.max_steps),
+        }
+        message_id = self._new_id("msg")
+        stream = graph.astream(
+            Command(resume=resume_value),
+            config,
+            stream_mode=["messages", "updates"],
+        )
+        async for mode, data in stream:
+            if mode == "messages":
+                self._on_chunk(state, message_id, *data)
+            elif mode == "updates":
+                for node, update in data.items():
+                    if node != "model":
+                        continue
+                    for message in update.get("messages", ()):
+                        if isinstance(message, AIMessage):
+                            await self._on_message(state, message_id, message, effort)
+                            message_id = self._new_id("msg")
 
     async def cancel(self, run_id: str) -> None:
         state = self._hub.get(run_id)

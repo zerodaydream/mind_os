@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass
 from typing import Any
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from opsagent.agents import RunLimits, UnavailableRuntime, build_runtime
-from opsagent.application import Application, EventBus
+from opsagent.application import Application, ApprovalBroker, EventBus
 from opsagent.domain import AgentRuntime, CredentialProvider, LLMProvider, ModelRole
 from opsagent.infra import (
     Settings,
@@ -19,9 +20,14 @@ from opsagent.infra import (
 )
 from opsagent.integrations.calendar import FixtureCalendar, sample_events
 from opsagent.integrations.llm import GeminiProvider
-from opsagent.persistence import ArtifactRepository, AuditRepository, UsageRepository
+from opsagent.persistence import (
+    ApprovalRepository,
+    ArtifactRepository,
+    AuditRepository,
+    UsageRepository,
+)
 from opsagent.persistence.db import Pool
-from opsagent.tools import ReadOnlyPolicy
+from opsagent.tools import PolicyConfig, PolicyEngine
 
 
 @dataclass(frozen=True)
@@ -53,8 +59,19 @@ def build_container(
         include_thoughts=settings.include_thoughts,
         thinking_budget=settings.thinking_budget,
     )
+    broker = None
+    if pool is not None:
+        audit_repo = AuditRepository(pool)
+        approval_repo = ApprovalRepository(pool)
+        broker = ApprovalBroker(repo=approval_repo, audit=audit_repo, new_id=new_id)
+
     if runtime is None and pool is not None and checkpointer is not None:
         tz = resolve_timezone(settings.timezone)
+        policy_config: PolicyConfig | None = None
+        policy_file = settings.config_dir / "policy.toml"
+        if policy_file.is_file():
+            with contextlib.suppress(Exception):
+                policy_config = PolicyConfig.from_toml(policy_file.read_text(encoding="utf-8"))
         runtime = build_runtime(
             models=llm,
             calendar=FixtureCalendar(sample_events(clock.now(), tz)),  # Google: Phase 06
@@ -63,7 +80,7 @@ def build_container(
             artifacts=ArtifactRepository(pool, new_id),
             usage=UsageRepository(pool),
             pricing=settings.pricing(),
-            policy=ReadOnlyPolicy(),  # real policy engine and approvals: Phase 05
+            policy=PolicyEngine(policy_config),
             checkpointer=checkpointer,
             limits=RunLimits(
                 max_steps=settings.max_agent_steps,
@@ -75,7 +92,10 @@ def build_container(
             clock=clock,
             new_id=new_id,
             efforts={role: settings.reasoning_for(role) for role in ModelRole},
+            broker=broker,
         )
     bus = EventBus(clock)
-    app = Application(runtime=runtime or UnavailableRuntime(), bus=bus, new_id=new_id)
+    app = Application(
+        runtime=runtime or UnavailableRuntime(), bus=bus, new_id=new_id, broker=broker
+    )
     return Container(settings=settings, credentials=credentials, llm=llm, bus=bus, app=app)

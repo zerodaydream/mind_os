@@ -29,6 +29,10 @@ TABLES = {
     "checkpoints",
     "checkpoint_writes",
     "checkpoint_blobs",
+    "artifacts",
+    "tool_executions",
+    "approvals",
+    "approval_batches",
 }
 
 

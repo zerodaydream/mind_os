@@ -11,8 +11,9 @@ from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict
 
+from opsagent.domain.approvals import ApprovalRecord
 from opsagent.domain.commands import Decide
-from opsagent.domain.events import AppEvent
+from opsagent.domain.events import AppEvent, ApprovalView
 from opsagent.domain.llm import LLMRequest, LLMResult, ModelCapabilities, ModelRole, Usage
 from opsagent.domain.reasoning import ReasoningEffort
 from opsagent.domain.risk import PolicyDecision, Principal, RiskClass
@@ -122,4 +123,96 @@ class UsageSink(Protocol):
 class PolicyEngine(Protocol):
     """Decides whether a classified tool call may run. It can only be tightened, never bypassed."""
 
-    def decide(self, *, tool: str, risk: RiskClass, principal: Principal) -> PolicyDecision: ...
+    def decide(
+        self, *, tool: str, risk: RiskClass, principal: Principal, tainted: bool = False
+    ) -> PolicyDecision: ...
+
+
+class ApprovalRepository(Protocol):
+    """Write and read approval rows. The only code that may touch the approvals table."""
+
+    async def create(
+        self,
+        *,
+        approval_id: str,
+        tool: str,
+        tool_version: str,
+        principal: Principal,
+        risk: RiskClass,
+        payload_hash: str,
+        idempotency_key: str,
+        args_json: str,
+        summary: str,
+        payload_preview: str,
+        tainted: bool,
+        expires_at: datetime,
+        run_id: str | None,
+    ) -> None: ...
+
+    async def transition(
+        self,
+        approval_id: str,
+        *,
+        from_states: frozenset[str],
+        to_state: str,
+        actor: str | None = None,
+        payload_hash: str | None = None,
+        args_json: str | None = None,
+    ) -> bool:
+        """Atomically transition state. Returns True if exactly one row was updated."""
+        ...
+
+    async def get(self, approval_id: str) -> ApprovalRecord | None: ...
+
+    async def pending_for_run(self, run_id: str) -> list[ApprovalRecord]: ...
+
+    async def expire_stale(self) -> int:
+        """Set PENDING+APPROVED+APPROVED_EDITED rows past expires_at to EXPIRED. Returns count."""
+        ...
+
+    async def find_started_executions(self) -> list[tuple[str, str, str | None]]:
+        """Find tool_executions left in STARTED state across restarts."""
+        ...
+
+
+class ApprovalBrokerPort(Protocol):
+    """Creates, tracks, and resolves approval requests. Used by the tool engine."""
+
+    async def request(
+        self,
+        *,
+        tool: str,
+        tool_version: str,
+        principal: Principal,
+        risk: RiskClass,
+        args: dict[str, Any],
+        run_id: str | None,
+        tool_call_id: str,
+        tainted: bool,
+    ) -> ApprovalView: ...
+
+    async def get(self, approval_id: str) -> ApprovalRecord | None: ...
+
+    async def approve(self, approval_id: str, *, actor: str = "USER") -> bool: ...
+
+    async def approve_edited(
+        self,
+        approval_id: str,
+        *,
+        new_args: dict[str, Any],
+        tool: str,
+        tool_version: str,
+        principal: Principal,
+        risk: RiskClass,
+        actor: str = "USER",
+    ) -> str | None: ...
+
+    async def reject(
+        self, approval_id: str, *, reason: str | None = None, actor: str = "USER"
+    ) -> bool: ...
+
+    async def consume(self, approval_id: str) -> bool: ...
+
+    async def mark_executed(self, approval_id: str, *, success: bool) -> None: ...
+
+    async def invalidate(self, approval_id: str) -> None: ...
