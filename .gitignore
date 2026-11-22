@@ -13,3 +13,7 @@ node_modules/
 .DS_Store
 .slop-cleanup/
 .mindos/
+
+# Vendored agent skills (npx skills / local copies). Keep docs + AGENTS.md in git.
+.agents/skills/
+.claude/skills/
