@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from opsagent.domain import (
+from mindos.domain import (
     ALLOWED_TRANSITIONS,
     ApprovalRecord,
     ArtifactSlice,
@@ -14,7 +14,7 @@ from opsagent.domain import (
     RiskClass,
     Usage,
 )
-from opsagent.tools import TransientToolError
+from mindos.tools import TransientToolError
 
 
 class MemoryAudit:

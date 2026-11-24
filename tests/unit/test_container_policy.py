@@ -7,9 +7,9 @@ from typing import Any
 
 import pytest
 
-from opsagent.bootstrap.container import build_container
-from opsagent.infra import Settings
-from opsagent.tools import PolicyError
+from mindos.bootstrap.container import build_container
+from mindos.infra import Settings
+from mindos.tools import PolicyError
 
 
 def settings(tmp_path: Path) -> Settings:

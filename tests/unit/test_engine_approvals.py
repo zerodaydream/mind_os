@@ -6,7 +6,7 @@ import asyncio
 from datetime import timedelta
 from typing import Any
 
-from opsagent.domain import (
+from mindos.domain import (
     ApprovalMode,
     PolicyDecision,
     Principal,
@@ -18,7 +18,7 @@ from opsagent.domain import (
     TransientAuthError,
     events,
 )
-from opsagent.tools.policy import PolicyConfig, PolicyEngine, ToolPolicy
+from mindos.tools.policy import PolicyConfig, PolicyEngine, ToolPolicy
 from tests.support.approval_kit import Env
 
 
@@ -260,7 +260,7 @@ async def test_policy_tightened_after_approval_blocks_execution() -> None:
     deny = PolicyConfig(overrides=[ToolPolicy("mail.send_message", PolicyDecision.DENY)])
     env.engine._policy = PolicyEngine(
         deny
-    )  # the user ran `ops policy tighten --deny` and restarted
+    )  # the user ran `mindos policy tighten --deny` and restarted
     result = await env.run_approved(aid)
     assert result.error_code == "policy_denied" and env.sent == []
     assert env.state(aid) == "INVALIDATED"
@@ -384,11 +384,11 @@ async def test_r2_risk_comes_from_the_classifier_for_approvals() -> None:
 async def test_a_reauth_failure_tells_the_user_how_and_is_never_retried() -> None:
     env = Env()
     env.auth_error = ReauthRequired(
-        "google", "google needs you to sign in again. Run: ops auth google"
+        "google", "google needs you to sign in again. Run: mindos auth google"
     )
     result = await env.propose("mail.fetch", {"q": "x"})
     assert result.status == "error" and result.error_code == "auth_required"
-    assert "ops auth google" in result.content and "do not retry" in result.content
+    assert "mindos auth google" in result.content and "do not retry" in result.content
     assert env.fetches == 1  # a read tool is retried on transient errors, not on auth
     auth = [e for e in env.events if isinstance(e, events.AuthRequired)]
     assert [(e.provider, e.scope_delta) for e in auth] == [("google", ())]

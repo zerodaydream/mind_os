@@ -6,8 +6,8 @@ from datetime import timedelta
 
 import pytest
 
-from opsagent.application.approval_broker import ApprovalBroker
-from opsagent.domain import Principal, RiskClass, approval_payload_hash, bind
+from mindos.application.approval_broker import ApprovalBroker
+from mindos.domain import Principal, RiskClass, approval_payload_hash, bind
 from tests.support.approval_kit import Env
 
 ARGS = {"recipient": "user@example.com", "body": "Hello", "cc": None}

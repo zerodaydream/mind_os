@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 
-from opsagent.domain import ReauthRequired, TokenGrant
-from opsagent.integrations.auth.loopback import LoopbackError, LoopbackReceiver
-from opsagent.integrations.auth.oauth2 import OAuth2Client
-from opsagent.integrations.auth.pkce import challenge_for, new_state, new_verifier
+from mindos.domain import ReauthRequired, TokenGrant
+from mindos.integrations.auth.loopback import LoopbackError, LoopbackReceiver
+from mindos.integrations.auth.oauth2 import OAuth2Client
+from mindos.integrations.auth.pkce import challenge_for, new_state, new_verifier
 
 
 async def sign_in(

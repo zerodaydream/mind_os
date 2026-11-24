@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from opsagent.domain import CredentialProvider
+from mindos.domain import CredentialProvider
 
 
 class ChainedCredentials:

@@ -6,8 +6,8 @@ from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from typing import Any
 
-from opsagent.domain import AuthStatus, IntegrationState
-from opsagent.persistence.db import Pool
+from mindos.domain import AuthStatus, IntegrationState
+from mindos.persistence.db import Pool
 
 
 class IntegrationStateRepository:
@@ -58,7 +58,7 @@ class AdvisoryRefreshLock:
         async with self._pool.connection() as conn, conn.transaction():
             await conn.execute(
                 "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
-                (f"opsagent.refresh:{provider}:{account_id}",),
+                (f"mindos.refresh:{provider}:{account_id}",),
             )
             yield
 

@@ -4,11 +4,11 @@ import asyncio
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 
-from opsagent.agents import UnavailableRuntime
-from opsagent.application import Application, EventBus
-from opsagent.domain import AppEvent, RunSpec, events
-from opsagent.domain.commands import Decide, SubmitMessage
-from opsagent.infra import new_id
+from mindos.agents import UnavailableRuntime
+from mindos.application import Application, EventBus
+from mindos.domain import AppEvent, RunSpec, events
+from mindos.domain.commands import Decide, SubmitMessage
+from mindos.infra import new_id
 
 
 class FixedClock:

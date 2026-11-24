@@ -7,7 +7,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from opsagent.domain.risk import Principal
+from mindos.domain.risk import Principal
 
 
 class _Frozen(BaseModel):

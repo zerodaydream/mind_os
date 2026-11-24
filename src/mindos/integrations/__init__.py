@@ -1,1 +1,1 @@
-"""Provider adapters (LLM, Google, Microsoft, ...). Only `bootstrap` imports from here."""
+"""Provider adapters (LLM, Google, ...). Only `bootstrap` imports from here."""

@@ -8,16 +8,23 @@ from zoneinfo import ZoneInfo
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 
-from opsagent.agents.hub import RunHub
-from opsagent.agents.limits import RunLimits
-from opsagent.agents.runtime import ORCHESTRATOR, LangChainRuntime
-from opsagent.agents.subagents import CALENDAR, ChatModels, SubagentRunner, delegate_spec
-from opsagent.agents.usage import UsageTracker
-from opsagent.domain import (
+from mindos.agents.hub import RunHub
+from mindos.agents.limits import RunLimits
+from mindos.agents.runtime import ORCHESTRATOR, LangChainRuntime
+from mindos.agents.subagents import (
+    ChatModels,
+    SubagentRunner,
+    calendar_definition,
+    delegate_spec,
+)
+from mindos.agents.tuning import ModelCatalog, ModelTuner
+from mindos.agents.usage import UsageTracker
+from mindos.domain import (
     ApprovalBrokerPort,
     ArtifactStore,
     AuditSink,
     CalendarReader,
+    CalendarWriter,
     Clock,
     ExecutionLog,
     IdFactory,
@@ -28,11 +35,12 @@ from opsagent.domain import (
     Tracing,
     UsageSink,
 )
-from opsagent.tools import (
+from mindos.tools import (
     WRITE_TODOS,
     ToolExecutionEngine,
     ToolRegistry,
     calendar_specs,
+    calendar_write_specs,
     read_artifact_spec,
 )
 
@@ -43,6 +51,7 @@ def build_runtime(
     *,
     models: ChatModels,
     calendar: CalendarReader,
+    writer: CalendarWriter | None = None,
     tz: ZoneInfo,
     audit: AuditSink,
     artifacts: ArtifactStore,
@@ -54,27 +63,36 @@ def build_runtime(
     clock: Clock,
     new_id: IdFactory,
     efforts: Mapping[ModelRole, ReasoningEffort],
+    catalog: ModelCatalog | None = None,
+    extra_models: tuple[str, ...] = (),
     tracing: Tracing | None = None,
     broker: ApprovalBrokerPort | None = None,
     executions: ExecutionLog | None = None,
 ) -> LangChainRuntime:
+    tuner = ModelTuner(
+        efforts=dict(efforts),
+        model_id=models.model_id,
+        catalog=catalog,
+        extra_models=extra_models,
+    )
     hub = RunHub()
     tracker = UsageTracker(sink=usage, pricing=pricing)
     runner = SubagentRunner(
-        definitions=(CALENDAR,),
+        definitions=(calendar_definition(can_write=writer is not None),),
         models=models,
         hub=hub,
         tracker=tracker,
         clock=clock,
         tz=tz,
         new_id=new_id,
-        efforts=dict(efforts),
+        tuner=tuner,
     )
     registry = ToolRegistry(
         [
             WRITE_TODOS,
             read_artifact_spec(artifacts),
             *calendar_specs(calendar, tz),
+            *(calendar_write_specs(calendar, writer, tz) if writer else ()),
             delegate_spec(runner, timeout_s=limits.deadline_s),
         ]
     )
@@ -101,6 +119,6 @@ def build_runtime(
         clock=clock,
         tz=tz,
         new_id=new_id,
-        default_effort=efforts.get(ModelRole.ORCHESTRATOR, ReasoningEffort.HIGH),
+        tuner=tuner,
         tracing=tracing,
     )

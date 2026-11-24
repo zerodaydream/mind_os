@@ -39,21 +39,21 @@ prompt caching, and refusal handling. ADR 0001 already proved the harness can be
 - `Tracing` is a domain port with one adapter, `integrations/tracing/langsmith.py`. LangChain,
   LangGraph, and Deep Agents trace themselves inside a `tracing_context`; the adapter decides
   whether, where, and what.
-- **Off by default, and only our settings turn it on.** `OPS_LANGSMITH_TRACING=true` enables it. A
+- **Off by default, and only our settings turn it on.** `MINDOS_LANGSMITH_TRACING=true` enables it. A
   `LANGSMITH_TRACING=true` in the shell does not: when our flag is off the adapter opens
   `tracing_context(enabled=False)`, which wins. (A `source .env` once turned tracing on silently; see
   `docs/phases/01-spikes-results.md`.) Reason: runs carry mail and calendar content.
 - **Redaction before send.** The client's input and output hooks run `redact` (secrets masked).
-  `OPS_LANGSMITH_HIDE_IO=true` sends run structure only. Sampling is `OPS_LANGSMITH_SAMPLING_RATE`.
+  `MINDOS_LANGSMITH_HIDE_IO=true` sends run structure only. Sampling is `MINDOS_LANGSMITH_SAMPLING_RATE`.
 - **One run, one trace, one thread.** Each run (and each resume of it) opens one context with
-  `thread_id`, `conversation_id`, `opsagent_run_id`, and version metadata. Metadata is not copied to
+  `thread_id`, `conversation_id`, `mindos_run_id`, and version metadata. Metadata is not copied to
   child runs by LangSmith, so the orchestrator and every subagent invocation carry `thread_id`
-  explicitly. Subagent runs are named `opsagent.subagent.<name>`, the orchestrator
-  `opsagent.orchestrator`.
-- **Destination.** `OPS_LANGSMITH_AGENT_ID` plus `OPS_LANGSMITH_ENVIRONMENT` address an agent in an
-  agent-based workspace; otherwise `OPS_LANGSMITH_PROJECT`. Set `OPS_LANGSMITH_ENDPOINT` for a
-  non-US or self-hosted instance and `OPS_LANGSMITH_WORKSPACE_ID` if the key reaches several.
-- **Key.** Keychain first (`ops auth langsmith`), then `OPS_LANGSMITH_API_KEY` /
+  explicitly. Subagent runs are named `mindos.subagent.<name>`, the orchestrator
+  `mindos.orchestrator`.
+- **Destination.** `MINDOS_LANGSMITH_AGENT_ID` plus `MINDOS_LANGSMITH_ENVIRONMENT` address an agent in an
+  agent-based workspace; otherwise `MINDOS_LANGSMITH_PROJECT`. Set `MINDOS_LANGSMITH_ENDPOINT` for a
+  non-US or self-hosted instance and `MINDOS_LANGSMITH_WORKSPACE_ID` if the key reaches several.
+- **Key.** Keychain first (`mindos auth langsmith`), then `MINDOS_LANGSMITH_API_KEY` /
   `LANGSMITH_API_KEY` in `.env`. Never logged. Traces are flushed on exit.
 
 ## Consequences

@@ -6,7 +6,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from opsagent.domain.reasoning import ReasoningEffort
+from mindos.domain.reasoning import ReasoningEffort
 
 
 class ModelRole(StrEnum):
@@ -23,6 +23,14 @@ class ModelCapabilities(_Frozen):
     model_id: str
     effort_levels: tuple[ReasoningEffort, ...] = ()  # empty: no configurable reasoning
     default_effort: ReasoningEffort | None = None
+
+
+class ModelChoice(_Frozen):
+    """What a role is running with right now."""
+
+    role: ModelRole
+    model_id: str
+    effort: ReasoningEffort | None = None  # None: the model has no configurable reasoning
 
 
 class Usage(_Frozen):

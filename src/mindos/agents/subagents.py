@@ -10,7 +10,8 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from functools import partial
 from typing import Annotated, Any, Protocol
 from zoneinfo import ZoneInfo
 
@@ -20,12 +21,13 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.errors import GraphRecursionError
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
-from opsagent.agents.bridge import EngineMiddleware, stub_tools
-from opsagent.agents.hub import RunHub, RunState
-from opsagent.agents.messages import split_content, usage_of
-from opsagent.agents.prompts import calendar_prompt
-from opsagent.agents.usage import UsageTracker
-from opsagent.domain import (
+from mindos.agents.bridge import EngineMiddleware, stub_tools
+from mindos.agents.hub import RunHub, RunState
+from mindos.agents.messages import split_content, usage_of
+from mindos.agents.prompts import calendar_prompt
+from mindos.agents.tuning import ModelTuner
+from mindos.agents.usage import UsageTracker
+from mindos.domain import (
     Clock,
     IdFactory,
     ModelRole,
@@ -39,7 +41,7 @@ from opsagent.domain import (
     events,
     redact_text,
 )
-from opsagent.tools import ToolContext, ToolError, ToolExecutionEngine, ToolSpec
+from mindos.tools import ToolContext, ToolError, ToolExecutionEngine, ToolSpec
 
 log = logging.getLogger(__name__)
 
@@ -71,6 +73,26 @@ CALENDAR = SubagentDefinition(
 )
 
 
+CALENDAR_WRITE_TOOLS = frozenset(
+    {"calendar.create_event", "calendar.update_event", "calendar.delete_event"}
+)
+
+
+def calendar_definition(*, can_write: bool) -> SubagentDefinition:
+    """The calendar subagent. With a writer it can also propose changes, which need approval."""
+    if not can_write:
+        return CALENDAR
+    return replace(
+        CALENDAR,
+        description=(
+            "Reads the user's calendar and, with the user's approval, creates, changes, "
+            "or deletes events."
+        ),
+        prompt=partial(calendar_prompt, writable=True),
+        tools=CALENDAR.tools | CALENDAR_WRITE_TOOLS,
+    )
+
+
 def render_brief(brief: TaskBrief) -> str:
     lines = [f"Task: {brief.goal}"]
     if brief.constraints:
@@ -93,7 +115,7 @@ class SubagentRunner:
         clock: Clock,
         tz: ZoneInfo,
         new_id: IdFactory,
-        efforts: dict[ModelRole, ReasoningEffort],
+        tuner: ModelTuner,
     ) -> None:
         self._defs = {d.name: d for d in definitions}
         self._models = models
@@ -102,9 +124,9 @@ class SubagentRunner:
         self._clock = clock
         self._tz = tz
         self._new_id = new_id
-        self._efforts = efforts
+        self._tuner = tuner
         self._engine: ToolExecutionEngine | None = None
-        self._graphs: dict[str, Any] = {}
+        self._graphs: dict[tuple[str, str, ReasoningEffort | None], Any] = {}
 
     @property
     def definitions(self) -> tuple[SubagentDefinition, ...]:
@@ -117,14 +139,16 @@ class SubagentRunner:
         self._engine = engine
 
     def graph(self, name: str) -> Any:
-        """The compiled agent for a subagent. Built once per definition."""
+        """The compiled agent for a subagent. Built once per (model, effort) in use."""
         if self._engine is None:
             raise RuntimeError("engine is not bound")
-        if name not in self._graphs:
-            definition = self._defs[name]
+        definition = self._defs[name]
+        effort = self._tuner.effort(definition.role)
+        key = (name, self._models.model_id(definition.role), effort)
+        if key not in self._graphs:
             engine = self._engine
-            self._graphs[name] = create_deep_agent(
-                self._models.chat(definition.role, self._efforts.get(definition.role)),
+            self._graphs[key] = create_deep_agent(
+                self._models.chat(definition.role, effort),
                 tools=stub_tools(engine, name),
                 middleware=[
                     EngineMiddleware(
@@ -139,7 +163,7 @@ class SubagentRunner:
                 checkpointer=False,
                 name=name,
             )
-        return self._graphs[name]
+        return self._graphs[key]
 
     def _prompt_for(self, definition: SubagentDefinition) -> Callable[[], str]:
         def prompt() -> str:
@@ -189,7 +213,7 @@ class SubagentRunner:
                 {"messages": [HumanMessage(render_brief(brief))]},
                 {
                     "recursion_limit": state.limits.recursion(state.limits.subagent_steps),
-                    "run_name": f"opsagent.subagent.{definition.name}",
+                    "run_name": f"mindos.subagent.{definition.name}",
                     # LangSmith does not copy metadata to child runs: say which thread this is.
                     "metadata": {
                         "thread_id": current().get("thread_id"),
@@ -213,7 +237,7 @@ class SubagentRunner:
                     role=definition.role,
                     model=self._models.model_id(definition.role),
                     usage=usage_of(message),
-                    effort=self._efforts.get(definition.role),
+                    effort=self._tuner.effort(definition.role),
                 )
         text = _final_text(messages)
         if status == "success" and not text:

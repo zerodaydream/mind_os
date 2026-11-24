@@ -18,7 +18,7 @@ os.environ["LANGCHAIN_TRACING_V2"] = "false"
 keyring.set_keyring(NullKeyring())
 
 ADMIN_URL = os.environ.get(
-    "OPS_TEST_ADMIN_URL", "postgresql://opsagent:opsagent@localhost:5433/postgres"
+    "MINDOS_TEST_ADMIN_URL", "postgresql://mindos:mindos@localhost:5433/postgres"
 )
 
 
@@ -29,7 +29,7 @@ def _url_for(dbname: str) -> str:
 @pytest.fixture
 def db_url() -> Iterator[str]:
     """A fresh empty database on the local compose Postgres, dropped after the test."""
-    name = f"opsagent_test_{uuid.uuid4().hex[:10]}"
+    name = f"mindos_test_{uuid.uuid4().hex[:10]}"
     try:
         admin = psycopg.connect(ADMIN_URL, autocommit=True, connect_timeout=3)
     except psycopg.Error:

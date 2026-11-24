@@ -7,15 +7,17 @@ from typing import Any
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 
-from opsagent import __version__
-from opsagent.agents import LangChainRuntime, RunLimits, UnavailableRuntime, build_runtime
-from opsagent.application import Application, ApprovalBroker, EventBus
-from opsagent.bootstrap.credentials import ChainedCredentials
-from opsagent.domain import (
+from mindos import __version__
+from mindos.agents import LangChainRuntime, RunLimits, UnavailableRuntime, build_runtime
+from mindos.application import Application, ApprovalBroker, EventBus
+from mindos.bootstrap.auth import AuthKit, build_auth
+from mindos.bootstrap.credentials import ChainedCredentials
+from mindos.domain import (
     LANGSMITH_API_KEY,
     AgentRuntime,
     ApprovalBrokerPort,
     AuditSink,
+    Calendar,
     CredentialProvider,
     ExecutionLog,
     LLMProvider,
@@ -23,26 +25,27 @@ from opsagent.domain import (
     SessionMode,
     Tracing,
 )
-from opsagent.infra import (
+from mindos.infra import (
     Settings,
     SettingsCredentialProvider,
     SystemClock,
     new_id,
     resolve_timezone,
 )
-from opsagent.integrations.auth import KeychainCredentialProvider, KeychainSecretStore
-from opsagent.integrations.calendar import FixtureCalendar, sample_events
-from opsagent.integrations.llm import GeminiProvider
-from opsagent.integrations.tracing import LangSmithTracing, TracingConfig
-from opsagent.persistence import (
+from mindos.integrations.auth import KeychainCredentialProvider, KeychainSecretStore
+from mindos.integrations.calendar import FixtureCalendar, sample_events
+from mindos.integrations.google import GoogleCalendar
+from mindos.integrations.llm import GeminiProvider
+from mindos.integrations.tracing import LangSmithTracing, TracingConfig
+from mindos.persistence import (
     ApprovalRepository,
     ArtifactRepository,
     AuditRepository,
     ExecutionRepository,
     UsageRepository,
 )
-from opsagent.persistence.db import Pool
-from opsagent.tools import PolicyEngine, load_policy
+from mindos.persistence.db import Pool
+from mindos.tools import PolicyEngine, load_policy
 
 
 @dataclass(frozen=True)
@@ -57,6 +60,7 @@ class Container:
     executions: ExecutionLog | None = None
     audit: AuditSink | None = None
     tracing: Tracing | None = None
+    auth: AuthKit | None = None  # holds the HTTP client; close it on exit
 
 
 def build_tracing(settings: Settings, credentials: CredentialProvider) -> LangSmithTracing:
@@ -106,6 +110,7 @@ def build_container(
     executions: ExecutionLog | None = None
     audit: AuditSink | None = None
     tracing = build_tracing(settings, credentials)
+    auth: AuthKit | None = None
     mode = SessionMode()  # shared: the UI sets it, the policy engine enforces it
     if runtime is None and pool is not None and checkpointer is not None:
         tz = resolve_timezone(settings.timezone)
@@ -116,9 +121,18 @@ def build_container(
         )
         # An unreadable policy.toml raises. It must never fall back to the compiled defaults.
         policy = PolicyEngine(load_policy(settings.config_dir / "policy.toml"), mode)
+        # Google when a client ID is configured (not signed in: the tools say how to sign in),
+        # otherwise a sample calendar so the agent has something to work on.
+        auth = build_auth(settings, pool, clock)
+        calendar: Calendar
+        if "google" in auth.clients:
+            calendar = GoogleCalendar(tokens=auth.tokens, states=auth.states, http=auth.http, tz=tz)
+        else:
+            calendar = FixtureCalendar(sample_events(clock.now(), tz))
         runtime = build_runtime(
             models=llm,
-            calendar=FixtureCalendar(sample_events(clock.now(), tz)),  # Google: Phase 06
+            calendar=calendar,
+            writer=calendar,
             tz=tz,
             audit=audit,
             artifacts=ArtifactRepository(pool, new_id),
@@ -136,6 +150,8 @@ def build_container(
             clock=clock,
             new_id=new_id,
             efforts={role: settings.reasoning_for(role) for role in ModelRole},
+            catalog=llm,
+            extra_models=settings.extra_models(),
             tracing=tracing,
             broker=broker,
             executions=executions,
@@ -147,6 +163,7 @@ def build_container(
         new_id=new_id,
         broker=broker,
         executor=runtime if isinstance(runtime, LangChainRuntime) else None,
+        tuning=runtime.tuner if isinstance(runtime, LangChainRuntime) else None,
         mode=mode,
     )
     return Container(
@@ -159,4 +176,5 @@ def build_container(
         executions=executions,
         audit=audit,
         tracing=tracing,
+        auth=auth,
     )

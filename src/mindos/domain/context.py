@@ -24,7 +24,7 @@ CORRELATION_KEYS: tuple[str, ...] = (
 )
 
 _EMPTY: Mapping[str, str] = MappingProxyType({})
-_CURRENT: ContextVar[Mapping[str, str]] = ContextVar("opsagent_correlation", default=_EMPTY)
+_CURRENT: ContextVar[Mapping[str, str]] = ContextVar("mindos_correlation", default=_EMPTY)
 
 
 def current() -> Mapping[str, str]:

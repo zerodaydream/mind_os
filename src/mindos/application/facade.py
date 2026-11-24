@@ -16,9 +16,9 @@ from collections.abc import AsyncIterator, Callable, Coroutine
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from opsagent.application.approval_broker import view_of
-from opsagent.application.event_bus import EventBus
-from opsagent.domain import (
+from mindos.application.approval_broker import view_of
+from mindos.application.event_bus import EventBus
+from mindos.domain import (
     TERMINAL_EVENTS,
     AgentRuntime,
     AppEvent,
@@ -26,13 +26,14 @@ from opsagent.domain import (
     ApprovalRecord,
     ApprovedCallRunner,
     IdFactory,
+    ModelTuning,
     RunSpec,
     SessionMode,
     bind,
     events,
     redact_text,
 )
-from opsagent.domain.commands import Decide, SetMode, SubmitMessage
+from mindos.domain.commands import Decide, SetMode, SubmitMessage
 
 log = logging.getLogger(__name__)
 
@@ -55,6 +56,7 @@ class Application:
         new_id: IdFactory,
         broker: ApprovalBrokerPort | None = None,
         executor: ApprovedCallRunner | None = None,
+        tuning: ModelTuning | None = None,
         mode: SessionMode | None = None,
     ) -> None:
         self._runtime = runtime
@@ -62,6 +64,7 @@ class Application:
         self._new_id = new_id
         self._broker = broker
         self._executor = executor
+        self._tuning = tuning
         self._mode = mode or SessionMode()
         self._tasks: dict[str, list[asyncio.Task[None]]] = {}  # run_id -> live stretches
         self._locks: dict[str, asyncio.Lock] = {}  # run_id -> one stretch at a time
@@ -75,6 +78,11 @@ class Application:
     @property
     def bus(self) -> EventBus:
         return self._bus
+
+    @property
+    def tuning(self) -> ModelTuning | None:
+        """Model and effort choices, when the runtime supports changing them."""
+        return self._tuning
 
     # ---- commands --------------------------------------------------------------------------
     def submit_message(self, command: SubmitMessage) -> str:

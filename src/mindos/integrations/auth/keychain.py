@@ -7,7 +7,7 @@ import contextlib
 import keyring
 from keyring.errors import PasswordDeleteError
 
-SERVICE = "opsagent"
+SERVICE = "mindos"
 
 
 class KeychainSecretStore:

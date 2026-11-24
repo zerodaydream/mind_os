@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from opsagent.domain import ArtifactSlice, IdFactory, Usage, current
-from opsagent.persistence.db import Pool
+from mindos.domain import ArtifactSlice, IdFactory, Usage, current
+from mindos.persistence.db import Pool
 
 
 class ArtifactRepository:

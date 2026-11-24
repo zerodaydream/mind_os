@@ -16,23 +16,25 @@ from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical
 from textual.widgets import Static
 
-from opsagent.application import Application, Subscription
-from opsagent.domain import AppEvent, ApprovalMode, ReasoningEffort
-from opsagent.domain.commands import SetMode, SubmitMessage
-from opsagent.presentation import slash, viewmodel
-from opsagent.presentation.approval import ApprovalDialog
-from opsagent.presentation.tokens import PALETTE
-from opsagent.presentation.transcript import Transcript
-from opsagent.presentation.viewmodel import SessionInfo, ViewState
-from opsagent.presentation.widgets import HintLine, PromptInput, SpinnerLine, StatusLine
+from mindos.application import Application, Subscription
+from mindos.domain import AppEvent, ApprovalMode, ModelChoice, ModelRole, ReasoningEffort
+from mindos.domain.commands import SetMode, SubmitMessage
+from mindos.presentation import slash, viewmodel
+from mindos.presentation.approval import ApprovalDialog
+from mindos.presentation.clipboard import copy_text
+from mindos.presentation.picker import PickerScreen
+from mindos.presentation.tokens import PALETTE
+from mindos.presentation.transcript import Transcript
+from mindos.presentation.viewmodel import SessionInfo, ViewState
+from mindos.presentation.widgets import HintLine, PromptInput, SpinnerLine, StatusLine
 
 _DOUBLE_ESC_SECONDS = 0.6
 _EXIT_CONFIRM_SECONDS = 2.0
 _MODES = tuple(ApprovalMode)
 
 
-class OpsApp(App[None]):
-    CSS_PATH = "theme/ops.tcss"
+class MindOSApp(App[None]):
+    CSS_PATH = "theme/mindos.tcss"
     ENABLE_COMMAND_PALETTE = False
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "interrupt", "Interrupt", priority=True, show=False),
@@ -46,6 +48,11 @@ class OpsApp(App[None]):
         Binding("alt+t,†", "cycle_effort", "Effort", priority=True, show=False),
         Binding("pageup", "scroll_up", "Scroll up", priority=True, show=False),
         Binding("pagedown", "scroll_down", "Scroll down", priority=True, show=False),
+        Binding("alt+up", "scroll_line_up", "Scroll up a line", priority=True, show=False),
+        Binding("alt+down", "scroll_line_down", "Scroll down a line", priority=True, show=False),
+        Binding("ctrl+home", "scroll_top", "Top", priority=True, show=False),
+        Binding("ctrl+end", "scroll_tail", "Latest", priority=True, show=False),
+        Binding("super+c,ctrl+shift+c", "copy_selection", "Copy", priority=True, show=False),
     ]
 
     def __init__(
@@ -63,6 +70,7 @@ class OpsApp(App[None]):
         self._last_esc = 0.0
         self._exit_armed_until = 0.0
         self._stash = ""
+        self._last_copied = ""
         self._hint_notice: tuple[str, float] | None = None
 
     # ---- layout ----------------------------------------------------------------------------
@@ -199,6 +207,9 @@ class OpsApp(App[None]):
 
     # ---- actions ---------------------------------------------------------------------------
     async def action_interrupt(self) -> None:
+        if isinstance(self.screen, PickerScreen):
+            self.screen.action_cancel()
+            return
         if self._approval_dialog is not None:
             self._approval_dialog.decline_or_back()
             return
@@ -219,6 +230,8 @@ class OpsApp(App[None]):
         self._last_esc = now
 
     async def action_ctrl_c(self) -> None:
+        if self._copy_selection():  # with text selected, Ctrl+C copies, as everywhere else
+            return
         if self.state.running:
             await self._cancel_runs()
         elif self.prompt.text:
@@ -272,6 +285,39 @@ class OpsApp(App[None]):
     def action_scroll_up(self) -> None:
         self.transcript.scroll_page_up(animate=False)
 
+    def action_scroll_line_up(self) -> None:
+        self.transcript.scroll_relative(y=-3, animate=False)
+
+    def action_scroll_line_down(self) -> None:
+        self.transcript.scroll_relative(y=3, animate=False)
+
+    def action_scroll_top(self) -> None:
+        self.transcript.scroll_home(animate=False)
+
+    def action_scroll_tail(self) -> None:
+        self.transcript.jump_to_tail()
+
+    def action_copy_selection(self) -> None:
+        if not self._copy_selection():
+            self._notify_hint("Nothing selected. Drag over text to select it.")
+
+    # ---- copy ------------------------------------------------------------------------------
+    def on_mouse_up(self) -> None:
+        """Releasing the mouse after a drag copies the selection (like most terminals)."""
+        self._copy_selection(quiet_if_empty=True)
+
+    def _selected_text(self) -> str:
+        return (self.screen.get_selected_text() or self.prompt.selected_text or "").strip("\n")
+
+    def _copy_selection(self, *, quiet_if_empty: bool = False) -> bool:
+        text = self._selected_text()
+        if not text or (text == self._last_copied and quiet_if_empty):
+            return bool(text)
+        self._last_copied = text
+        copy_text(self, text)
+        self._notify_hint(f"Copied {len(text)} characters")
+        return True
+
     def action_scroll_down(self) -> None:
         self.transcript.scroll_page_down(animate=False)
 
@@ -301,41 +347,166 @@ class OpsApp(App[None]):
             self.run_worker(self._quit_app(), name="quit", exit_on_error=False)
         elif name == "/think":
             self._slash_think(args)
+        elif name == "/model":
+            self._slash_model(args)
         elif name == "/status":
             self._emit_output(name, self._status_text())
         elif name == "/cost":
             self._emit_output(name, self._cost_text())
-        elif name == "/model":
-            self._emit_output(name, "\n".join(self._session.models) or "No models configured.")
 
     def _emit_output(self, command: str, text: str) -> None:
         self._set_state(lambda s: viewmodel.add_command_output(s, command, text))
 
+    # ---- model and effort ------------------------------------------------------------------
     def _slash_think(self, args: str) -> None:
-        levels = self._session.effort_levels
-        if not args:
-            current = self.state.effort.value if self.state.effort else "default"
-            allowed = ", ".join(e.value for e in levels)
-            self._emit_output("/think", f"Reasoning effort is {current}. Options: {allowed}.")
+        """`/think` opens a list; `/think high` sets the orchestrator; `/think subagent low`."""
+        role, rest = self._split_role(args)
+        if not rest:
+            self.run_worker(self._pick_effort(role), name="pick-effort", exit_on_error=False)
             return
         try:
-            effort = ReasoningEffort(args.lower())
+            effort = ReasoningEffort(rest.lower())
         except ValueError:
-            self._emit_output("/think", f"Unknown level '{args}'.")
+            self._emit_output("/think", f"Unknown level '{rest}'.")
             return
-        if effort not in levels:
-            self._emit_output("/think", f"This model does not support '{effort.value}'.")
+        self._choose(role or ModelRole.ORCHESTRATOR, effort=effort, command="/think")
+
+    def _slash_model(self, args: str) -> None:
+        """`/model` opens a list; `/model <id>` sets the orchestrator; `/model subagent <id>`."""
+        role, rest = self._split_role(args)
+        if not rest:
+            self.run_worker(self._pick_model(role), name="pick-model", exit_on_error=False)
             return
-        self._set_state(lambda s: viewmodel.set_effort(s, effort))
-        self._emit_output("/think", f"Reasoning effort set to {effort.value} for this session.")
+        self._choose(role or ModelRole.ORCHESTRATOR, model_id=rest, command="/model")
+
+    @staticmethod
+    def _split_role(args: str) -> tuple[ModelRole | None, str]:
+        first, _, rest = args.strip().partition(" ")
+        aliases = {
+            "orchestrator": ModelRole.ORCHESTRATOR,
+            "main": ModelRole.ORCHESTRATOR,
+            "subagent": ModelRole.SUBAGENT,
+            "subagents": ModelRole.SUBAGENT,
+            "sub": ModelRole.SUBAGENT,
+        }
+        role = aliases.get(first.lower())
+        return (role, rest.strip()) if role else (None, args.strip())
+
+    def _current(self, role: ModelRole) -> ModelChoice:
+        tuning = self._application.tuning
+        if tuning is not None:
+            return tuning.current(role)
+        model = self._session.models[0] if self._session.models else "not configured"
+        effort = self.state.effort if role is ModelRole.ORCHESTRATOR else None
+        return ModelChoice(role=role, model_id=model, effort=effort)
+
+    async def _ask_role(self, title: str) -> ModelRole | None:
+        def label(name: str, what: str, role: ModelRole) -> str:
+            c = self._current(role)
+            effort = c.effort.value if c.effort else "default"
+            return f"{name:<13}{what:<26}{c.model_id}  ({effort})"
+
+        options = [
+            (label("Orchestrator", "plans and delegates", ModelRole.ORCHESTRATOR), "orchestrator"),
+            (label("Subagents", "do the focused work", ModelRole.SUBAGENT), "subagent"),
+        ]
+        picked = await self.push_screen_wait(PickerScreen(title, options))
+        return ModelRole(picked) if picked else None
+
+    async def _pick_model(self, role: ModelRole | None) -> None:
+        role = role or await self._ask_role("Change the model for")
+        if role is None:
+            return
+        tuning = self._application.tuning
+        self._notify_hint("Loading models…", seconds=10)
+        models = await tuning.available_models() if tuning else self._session.models
+        self._hint_notice = None
+        if not models:
+            self._emit_output("/model", "No models to choose from. Set MINDOS_MODEL_CHOICES.")
+            return
+        picked = await self.push_screen_wait(
+            PickerScreen(
+                f"Model for the {role.value}",
+                [(m, m) for m in models],
+                current=self._current(role).model_id,
+            )
+        )
+        if picked:
+            self._choose(role, model_id=picked, command="/model")
+
+    async def _pick_effort(self, role: ModelRole | None) -> None:
+        role = role or await self._ask_role("Change the reasoning effort for")
+        if role is None:
+            return
+        tuning = self._application.tuning
+        model = self._current(role).model_id
+        levels = tuning.effort_levels(model) if tuning else self._session.effort_levels
+        if not levels:
+            self._emit_output("/think", f"{model} has no configurable reasoning.")
+            return
+        notes = {
+            ReasoningEffort.MINIMAL: "fastest, almost no thinking",
+            ReasoningEffort.LOW: "quick, light thinking",
+            ReasoningEffort.MEDIUM: "balanced",
+            ReasoningEffort.HIGH: "careful, slower",
+            ReasoningEffort.XHIGH: "deepest, slowest",
+        }
+        options = [(f"{e.value:<8}{notes.get(e, '')}", e.value) for e in levels]
+        current = self._current(role).effort
+        picked = await self.push_screen_wait(
+            PickerScreen(
+                f"Reasoning effort for the {role.value} ({model})",
+                options,
+                current=current.value if current else None,
+            )
+        )
+        if picked:
+            self._choose(role, effort=ReasoningEffort(picked), command="/think")
+
+    def _choose(
+        self,
+        role: ModelRole,
+        *,
+        model_id: str | None = None,
+        effort: ReasoningEffort | None = None,
+        command: str,
+    ) -> None:
+        """Apply a choice to the running session and say what it is now."""
+        tuning = self._application.tuning
+        try:
+            if tuning is not None:
+                choice = tuning.select(role, model_id=model_id, effort=effort)
+            elif role is ModelRole.ORCHESTRATOR and effort is not None and model_id is None:
+                if effort not in self._session.effort_levels:
+                    raise ValueError(f"This model does not support '{effort.value}'.")
+                choice = ModelChoice(
+                    role=role, model_id=self._current(role).model_id, effort=effort
+                )
+            else:
+                raise ValueError("That cannot be changed in this session.")
+        except ValueError as exc:
+            self._emit_output(command, str(exc))
+            return
+        if role is ModelRole.ORCHESTRATOR and choice.effort is not None:
+            effort_now = choice.effort
+            self._set_state(lambda s: viewmodel.set_effort(s, effort_now))
+        shown = choice.effort.value if choice.effort else "default"
+        self._emit_output(
+            command, f"The {role.value} now uses {choice.model_id} with {shown} reasoning."
+        )
 
     def _status_text(self) -> str:
         s = self.state
+
+        def line(role: ModelRole) -> str:
+            c = self._current(role)
+            return f"{role.value:<12} {c.model_id} ({c.effort.value if c.effort else 'default'})"
+
         lines = [
             f"version {self._session.version}",
             f"cwd {self._session.cwd}",
-            f"models {', '.join(self._session.models) or 'none'}",
-            f"effort {s.effort.value if s.effort else 'default'}",
+            line(ModelRole.ORCHESTRATOR),
+            line(ModelRole.SUBAGENT),
             f"mode {s.mode.value}",
             f"active runs {len(s.active_runs)}",
             f"conversation {s.conversation_id or 'none yet'}",

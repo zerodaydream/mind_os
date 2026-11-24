@@ -14,10 +14,10 @@ from textual.containers import Vertical
 from textual.message import Message
 from textual.widgets import Input, Static
 
-from opsagent.domain import RiskClass
-from opsagent.domain.commands import Decide
-from opsagent.domain.events import ApprovalView
-from opsagent.presentation.tokens import PALETTE
+from mindos.domain import RiskClass
+from mindos.domain.commands import Decide
+from mindos.domain.events import ApprovalView
+from mindos.presentation.tokens import PALETTE
 
 _PREVIEW_LINES = 10
 _CONSEQUENCE = {

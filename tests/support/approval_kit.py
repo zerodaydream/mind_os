@@ -7,8 +7,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from opsagent.application.approval_broker import ApprovalBroker
-from opsagent.domain import (
+from mindos.application.approval_broker import ApprovalBroker
+from mindos.domain import (
     AuthError,
     BoundState,
     Principal,
@@ -20,8 +20,8 @@ from opsagent.domain import (
     ToolInvocation,
     ToolResult,
 )
-from opsagent.tools import ToolContext, ToolExecutionEngine, ToolRegistry, ToolSpec
-from opsagent.tools.policy import PolicyConfig, PolicyEngine
+from mindos.tools import ToolContext, ToolExecutionEngine, ToolRegistry, ToolSpec
+from mindos.tools.policy import PolicyConfig, PolicyEngine
 from tests.support.fakes import (
     ManualClock,
     MemoryApprovalRepo,

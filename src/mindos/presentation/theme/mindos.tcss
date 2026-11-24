@@ -1,17 +1,17 @@
-/* All colors come from presentation/tokens.py via $ops-* variables. */
+/* All colors come from presentation/tokens.py via $mindos-* variables. */
 
 Screen {
     layout: vertical;
     background: transparent;
-    color: $ops-text;
+    color: $mindos-text;
 }
 
 #transcript {
     height: 1fr;
     background: transparent;
     scrollbar-size-vertical: 1;
-    scrollbar-color: $ops-border;
-    scrollbar-color-hover: $ops-dim;
+    scrollbar-color: $mindos-border;
+    scrollbar-color-hover: $mindos-dim;
     scrollbar-background: transparent;
 }
 
@@ -26,15 +26,15 @@ Screen {
 
 ApprovalDialog {
     height: auto;
-    border: round $ops-warn;
-    border-title-color: $ops-warn;
+    border: round $mindos-warn;
+    border-title-color: $mindos-warn;
     padding: 0 1;
     margin: 0 0;
 }
 
 ApprovalDialog:focus {
-    border: round $ops-accent;
-    border-title-color: $ops-accent;
+    border: round $mindos-accent;
+    border-title-color: $mindos-accent;
 }
 
 #approval-options {
@@ -43,7 +43,7 @@ ApprovalDialog:focus {
 
 #approval-input {
     border: none;
-    background: $ops-user-bg;
+    background: $mindos-user-bg;
     height: 1;
     padding: 0 1;
 }
@@ -54,17 +54,17 @@ ApprovalDialog:focus {
 
 #prompt-box {
     height: auto;
-    border: round $ops-border;
+    border: round $mindos-border;
     padding: 0 1;
 }
 
 #prompt-box:focus-within {
-    border: round $ops-accent;
+    border: round $mindos-accent;
 }
 
 #prompt-glyph {
     width: 2;
-    color: $ops-dim;
+    color: $mindos-dim;
 }
 
 #prompt {
@@ -91,4 +91,37 @@ ApprovalDialog:focus {
 #status {
     height: 1;
     padding: 0 2;
+}
+
+PickerScreen {
+    align: center middle;
+    background: $mindos-user-bg 60%;
+}
+
+#picker {
+    width: 80%;
+    max-width: 90;
+    height: auto;
+    max-height: 80%;
+    border: round $mindos-accent;
+    padding: 0 1;
+    background: $surface;
+}
+
+#picker-title {
+    text-style: bold;
+    color: $mindos-accent;
+    padding-bottom: 1;
+}
+
+#picker-list {
+    height: auto;
+    max-height: 20;
+    border: none;
+    background: transparent;
+}
+
+#picker-hint {
+    color: $mindos-dim;
+    padding-top: 1;
 }

@@ -6,8 +6,8 @@ from typing import Any
 
 from psycopg.types.json import Jsonb
 
-from opsagent.domain import current, redact
-from opsagent.persistence.db import Pool
+from mindos.domain import current, redact
+from mindos.persistence.db import Pool
 
 
 class AuditRepository:

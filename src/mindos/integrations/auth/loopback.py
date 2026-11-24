@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from urllib.parse import parse_qs, urlsplit
 
 _PAGE = (
-    "<!doctype html><meta charset=utf-8><title>opsagent</title>"
+    "<!doctype html><meta charset=utf-8><title>MindOS</title>"
     "<body style='font-family:system-ui;margin:4em'><h2>{title}</h2><p>{body}</p>"
 )
 

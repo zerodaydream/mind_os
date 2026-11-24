@@ -27,7 +27,7 @@ from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
-from opsagent.domain import (
+from mindos.domain import (
     ApprovalBrokerPort,
     ApprovalRecord,
     ArtifactStore,
@@ -42,6 +42,7 @@ from opsagent.domain import (
     PolicyDecision,
     PolicyEngine,
     Principal,
+    ProviderError,
     RiskClass,
     ScopeRequired,
     TaintLedger,
@@ -58,8 +59,8 @@ from opsagent.domain import (
     redact,
     redact_text,
 )
-from opsagent.tools.normalize import bound, preview, serialize, wrap_untrusted
-from opsagent.tools.spec import ToolContext, ToolError, ToolRegistry, ToolSpec, TransientToolError
+from mindos.tools.normalize import bound, preview, serialize, wrap_untrusted
+from mindos.tools.spec import ToolContext, ToolError, ToolRegistry, ToolSpec, TransientToolError
 
 log = logging.getLogger(__name__)
 
@@ -255,16 +256,22 @@ class ToolExecutionEngine:
                 raw = await self._run(spec, gate.args, ctx)
             except TimeoutError:
                 result = await fail(
-                    "error", "timeout", f"'{spec.name}' timed out after {spec.timeout_s:g}s."
+                    "error",
+                    "timeout",
+                    f"'{spec.name}' timed out after {spec.timeout_s:g}s." + _unknown_outcome(spec),
                 )
             except ToolError as exc:
                 result = await fail("error", exc.code, redact_text(str(exc))[:_ERROR_CHARS])
             except AuthError as exc:
                 result = await self._auth_failed(inv, ctx, fail, exc)
+            except ProviderError as exc:
+                result = await fail("error", exc.code, redact_text(str(exc))[:_ERROR_CHARS])
             except Exception:
                 log.exception("tool %s crashed", spec.name)  # details stay in the log
                 result = await fail(
-                    "error", "internal_error", f"'{spec.name}' failed unexpectedly."
+                    "error",
+                    "internal_error",
+                    f"'{spec.name}' failed unexpectedly." + _unknown_outcome(spec),
                 )
             else:
                 ok = True
@@ -616,7 +623,9 @@ class ToolExecutionEngine:
             try:
                 async with asyncio.timeout(spec.timeout_s):
                     return await spec.handler(args, ctx)
-            except TransientToolError:
+            except (TransientToolError, ProviderError) as exc:
+                if isinstance(exc, ProviderError) and not exc.transient:
+                    raise
                 if attempt + 1 >= attempts:
                     raise
                 delay = self._jitter() * min(_RETRY_CAP_S, _RETRY_BASE_S * 2**attempt)
@@ -752,6 +761,13 @@ def _unusable(record: ApprovalRecord) -> tuple[str, str]:
         ),
     }
     return reasons.get(state, ("approval_unusable", f"The approval is {state.lower()}."))
+
+
+def _unknown_outcome(spec: ToolSpec) -> str:
+    """A side effect that failed ambiguously may have happened. Never invite a blind retry."""
+    if spec.idempotency is ToolIdempotency.READ_ONLY:
+        return ""
+    return " It may or may not have happened: check the system of record before trying again."
 
 
 def _elapsed_ms(started: float) -> int:

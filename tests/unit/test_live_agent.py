@@ -1,4 +1,4 @@
-"""One real-model scenario through the whole stack. Opt in with OPS_TEST_LIVE=1."""
+"""One real-model scenario through the whole stack. Opt in with MINDOS_TEST_LIVE=1."""
 
 from __future__ import annotations
 
@@ -7,17 +7,17 @@ import os
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 
-from opsagent.agents import RunLimits, build_runtime
-from opsagent.bootstrap import build_container
-from opsagent.domain import ModelRole, RunSpec, events
-from opsagent.infra import SystemClock, load_settings, new_id, resolve_timezone
-from opsagent.integrations.calendar import FixtureCalendar, sample_events
+from mindos.agents import RunLimits, build_runtime
+from mindos.bootstrap import build_container
+from mindos.domain import ModelRole, RunSpec, events
+from mindos.infra import SystemClock, load_settings, new_id, resolve_timezone
+from mindos.integrations.calendar import FixtureCalendar, sample_events
 from tests.support.fakes import MemoryArtifacts, MemoryAudit, MemoryUsage
 from tests.support.policies import ReadOnlyPolicy
 
 pytestmark = [
     pytest.mark.live,
-    pytest.mark.skipif(os.environ.get("OPS_TEST_LIVE") != "1", reason="set OPS_TEST_LIVE=1"),
+    pytest.mark.skipif(os.environ.get("MINDOS_TEST_LIVE") != "1", reason="set MINDOS_TEST_LIVE=1"),
 ]
 
 

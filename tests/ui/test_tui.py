@@ -7,17 +7,17 @@ from dataclasses import replace
 
 from textual.pilot import Pilot
 
-from opsagent.agents import UnavailableRuntime
-from opsagent.agents.fake import FakeRuntime
-from opsagent.application import Application, EventBus
-from opsagent.bootstrap import run_tui
-from opsagent.domain import ReasoningEffort
-from opsagent.infra import Settings, SystemClock, new_id
-from opsagent.presentation import OpsApp, SessionInfo
-from opsagent.presentation.approval import ApprovalDialog
-from opsagent.presentation.render import RowRenderer
-from opsagent.presentation.transcript import Transcript
-from opsagent.presentation.viewmodel import (
+from mindos.agents import UnavailableRuntime
+from mindos.agents.fake import FakeRuntime
+from mindos.application import Application, EventBus
+from mindos.bootstrap import run_tui
+from mindos.domain import ReasoningEffort
+from mindos.infra import Settings, SystemClock, new_id
+from mindos.presentation import MindOSApp, SessionInfo
+from mindos.presentation.approval import ApprovalDialog
+from mindos.presentation.render import RowRenderer
+from mindos.presentation.transcript import Transcript
+from mindos.presentation.viewmodel import (
     AssistantRow,
     CommandRow,
     NoticeRow,
@@ -40,10 +40,10 @@ def info(**kw: object) -> SessionInfo:
     return SessionInfo(**{**base, **kw})  # type: ignore[arg-type]
 
 
-def make_app(**kw: object) -> OpsApp:
+def make_app(**kw: object) -> MindOSApp:
     bus = EventBus(SystemClock())
     application = Application(runtime=FakeRuntime(speed=60), bus=bus, new_id=new_id)
-    return OpsApp(application, info(**kw))
+    return MindOSApp(application, info(**kw))
 
 
 async def until(pilot: Pilot, cond: Callable[[], bool], within: float = 8.0) -> None:
@@ -54,12 +54,12 @@ async def until(pilot: Pilot, cond: Callable[[], bool], within: float = 8.0) -> 
         await pilot.pause(0.03)
 
 
-async def send(app: OpsApp, pilot: Pilot, text: str) -> None:
+async def send(app: MindOSApp, pilot: Pilot, text: str) -> None:
     app.prompt.set_text(text)
     await pilot.press("enter")
 
 
-def screen_text(app: OpsApp) -> str:
+def screen_text(app: MindOSApp) -> str:
     """Visible transcript lines as plain text."""
     t = app.transcript
     rows = []
@@ -69,7 +69,7 @@ def screen_text(app: OpsApp) -> str:
     return "\n".join(rows)
 
 
-def all_text(app: OpsApp) -> str:
+def all_text(app: MindOSApp) -> str:
     t = app.transcript
     return "\n".join(
         "".join(s.text for s in strip).rstrip() for lines in t._lines for strip in lines
@@ -299,7 +299,7 @@ async def test_slash_commands() -> None:
         await pilot.pause(0.1)
         text = " ".join(r.text for r in app.state.rows if isinstance(r, CommandRow))
         assert "/clear" in text and "Ctrl+O" in text
-        assert "set to low" in text and "does not support 'xhigh'" in text
+        assert "with low reasoning" in text and "does not support 'xhigh'" in text
         assert "Unknown command /nope" in text and "/memory is not available yet" in text
         assert app.state.effort == ReasoningEffort.LOW
         await send(app, pilot, "/clear")
@@ -388,7 +388,7 @@ async def test_initial_screen_has_welcome_block() -> None:
     async with app.run_test(size=SIZE) as pilot:
         await pilot.pause(0.1)
         text = screen_text(app)
-        assert "opsagent" in text and "~/proj" in text
+        assert "MindOS" in text and "~/proj" in text
         assert "? for shortcuts" in str(app.query_one("#hint").render())
         assert initial_state(info()).rows[0].id == "welcome"
 
@@ -396,7 +396,7 @@ async def test_initial_screen_has_welcome_block() -> None:
 async def test_unavailable_runtime_shows_a_clear_failure() -> None:
     bus = EventBus(SystemClock())
     application = Application(runtime=UnavailableRuntime(), bus=bus, new_id=new_id)
-    app = OpsApp(application, info())
+    app = MindOSApp(application, info())
     async with app.run_test(size=SIZE) as pilot:
         await send(app, pilot, "hello")
         await until(pilot, lambda: any(isinstance(r, NoticeRow) for r in app.state.rows))
@@ -415,11 +415,11 @@ def test_run_tui_wires_demo_runtime_and_session_info(
     monkeypatch,  # type: ignore[no-untyped-def]
 ) -> None:
     seen: dict[str, object] = {}
-    monkeypatch.setattr(OpsApp, "run", lambda self, **_: seen.update(app=self))
+    monkeypatch.setattr(MindOSApp, "run", lambda self, **_: seen.update(app=self))
     settings = Settings(_env_file=None, log_dir=tmp_path, model_orchestrator="gem-x")
     run_tui(settings, demo=True)
     app = seen["app"]
-    assert isinstance(app, OpsApp)
+    assert isinstance(app, MindOSApp)
     assert app._session.models == ("gem-x",)
     assert isinstance(app._application._runtime, FakeRuntime)
     assert len(app._session.effort_levels) == 5  # no key yet: every level offered

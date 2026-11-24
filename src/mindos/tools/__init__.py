@@ -1,10 +1,10 @@
 """Tool registry, execution engine, normalization, and namespaces. Depends on the domain only."""
 
-from opsagent.tools.calendar import calendar_specs
-from opsagent.tools.core import WRITE_TODOS, read_artifact_spec
-from opsagent.tools.engine import ToolExecutionEngine
-from opsagent.tools.normalize import preview
-from opsagent.tools.policy import (
+from mindos.tools.calendar import calendar_specs, calendar_write_specs
+from mindos.tools.core import WRITE_TODOS, read_artifact_spec
+from mindos.tools.engine import ToolExecutionEngine
+from mindos.tools.normalize import preview
+from mindos.tools.policy import (
     PolicyConfig,
     PolicyEngine,
     PolicyError,
@@ -12,8 +12,8 @@ from opsagent.tools.policy import (
     load_policy,
     save_policy,
 )
-from opsagent.tools.schema import model_schema
-from opsagent.tools.spec import (
+from mindos.tools.schema import model_schema
+from mindos.tools.spec import (
     CORE_NAMESPACE,
     ToolContext,
     ToolError,
@@ -36,6 +36,7 @@ __all__ = [
     "ToolSpec",
     "TransientToolError",
     "calendar_specs",
+    "calendar_write_specs",
     "load_policy",
     "model_schema",
     "preview",

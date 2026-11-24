@@ -1,7 +1,7 @@
 """One OAuth 2.0 authorization-code + PKCE client for any public-client provider.
 
-Google and Microsoft Entra differ only in endpoints, scopes, and a few error codes, so both are
-configured data over this class (ADR 0006). It never logs or raises a token, a code, or a request
+Providers differ in endpoints, scopes, and a few error codes, so each is configured data over
+this class (ADR 0006). It never logs or raises a token, a code, or a request
 body. Transient failures (network, 429, 5xx) are retried with full jitter and `Retry-After`, behind
 a circuit breaker; a definite answer from the provider is never retried.
 """
@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import base64
 import json
-import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import timedelta
@@ -19,7 +18,7 @@ from urllib.parse import urlencode
 
 import httpx
 
-from opsagent.domain import (
+from mindos.domain import (
     AccessToken,
     AuthError,
     Clock,
@@ -29,7 +28,7 @@ from opsagent.domain import (
     TokenGrant,
     TransientAuthError,
 )
-from opsagent.infra.resilience import (
+from mindos.infra.resilience import (
     CircuitBreaker,
     CircuitOpen,
     RetryPolicy,
@@ -37,8 +36,7 @@ from opsagent.infra.resilience import (
     retry,
 )
 
-_ERROR_CHARS = 200
-_CONSENT_PATTERN = re.compile(r"AADSTS(65001|90094|90008|65004)")
+_CONSENT_CODES = frozenset({"consent_required", "admin_policy_enforced"})
 
 
 @dataclass(frozen=True)
@@ -178,14 +176,14 @@ class OAuth2Client:
     def _error_for(self, response: httpx.Response) -> AuthError:
         data = self._json(response)
         code = str(data.get("error", ""))
-        detail = str(data.get("error_description", ""))[:_ERROR_CHARS]
-        if code == "consent_required" or _CONSENT_PATTERN.search(detail):
+        if code in _CONSENT_CODES:
             return ConsentRequired(
                 self.name, f"{self.name} needs an administrator to approve this app for your org."
             )
         if code == "invalid_grant":
             return ReauthRequired(
-                self.name, f"{self.name} no longer accepts this sign-in. Run: ops auth {self.name}"
+                self.name,
+                f"{self.name} no longer accepts this sign-in. Run: mindos auth {self.name}",
             )
         if code == "invalid_scope":
             return ScopeRequired(self.name, f"{self.name} did not grant a requested permission.")

@@ -1,7 +1,7 @@
 [project]
-name = "opsagent"
+name = "mindos"
 version = "0.1.0"
-description = "Terminal-native personal operations agent. Working title; see docs/MISSION.md."
+description = "MindOS: a terminal-native personal operations environment."
 readme = "docs/README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -25,7 +25,7 @@ dependencies = [
 ]
 
 [project.scripts]
-ops = "opsagent.cli:app"
+mindos = "mindos.cli:app"
 
 [dependency-groups]
 dev = [
@@ -42,7 +42,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/opsagent"]
+packages = ["src/mindos"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -50,7 +50,7 @@ asyncio_mode = "auto"
 addopts = "-ra --strict-markers"
 markers = [
   "integration: needs a local PostgreSQL (docker compose up -d db)",
-  "live: calls a real model provider (set OPS_TEST_LIVE=1)",
+  "live: calls a real model provider (set MINDOS_TEST_LIVE=1)",
 ]
 
 [tool.ruff]
@@ -63,8 +63,8 @@ ignore = ["PLR2004", "PLR0913", "RUF012", "RUF001"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["PLR", "B"]
-"src/opsagent/persistence/migrations/**" = ["E501"]
-"src/opsagent/presentation/render.py" = ["PLR0911"]
+"src/mindos/persistence/migrations/**" = ["E501"]
+"src/mindos/presentation/render.py" = ["PLR0911"]
 
 [tool.mypy]
 python_version = "3.12"
@@ -78,23 +78,23 @@ ignore_missing_imports = true
 
 # ---- Architecture contracts (ARCHITECTURE section 2.3). CI fails on violation. ----
 [tool.importlinter]
-root_package = "opsagent"
+root_package = "mindos"
 include_external_packages = true
 
 [[tool.importlinter.contracts]]
 name = "domain is pure: imports nothing internal"
 type = "forbidden"
-source_modules = ["opsagent.domain"]
+source_modules = ["mindos.domain"]
 forbidden_modules = [
-  "opsagent.application", "opsagent.agents", "opsagent.tools", "opsagent.integrations",
-  "opsagent.persistence", "opsagent.infra", "opsagent.presentation", "opsagent.bootstrap",
-  "opsagent.sandbox", "opsagent.workers",
+  "mindos.application", "mindos.agents", "mindos.tools", "mindos.integrations",
+  "mindos.persistence", "mindos.infra", "mindos.presentation", "mindos.bootstrap",
+  "mindos.sandbox", "mindos.workers",
 ]
 
 [[tool.importlinter.contracts]]
 name = "domain has no provider, DB, or framework imports"
 type = "forbidden"
-source_modules = ["opsagent.domain"]
+source_modules = ["mindos.domain"]
 forbidden_modules = [
   "googleapiclient", "google", "msal", "httpx", "requests", "psycopg", "psycopg_pool",
   "sqlalchemy", "alembic", "langchain", "langchain_core", "langchain_google_genai",
@@ -105,56 +105,56 @@ forbidden_modules = [
 name = "adapters are reachable only from bootstrap"
 type = "forbidden"
 source_modules = [
-  "opsagent.domain", "opsagent.application", "opsagent.agents", "opsagent.tools",
-  "opsagent.persistence", "opsagent.infra", "opsagent.presentation",
-  "opsagent.sandbox", "opsagent.workers",
+  "mindos.domain", "mindos.application", "mindos.agents", "mindos.tools",
+  "mindos.persistence", "mindos.infra", "mindos.presentation",
+  "mindos.sandbox", "mindos.workers",
 ]
-forbidden_modules = ["opsagent.integrations"]
+forbidden_modules = ["mindos.integrations"]
 
 [[tool.importlinter.contracts]]
 name = "presentation renders events; no business or provider code"
 type = "forbidden"
-source_modules = ["opsagent.presentation"]
+source_modules = ["mindos.presentation"]
 forbidden_modules = [
-  "opsagent.agents", "opsagent.tools", "opsagent.integrations",
-  "opsagent.persistence", "opsagent.infra",
+  "mindos.agents", "mindos.tools", "mindos.integrations",
+  "mindos.persistence", "mindos.infra",
 ]
 
 [[tool.importlinter.contracts]]
 name = "application depends on domain only"
 type = "forbidden"
-source_modules = ["opsagent.application"]
+source_modules = ["mindos.application"]
 forbidden_modules = [
-  "opsagent.agents", "opsagent.tools", "opsagent.integrations", "opsagent.persistence",
-  "opsagent.infra", "opsagent.presentation", "opsagent.bootstrap",
+  "mindos.agents", "mindos.tools", "mindos.integrations", "mindos.persistence",
+  "mindos.infra", "mindos.presentation", "mindos.bootstrap",
 ]
 
 [[tool.importlinter.contracts]]
 name = "agents depend on domain, tools, and application ports"
 type = "forbidden"
-source_modules = ["opsagent.agents"]
+source_modules = ["mindos.agents"]
 forbidden_modules = [
-  "opsagent.integrations", "opsagent.persistence", "opsagent.infra",
-  "opsagent.presentation", "opsagent.bootstrap",
+  "mindos.integrations", "mindos.persistence", "mindos.infra",
+  "mindos.presentation", "mindos.bootstrap",
 ]
 
 [[tool.importlinter.contracts]]
 name = "tools depend on the domain only"
 type = "forbidden"
-source_modules = ["opsagent.tools"]
+source_modules = ["mindos.tools"]
 forbidden_modules = [
-  "opsagent.agents", "opsagent.application", "opsagent.integrations", "opsagent.persistence",
-  "opsagent.infra", "opsagent.presentation", "opsagent.bootstrap", "opsagent.sandbox",
-  "opsagent.workers",
+  "mindos.agents", "mindos.application", "mindos.integrations", "mindos.persistence",
+  "mindos.infra", "mindos.presentation", "mindos.bootstrap", "mindos.sandbox",
+  "mindos.workers",
 ]
 
 [[tool.importlinter.contracts]]
 name = "tools are framework-free"
 type = "forbidden"
-source_modules = ["opsagent.tools"]
+source_modules = ["mindos.tools"]
 forbidden_modules = ["langchain", "langchain_core", "langgraph", "langchain_google_genai"]
 
 [[tool.importlinter.contracts]]
 name = "persistence and integrations are independent"
 type = "independence"
-modules = ["opsagent.persistence", "opsagent.integrations"]
+modules = ["mindos.persistence", "mindos.integrations"]

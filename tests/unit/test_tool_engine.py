@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 from pydantic import BaseModel, ConfigDict, Field
 
-from opsagent.domain import (
+from mindos.domain import (
     Evidence,
     PolicyDecision,
     Principal,
@@ -15,7 +15,7 @@ from opsagent.domain import (
     ToolInvocation,
     events,
 )
-from opsagent.tools import (
+from mindos.tools import (
     WRITE_TODOS,
     ToolContext,
     ToolError,

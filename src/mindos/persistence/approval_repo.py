@@ -5,8 +5,8 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from opsagent.domain import ApprovalRecord, Principal, RiskClass
-from opsagent.persistence.db import Pool
+from mindos.domain import ApprovalRecord, Principal, RiskClass
+from mindos.persistence.db import Pool
 
 # Every transition stamps `resolved_at`; `actor` keeps who last made a human decision, so the
 # engine's own transitions (CONSUMED, EXECUTED) never erase who approved.

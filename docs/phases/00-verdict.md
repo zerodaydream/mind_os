@@ -16,7 +16,7 @@
 | 3 | **Event vocabulary lacks Claude Code UX.** Missing: thinking deltas, usage/cost, permission-mode change, slash-command output, rewind. | Add `ThinkingDelta`, `UsageUpdated`, `ModeChanged`, `CommandOutput`, `Rewound` events. |
 | 4 | **DeepAgents risk.** Pre-1.0 (v0.7.x), moves fast; planning tool removed by default in 0.7; built-in fs/shell tools must be disabled (§14, unverified). | Phase 1 spike. Wrap behind an `AgentRuntime` port. Resolved: ADR 0001 (lockdown works), ADR 0003 (plain agent for Phase 04), ADR 0007 (Deep Agents adopted, lockdown kept). |
 | 5 | **Checkpointer ≠ crash recovery.** Nothing restarts a dead run. | Startup reconciliation (§11.4) is mandatory scope in Approvals phase, not optional. |
-| 6 | **Postgres is heavy** for one user. | Keep (pgvector, SKIP LOCKED, NOTIFY justify it). Ship `docker-compose` + `ops doctor`. Record embedded-mode ADR, don't build it. |
+| 6 | **Postgres is heavy** for one user. | Keep (pgvector, SKIP LOCKED, NOTIFY justify it). Ship `docker-compose` + `mindos doctor`. Record embedded-mode ADR, don't build it. |
 
 ## Smaller notes
 - `search_tools`/`load_tools` is premature while each subagent has <15 tools. Keep gated on measurement (already is).

@@ -1,3 +1,3 @@
-from opsagent.integrations.llm.gemini import GeminiProvider, MissingCredentialError
+from mindos.integrations.llm.gemini import GeminiProvider, MissingCredentialError
 
 __all__ = ["GeminiProvider", "MissingCredentialError"]

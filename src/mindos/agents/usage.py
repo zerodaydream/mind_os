@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import logging
 
-from opsagent.agents.hub import RunState
-from opsagent.domain import (
+from mindos.agents.hub import RunState
+from mindos.domain import (
     ModelRole,
     Pricing,
     ReasoningEffort,

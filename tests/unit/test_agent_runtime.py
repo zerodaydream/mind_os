@@ -6,11 +6,11 @@ from typing import Any
 import pytest
 from langchain_core.messages import AIMessage, ToolMessage
 
-from opsagent.agents import CALENDAR, ORCHESTRATOR_TOOLS, RunLimits
-from opsagent.application import Application, EventBus
-from opsagent.domain import Pricing, ReasoningEffort, events
-from opsagent.domain.commands import Decide, SubmitMessage
-from opsagent.infra import SystemClock, new_id
+from mindos.agents import CALENDAR, ORCHESTRATOR_TOOLS, RunLimits
+from mindos.application import Application, EventBus
+from mindos.domain import Pricing, ReasoningEffort, events
+from mindos.domain.commands import Decide, SubmitMessage
+from mindos.infra import SystemClock, new_id
 from tests.support.agent_kit import Kit, make_kit
 from tests.support.scripted_model import ScriptedChatModel, reply, tool_call
 

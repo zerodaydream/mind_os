@@ -5,7 +5,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-SRC = Path(__file__).resolve().parents[2] / "src" / "opsagent"
+SRC = Path(__file__).resolve().parents[2] / "src" / "mindos"
 PROVIDER_MODULES = {"langchain_google_genai", "google", "googleapiclient", "msal"}
 
 

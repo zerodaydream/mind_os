@@ -9,7 +9,7 @@ import pytest
 from hypothesis import assume, given
 from hypothesis import strategies as st
 
-from opsagent.domain import (
+from mindos.domain import (
     ALLOWED_TRANSITIONS,
     APPROVAL_TTL,
     TERMINAL_STATES,

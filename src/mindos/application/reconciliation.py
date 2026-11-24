@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from opsagent.domain import ApprovalBrokerPort, ApprovalRecord, AuditSink, ExecutionLog
+from mindos.domain import ApprovalBrokerPort, ApprovalRecord, AuditSink, ExecutionLog
 
 log = logging.getLogger(__name__)
 

@@ -19,13 +19,13 @@ jobs:
       db:
         image: pgvector/pgvector:pg16
         env:
-          POSTGRES_USER: opsagent
-          POSTGRES_PASSWORD: opsagent
-          POSTGRES_DB: opsagent
+          POSTGRES_USER: mindos
+          POSTGRES_PASSWORD: mindos
+          POSTGRES_DB: mindos
         ports:
           - 5433:5432
         options: >-
-          --health-cmd "pg_isready -U opsagent -d opsagent"
+          --health-cmd "pg_isready -U mindos -d mindos"
           --health-interval 3s --health-timeout 3s --health-retries 20
     steps:
       - uses: actions/checkout@v4

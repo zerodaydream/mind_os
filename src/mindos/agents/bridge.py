@@ -33,9 +33,9 @@ from langchain_core.tools import StructuredTool
 from langgraph.types import Command
 from langgraph.types import interrupt as lg_interrupt
 
-from opsagent.agents.hub import RunHub
-from opsagent.domain import ToolInvocation, ToolResult, current, events, redact
-from opsagent.tools import ToolExecutionEngine, model_schema, preview
+from mindos.agents.hub import RunHub
+from mindos.domain import ToolInvocation, ToolResult, current, events, redact
+from mindos.tools import ToolExecutionEngine, model_schema, preview
 
 log = logging.getLogger(__name__)
 

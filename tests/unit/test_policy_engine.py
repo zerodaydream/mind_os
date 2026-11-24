@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from opsagent.domain import ApprovalMode, PolicyDecision, Principal, RiskClass, SessionMode
-from opsagent.tools.policy import (
+from mindos.domain import ApprovalMode, PolicyDecision, Principal, RiskClass, SessionMode
+from mindos.tools.policy import (
     PolicyConfig,
     PolicyEngine,
     PolicyError,

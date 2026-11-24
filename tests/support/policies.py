@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from opsagent.domain import PolicyDecision, Principal, RiskClass
+from mindos.domain import PolicyDecision, Principal, RiskClass
 
 
 class ReadOnlyPolicy:

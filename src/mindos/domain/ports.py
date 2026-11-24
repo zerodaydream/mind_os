@@ -12,19 +12,26 @@ from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict
 
-from opsagent.domain.approvals import (
+from mindos.domain.approvals import (
     ApprovalRecord,
     ApprovalTicket,
     BoundState,
     EditVerdict,
     Resolution,
 )
-from opsagent.domain.commands import Decide
-from opsagent.domain.events import AppEvent
-from opsagent.domain.llm import LLMRequest, LLMResult, ModelCapabilities, ModelRole, Usage
-from opsagent.domain.reasoning import ReasoningEffort
-from opsagent.domain.risk import PolicyDecision, Principal, RiskClass
-from opsagent.domain.tools import ToolResult
+from mindos.domain.commands import Decide
+from mindos.domain.events import AppEvent
+from mindos.domain.llm import (
+    LLMRequest,
+    LLMResult,
+    ModelCapabilities,
+    ModelChoice,
+    ModelRole,
+    Usage,
+)
+from mindos.domain.reasoning import ReasoningEffort
+from mindos.domain.risk import PolicyDecision, Principal, RiskClass
+from mindos.domain.tools import ToolResult
 
 # Credential names understood by `CredentialProvider.get`.
 GEMINI_API_KEY = "gemini_api_key"
@@ -46,6 +53,30 @@ class CredentialProvider(Protocol):
     """Secrets come from here only. Values must never be logged or placed in events."""
 
     def get(self, name: str) -> str | None: ...
+
+
+class ModelTuning(Protocol):
+    """Which model and reasoning effort each role uses. Changes apply from the next model call."""
+
+    def current(self, role: ModelRole) -> ModelChoice: ...
+
+    async def available_models(self) -> tuple[str, ...]:
+        """Models to choose from: those the provider offers, plus the configured ones."""
+        ...
+
+    def effort_levels(self, model_id: str) -> tuple[ReasoningEffort, ...]:
+        """Reasoning levels the model supports. Empty: not configurable."""
+        ...
+
+    def select(
+        self,
+        role: ModelRole,
+        *,
+        model_id: str | None = None,
+        effort: ReasoningEffort | None = None,
+    ) -> ModelChoice:
+        """Change the model and/or effort of a role. Raises `ValueError` with a reason."""
+        ...
 
 
 class Tracing(Protocol):

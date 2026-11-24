@@ -11,9 +11,9 @@ from typing import Any
 import structlog
 from structlog.typing import EventDict, Processor, WrappedLogger
 
-from opsagent.domain import current, redact
+from mindos.domain import current, redact
 
-_LOG_FILE = "opsagent.log"
+_LOG_FILE = "mindos.log"
 
 
 def _merge_correlation(_: WrappedLogger, __: str, event_dict: EventDict) -> EventDict:
@@ -30,7 +30,7 @@ def _redact(_: WrappedLogger, __: str, event_dict: EventDict) -> EventDict:
 def configure_logging(log_dir: Path, level: str = "INFO", *, to_stderr: bool = False) -> Path:
     """Send JSON logs to a rotating file under `log_dir`. Returns the log file path.
 
-    The terminal UI owns stdout and stderr, so stderr output is opt-in (`ops doctor`, tests).
+    The terminal UI owns stdout and stderr, so stderr output is opt-in (`mindos doctor`, tests).
     """
     log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / _LOG_FILE

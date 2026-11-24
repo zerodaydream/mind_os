@@ -10,8 +10,8 @@ from textual import events
 from textual.message import Message
 from textual.widgets import Static, TextArea
 
-from opsagent.presentation.tokens import PALETTE, Glyphs
-from opsagent.presentation.viewmodel import SessionInfo, ViewState
+from mindos.presentation.tokens import PALETTE, Glyphs
+from mindos.presentation.viewmodel import SessionInfo, ViewState
 
 _VERBS = (
     "Thinking",

@@ -21,7 +21,7 @@ from typing import Any
 
 from langsmith import Client, tracing_context
 
-from opsagent.domain import redact
+from mindos.domain import redact
 
 log = logging.getLogger(__name__)
 
@@ -32,7 +32,7 @@ _AGENT_ID = re.compile(r"^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$")
 class TracingConfig:
     enabled: bool = False
     api_key: str | None = None
-    project: str = "opsagent"
+    project: str = "mindos"
     agent_id: str | None = None
     environment: str = "local"
     endpoint: str | None = None
@@ -73,8 +73,8 @@ class LangSmithTracing:
         cfg = self._cfg
         metadata = {
             "thread_id": thread_id,
-            "opsagent_run_id": run_id,
-            "opsagent_version": cfg.version,
+            "mindos_run_id": run_id,
+            "mindos_version": cfg.version,
             **({"conversation_id": conversation_id} if conversation_id else {}),
         }
         destination: dict[str, Any] = (
@@ -92,7 +92,7 @@ class LangSmithTracing:
             enabled=True,
             client=self._client,
             metadata=metadata,
-            tags=["opsagent", cfg.environment],
+            tags=["mindos", cfg.environment],
             **destination,
         )
 

@@ -9,8 +9,8 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 
-from opsagent.agents.limits import RunBudget, RunLimits
-from opsagent.domain import AppEvent, Evidence, ToolResult
+from mindos.agents.limits import RunBudget, RunLimits
+from mindos.domain import AppEvent, Evidence, ToolResult
 
 
 class _Done:

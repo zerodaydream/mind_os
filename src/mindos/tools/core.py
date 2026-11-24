@@ -9,8 +9,8 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
-from opsagent.domain import ArtifactStore, events
-from opsagent.tools.spec import ToolContext, ToolError, ToolSpec
+from mindos.domain import ArtifactStore, events
+from mindos.tools.spec import ToolContext, ToolError, ToolSpec
 
 MAX_SLICE = 4000  # stays under the default result bound, so a slice is never offloaded again
 

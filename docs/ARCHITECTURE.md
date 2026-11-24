@@ -6,6 +6,9 @@
 
 **Conventions.** *Module* = logical package in the single codebase. *Process* = separate OS process at runtime. *Principal* = who a tool invocation is attributed to (`USER`, `AGENT`, `JOB`, `SANDBOX`). Model IDs and library versions are **configuration**, never hardcoded in code or docs (see [§17.3](#173-verification-status-and-open-decisions)).
 
+> **Scope note (ADR 0008):** Microsoft Teams and Microsoft accounts are out of scope. Teams rows and
+> Graph/MSAL details below are history; the Google flow and everything else stand.
+
 ## Contents
 
 1. [Architectural Overview](#1-architectural-overview)
@@ -44,7 +47,7 @@ Separate processes exist **only where isolation or lifecycle demands it**: the b
 
 ```mermaid
 flowchart TB
-  subgraph P1["Process 1: ops (interactive)"]
+  subgraph P1["Process 1: mindos (interactive)"]
     direction TB
     TUI["Textual TUI\n(presentation)"]
     APP["Application services\n(sessions, approval broker,\npolicy engine, event bus)"]
@@ -58,7 +61,7 @@ flowchart TB
     INT["Integration adapters\nGmail | Calendar | Graph |\nFS | macOS | Convert | Web | MCP client"]
   end
 
-  subgraph P2["Process 2: ops worker (background)"]
+  subgraph P2["Process 2: mindos worker (background)"]
     direction TB
     JOBS["Job runner"]
     IDX["Indexer + FS watcher"]
@@ -66,7 +69,7 @@ flowchart TB
   end
 
   subgraph P3["Process 3: sandbox worker (optional, isolated)"]
-    SBX["Restricted Python runtime\n+ Ops SDK"]
+    SBX["Restricted Python runtime\n+ MindOS SDK"]
   end
 
   PG[("PostgreSQL\ncheckpoints | store | approvals |\nexecutions | audit | files | jobs")]
@@ -100,7 +103,7 @@ flowchart TB
 
 | Logical modules (one codebase) | Separate runtime processes |
 |---|---|
-| presentation, application, domain, agents, tools, integrations, persistence, infra | `ops` (TUI + agent runtime), `ops worker`, sandbox worker (optional), PostgreSQL, MCP servers |
+| presentation, application, domain, agents, tools, integrations, persistence, infra | `mindos` (TUI + agent runtime), `mindos worker`, sandbox worker (optional), PostgreSQL, MCP servers |
 
 The interactive process and the worker share library code but **never share in-memory state**; PostgreSQL is the coordination point.
 
@@ -294,7 +297,7 @@ Introduce **only when** measured workflows show tool-call chaining is too slow, 
 
 ```text
 Agent
-  |  proposes code (a Python function using the Ops SDK)
+  |  proposes code (a Python function using the MindOS SDK)
   v
 Code Generation
   v
@@ -302,7 +305,7 @@ Validation            (static checks: allowed imports, size, no dynamic exec; de
   v
 Isolated Sandbox      (separate process, no secrets, no network, scoped scratch FS, resource limits)
   v
-Restricted Ops SDK    (ops.mail.search(...), ops.files.read(...); thin stubs that serialize requests)
+Restricted MindOS SDK    (mindos.mail.search(...), mindos.files.read(...); thin stubs that serialize requests)
   v
 RPC Tool Bridge       (local socket/pipe; framed, size-limited, schema-validated messages)
   v
@@ -322,10 +325,10 @@ Host-side Execution   (adapters run in the host process with the host's credenti
 | RPC | Length-prefixed JSON frames over a Unix domain socket or inherited pipe; each request carries `{run_id, seq, tool, args}`; bridge enforces max frame size, rate, and ordering; unknown tools rejected. |
 | Independent host validation | The bridge hands every request to the engine. Schema validation, permission, risk, and policy run **again on the host**; nothing is trusted because "the sandbox said it was approved". |
 | Reads vs effects | Reads execute immediately within quotas. **Side-effecting calls are deferred**: they are recorded as *proposed operations* in an operation set. |
-| Batch approval | At the end of the run (or at explicit `ops.commit()`), the host presents one **batch approval** listing every proposed effect (with per-item diffs/targets). The user may approve all, approve a subset, edit items, or reject. Approved items execute individually, each bound to its own payload hash (§5.5). |
+| Batch approval | At the end of the run (or at explicit `mindos.commit()`), the host presents one **batch approval** listing every proposed effect (with per-item diffs/targets). The user may approve all, approve a subset, edit items, or reject. Approved items execute individually, each bound to its own payload hash (§5.5). |
 | Errors and partial results | Each operation returns `{status, value | error, retryable}`. Sandbox code can handle per-item errors. The final result to the agent is a structured summary: succeeded, failed, skipped, with evidence IDs. |
 
-**The sandbox is never an alternative authorization path.** It has no capability the Ops SDK does not expose, and every Ops SDK call is an engine invocation. Backend selection (container vs. OS-level sandbox) is an open decision (§17.3); the contract above is independent of it.
+**The sandbox is never an alternative authorization path.** It has no capability the MindOS SDK does not expose, and every MindOS SDK call is an engine invocation. Backend selection (container vs. OS-level sandbox) is an open decision (§17.3); the contract above is independent of it.
 
 ---
 
@@ -356,7 +359,7 @@ Host-side Execution   (adapters run in the host process with the host's credenti
 ### 5.2 Policy ownership: the model cannot override it
 
 - Policy lives in **user-owned configuration** (`policy.toml` under the app config directory) plus compiled defaults. It is loaded and enforced by `application.PolicyEngine`.
-- The model has **no tool** that reads, writes, or relaxes policy. Policy changes happen only through user-initiated UI/CLI actions (`ops policy ...`), each audited.
+- The model has **no tool** that reads, writes, or relaxes policy. Policy changes happen only through user-initiated UI/CLI actions (`mindos policy ...`), each audited.
 - The engine can only **escalate** relative to config: *taint escalation* (§14.4) and the risk classifier may raise the requirement; nothing at runtime lowers it.
 - Per-tool "always allow" grants are user-created, scoped (tool + constraints such as recipient domain or path root), optionally expiring, and revocable.
 - Enforcement is **in the engine** (stage 7), not only in the agent framework. LangGraph's `interrupt()`, raised from our tool bridge, is the *pause/resume transport* for the TUI flow; the engine independently refuses to execute any `REQUIRE_APPROVAL` call that lacks a valid, unconsumed approval. A misconfigured graph therefore fails closed.
@@ -462,7 +465,7 @@ A sandbox run produces an **operation set**. The broker creates one `approval_ba
 | Tokens | Request offline access to obtain a refresh token. **Refresh token** → macOS Keychain (via `keyring`). **Access token** → in-memory only, with expiry. Neither is ever written to PostgreSQL, logs, agent context, or tool outputs. |
 | Expiry | Refresh proactively (skew, e.g., 60 s before expiry) and reactively on `401`. |
 | Concurrency | Single-flight refresh per account: in-process `asyncio.Lock` plus a PostgreSQL advisory lock keyed by account ID (covers interactive process + worker). Waiters reuse the refreshed token. |
-| Revocation | `ops auth revoke <provider>` calls the provider revocation endpoint, deletes Keychain entries, marks `integration_states.status=REVOKED`. Detected external revocation (`invalid_grant`) → `NEEDS_REAUTH`. |
+| Revocation | `mindos auth revoke <provider>` calls the provider revocation endpoint, deletes Keychain entries, marks `integration_states.status=REVOKED`. Detected external revocation (`invalid_grant`) → `NEEDS_REAUTH`. |
 | Insufficient permission | `403 insufficientPermissions` → status `NEEDS_SCOPE`; the engine returns a typed error (not retried) and emits `AuthRequired(scope_delta)`. |
 | Failure handling | Network/5xx → retry policy (§11). `invalid_grant`, revoked, or consent withdrawn → no retry; transition to `NEEDS_REAUTH`. |
 
@@ -541,7 +544,7 @@ For each integration: the **adapter** implements a domain port; **provider capab
 
 All tiers sit behind one port: `FileSearch.search(query, mode=auto|name|exact|semantic, roots, filters, limit)` returning `SearchHit{path, score, tier_sources[], snippet, mtime, content_hash, freshness}`.
 
-**Root registry.** The user registers roots (`OPS_ALLOWED_ROOTS`, `ops roots add|remove`). Each root has a state: `LIVE` (default) or `INDEXED`. Search runs per root, **in parallel across roots**, under one latency budget.
+**Root registry.** The user registers roots (`MINDOS_ALLOWED_ROOTS`, `mindos roots add|remove`). Each root has a state: `LIVE` (default) or `INDEXED`. Search runs per root, **in parallel across roots**, under one latency budget.
 
 **Promotion rule.** If live `rg` for a root exceeds a configured p95 (default 1.5 s) over the last N queries, the root is promoted to `INDEXED` (tier 2 candidates, then live verify). A root is demoted if the index lags or is rarely used. The thresholds are measured values in config, not guesses.
 
@@ -583,7 +586,7 @@ Run applicable tiers concurrently under a latency budget; merge with **Reciproca
 - **Freshness validation:** before returning or reading any indexed hit, `stat` the file; if `mtime/size` differ from the index, mark the hit `stale`, re-read live content, and enqueue reindex. Deleted files are dropped.
 - **Permission checks:** every hit is re-checked against allowed roots and denylist at return time.
 - **Live search is the default** (ripgrep/Spotlight): it is always fresh and needs no indexer. Use the index only on `INDEXED` roots, for semantic queries, and for fuzzy names. An indexed hit is always re-verified against the live file before it is returned.
-- **Spotlight caveats:** it respects Spotlight exclusions and privacy settings, does not index every hidden or developer directory, and has no regex. `ops doctor` checks `mdutil -s` per volume and reports roots Spotlight does not cover; those roots fall back to tier 1.
+- **Spotlight caveats:** it respects Spotlight exclusions and privacy settings, does not index every hidden or developer directory, and has no regex. `mindos doctor` checks `mdutil -s` per volume and reports roots Spotlight does not cover; those roots fall back to tier 1.
 
 ---
 
@@ -624,7 +627,7 @@ LangGraph's PostgreSQL checkpointer and store are used behind `persistence/` ada
 
 ## 10. PostgreSQL Architecture
 
-PostgreSQL is the **single system of record** and coordination mechanism. Required extensions: `pgvector`, `pg_trgm` (plus built-in FTS). Rationale for one database: transactional coupling of approvals/executions/audit; `SKIP LOCKED` job queue; `LISTEN/NOTIFY` between processes; hybrid retrieval in one place. (Cost: the user must run PostgreSQL locally; accepted for a "production-grade" local system. See §17.3.) The cost is mitigated, not ignored: the repo ships a `docker-compose.yml` (PostgreSQL + `pgvector`, `pg_trgm` enabled) as the default way to run it, and `ops doctor` verifies connectivity, extensions, schema version, and index lag, printing exact remediation commands.
+PostgreSQL is the **single system of record** and coordination mechanism. Required extensions: `pgvector`, `pg_trgm` (plus built-in FTS). Rationale for one database: transactional coupling of approvals/executions/audit; `SKIP LOCKED` job queue; `LISTEN/NOTIFY` between processes; hybrid retrieval in one place. (Cost: the user must run PostgreSQL locally; accepted for a "production-grade" local system. See §17.3.) The cost is mitigated, not ignored: the repo ships a `docker-compose.yml` (PostgreSQL + `pgvector`, `pg_trgm` enabled) as the default way to run it, and `mindos doctor` verifies connectivity, extensions, schema version, and index lag, printing exact remediation commands.
 
 ### 10.1 Logical ownership
 
@@ -663,7 +666,7 @@ PostgreSQL is the **single system of record** and coordination mechanism. Requir
 | Concurrency/locking | `SELECT … FOR UPDATE SKIP LOCKED` for jobs; advisory locks for OAuth refresh and per-resource serialization; optimistic `version` columns on approvals/jobs. |
 | Connection pooling | One async pool (psycopg pool) per process, sized small; separate pool/priority for checkpointer vs. app queries; statement timeouts set. |
 | Migrations | Alembic, forward-only, reviewed; LangGraph-managed tables are created/updated by the library's `setup()` and are **not** hand-edited. Startup refuses to run if schema version is behind. |
-| Backups/recovery | Documented `pg_dump`/base-backup procedure; `ops db backup/restore` wrappers; Keychain is **not** in backups (reauth required on restore). After restore, startup reconciliation (§11.4) repairs in-flight states. |
+| Backups/recovery | Documented `pg_dump`/base-backup procedure; `mindos db backup/restore` wrappers; Keychain is **not** in backups (reauth required on restore). After restore, startup reconciliation (§11.4) repairs in-flight states. |
 | Retention | Configurable pruning for old checkpoints, artifacts, and file chunks; `audit_events` retained longer; user can purge conversations. |
 
 ---
@@ -706,7 +709,7 @@ PostgreSQL is the **single system of record** and coordination mechanism. Requir
 
 | Event | Recovery |
 |---|---|
-| **Terminal closed** | Runs are in the TUI process; unfinished runs persist at the last checkpoint. On next start, the session picker lists resumable runs (`ops resume`). Pending approvals remain `PENDING` (until TTL). Background jobs continue in the worker. |
+| **Terminal closed** | Runs are in the TUI process; unfinished runs persist at the last checkpoint. On next start, the session picker lists resumable runs (`mindos resume`). Pending approvals remain `PENDING` (until TTL). Background jobs continue in the worker. |
 | **Worker crash** | Job leases expire (heartbeat timeout); another claim picks the job; steps are idempotent by key; stale `STARTED` side-effect executions are **reconciled** against the provider before any retry. |
 | **Network interruption** | Circuit breakers open; runs pause at the next tool boundary with `AwaitingNetwork`; resume on restoration or user retry. |
 | **Expired credentials** | §6.3. |
@@ -724,7 +727,7 @@ PostgreSQL is the **single system of record** and coordination mechanism. Requir
 | Types | Reminders, scheduled agent runs ("every weekday 08:30 summarize unread"), reindexing/watch jobs, token health checks, retention pruning. |
 | Execution | A job invokes the **same application services and engine** with principal `JOB`. Jobs that hit an approval gate move to `WAITING_APPROVAL` and notify; the job never self-approves. |
 | Retries/Cancellation | Persisted backoff; cancellation sets state and a flag polled at step boundaries. |
-| Worker recovery | §11.4. A worker is a separate process (`ops worker`); the TUI can also run an in-process worker only for development. |
+| Worker recovery | §11.4. A worker is a separate process (`mindos worker`); the TUI can also run an in-process worker only for development. |
 | Notifications | Worker writes events to DB and `NOTIFY`; the TUI (if running) subscribes; otherwise delivered on next launch (and optionally via macOS notification adapter, policy-gated). |
 
 ### 12.4 Time handling
@@ -739,7 +742,7 @@ PostgreSQL is the **single system of record** and coordination mechanism. Requir
 |---|---|---|
 | Lives in | Google Calendar (provider) | PostgreSQL `jobs` |
 | Purpose | Meetings/time blocks visible to the user and others | The agent doing something (remind, run a workflow) |
-| Executed by | People/calendar clients | `ops worker` |
+| Executed by | People/calendar clients | `mindos worker` |
 | Requires app running | No | Yes (worker) |
 | Mutation policy | Calendar approval rules | Job policy; jobs that perform side effects still go through approvals |
 
@@ -805,7 +808,7 @@ presentation/tui/
 | Diffs | Unified/side-by-side toggle with syntax-aware highlighting; large diffs are paged. |
 | Progress | Subtle spinners; elapsed time after a threshold; no decorative animation. Respect `NO_COLOR`/reduced-motion settings. |
 | Auth prompts | Inline panel with provider, scope delta, and "open browser" action; status updates when callback completes; run resumes automatically. |
-| Sessions | `ops resume` / `/sessions` picker showing title, last activity, pending approvals, unfinished runs. |
+| Sessions | `mindos resume` / `/sessions` picker showing title, last activity, pending approvals, unfinished runs. |
 | Cancellation | `Esc`/`Ctrl+C` once → cooperative cancel; twice → force. State always shown ("cancelling…", then final status). |
 | Errors | Non-modal toasts for transient issues; persistent inline blocks for run-affecting errors with remediation text. |
 | Resize/terminals | Reflow on resize; minimum-size fallback layout; Unicode width-aware; ASCII fallback glyph set and 16/256-color degradation when truecolor is unavailable. |
@@ -859,7 +862,7 @@ Each run tracks a `taint` set: `{external_email, external_doc, web, mcp, ...}`, 
 |---|---|
 | Structured logging | `structlog` JSON to file (rotating) and optional stderr in debug. TUI never prints logs to the terminal surface. |
 | Correlation IDs | `session_id`, `conversation_id`, `thread_id`, `run_id`, `step_id`, `subagent_id`, `tool_call_id`, `approval_id`, `job_id`, `request_id`; propagated via `contextvars` and included in every log/audit/trace record. |
-| Tracing | LangSmith, behind the `Tracing` port. Off by default; only `OPS_LANGSMITH_TRACING` turns it on (never the shell environment). Inputs and outputs are redacted before send, or hidden entirely. One trace per run with `thread_id` on the orchestrator and every subagent run; routed to an agent address or a project. Flushed on exit (ADR 0007). Spans for DB and HTTP calls are future work. |
+| Tracing | LangSmith, behind the `Tracing` port. Off by default; only `MINDOS_LANGSMITH_TRACING` turns it on (never the shell environment). Inputs and outputs are redacted before send, or hidden entirely. One trace per run with `thread_id` on the orchestrator and every subagent run; routed to an agent address or a project. Flushed on exit (ADR 0007). Spans for DB and HTTP calls are future work. |
 | Metrics | Tool latency/error rate/retry counts, approval rates (approved/edited/rejected/expired), time-to-approve, circuit-breaker state, job lag, index lag, retrieval latency, queue depth. |
 | Provider usage & cost | `provider_usage` per call: model, tokens in/out/cached/thinking, latency, estimated cost; per-run and daily budgets with soft/hard limits. |
 | Audit events | Append-only, typed (`approval.*`, `tool.executed`, `policy.changed`, `auth.*`, `memory.*`, `file.mutated`). Record who/what/why with hashes; reconstruct "what did the agent do on my behalf" from audit alone. |
@@ -892,7 +895,7 @@ Each run tracks a `taint` set: `{external_email, external_doc, web, mcp, ...}`, 
 | Phase | Deliverable | Gate to proceed |
 |---|---|---|
 | 0 | **Spikes:** version pinning, DeepAgents lockdown (§17.3), HITL resume across processes, Textual feasibility | ADRs written; `uv sync` reproducible |
-| 1 | Skeleton: layers, import contracts, config, logging, PostgreSQL (`docker-compose`) + migrations, `ops doctor`, event bus, `AgentRuntime` and provider ports with Gemini adapter | Architecture tests green |
+| 1 | Skeleton: layers, import contracts, config, logging, PostgreSQL (`docker-compose`) + migrations, `mindos doctor`, event bus, `AgentRuntime` and provider ports with Gemini adapter | Architecture tests green |
 | 2 | **TUI** (Claude Code-style, §13) built against a scripted fake event stream | Pilot tests + scenario replays pass |
 | 3 | Tool registry + execution engine (validation, permission, risk, audit) with **coarse tools** and one subagent end-to-end (Calendar read-only) wired to the TUI | Engine is the only adapter path |
 | 4 | **Approval broker and policy engine**, payload hashing, resume via checkpoint, approval UI, **startup reconciliation (required, §11.4)** | Approval correctness + crash-recovery suite green |

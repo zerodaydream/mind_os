@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import asyncio
 
-from opsagent.agents.fake import FakeRuntime
-from opsagent.application import Application, EventBus
-from opsagent.domain import ReasoningEffort, RunSpec, events
-from opsagent.domain.commands import Decide, SetMode, SubmitMessage
-from opsagent.domain.risk import ApprovalMode
-from opsagent.infra import SystemClock, new_id
+from mindos.agents.fake import FakeRuntime
+from mindos.application import Application, EventBus
+from mindos.domain import ReasoningEffort, RunSpec, events
+from mindos.domain.commands import Decide, SetMode, SubmitMessage
+from mindos.domain.risk import ApprovalMode
+from mindos.infra import SystemClock, new_id
 
 
 def make() -> Application:

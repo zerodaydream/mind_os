@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from opsagent.domain.llm import Usage
+from mindos.domain.llm import Usage
 
 
 @dataclass(frozen=True, slots=True)

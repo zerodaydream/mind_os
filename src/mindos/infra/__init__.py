@@ -1,11 +1,11 @@
 """Infrastructure: settings, logging, clock, IDs, credentials."""
 
-from opsagent.infra.clock import SystemClock
-from opsagent.infra.config import ConfigError, Settings, load_settings
-from opsagent.infra.credentials import SettingsCredentialProvider
-from opsagent.infra.ids import new_id
-from opsagent.infra.logging import configure_logging, get_logger
-from opsagent.infra.timezone import resolve_timezone
+from mindos.infra.clock import SystemClock
+from mindos.infra.config import ConfigError, Settings, load_settings
+from mindos.infra.credentials import SettingsCredentialProvider
+from mindos.infra.ids import new_id
+from mindos.infra.logging import configure_logging, get_logger
+from mindos.infra.timezone import resolve_timezone
 
 __all__ = [
     "ConfigError",

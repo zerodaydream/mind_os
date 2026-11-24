@@ -6,8 +6,8 @@ import pytest
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage
 
-from opsagent.domain import GEMINI_API_KEY, LLMRequest, ModelRole, ReasoningEffort
-from opsagent.integrations.llm import GeminiProvider, MissingCredentialError
+from mindos.domain import GEMINI_API_KEY, LLMRequest, ModelRole, ReasoningEffort
+from mindos.integrations.llm import GeminiProvider, MissingCredentialError
 
 
 class Creds:

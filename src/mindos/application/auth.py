@@ -6,7 +6,7 @@ an in-process lock per account, then a cross-process lock, so ten concurrent cal
 and the worker) cause one refresh. Failures move the account's `AuthStatus`, and an account that
 is not `CONNECTED` refuses calls without asking the provider again.
 
-`AuthService` is the user's side: connect, revoke, and status (`ops auth ...`).
+`AuthService` is the user's side: connect, revoke, and status (`mindos auth ...`).
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ import asyncio
 import logging
 from collections.abc import Mapping, Sequence
 
-from opsagent.domain import (
+from mindos.domain import (
     AccessToken,
     AuthError,
     AuthStatus,
@@ -94,7 +94,9 @@ class TokenManager:
         self._refuse_if_unusable(provider, state, scopes)
         refresh_token = self._secrets.get(refresh_key(provider, account_id))
         if refresh_token is None:
-            raise ReauthRequired(provider, f"{provider} is not signed in. Run: ops auth {provider}")
+            raise ReauthRequired(
+                provider, f"{provider} is not signed in. Run: mindos auth {provider}"
+            )
         granted = state.scopes if state else ()
         try:
             grant = await self._providers[provider].refresh(refresh_token)
@@ -122,19 +124,19 @@ class TokenManager:
             return
         if state.status in (AuthStatus.NEEDS_REAUTH, AuthStatus.REVOKED):
             raise ReauthRequired(
-                provider, f"{provider} needs you to sign in again. Run: ops auth {provider}"
+                provider, f"{provider} needs you to sign in again. Run: mindos auth {provider}"
             )
         missing = tuple(s for s in scopes if s not in state.scopes)
         if state.status is AuthStatus.NEEDS_SCOPE or missing:
             raise ScopeRequired(
                 provider,
-                f"{provider} needs more permission. Run: ops auth {provider}",
+                f"{provider} needs more permission. Run: mindos auth {provider}",
                 missing,
             )
 
 
 class AuthService:
-    """Connect, revoke, and report on accounts. Used by `ops auth`, never by the model."""
+    """Connect, revoke, and report on accounts. Used by `mindos auth`, never by the model."""
 
     def __init__(
         self,

@@ -9,11 +9,11 @@ from langchain_core.runnables import RunnableLambda
 from langsmith import Client
 from langsmith.utils import get_env_var, tracing_is_enabled
 
-from opsagent.bootstrap.container import build_tracing
-from opsagent.domain import events
-from opsagent.domain.commands import Decide
-from opsagent.infra import Settings
-from opsagent.integrations.tracing import LangSmithTracing, TracingConfig
+from mindos.bootstrap.container import build_tracing
+from mindos.domain import events
+from mindos.domain.commands import Decide
+from mindos.infra import Settings
+from mindos.integrations.tracing import LangSmithTracing, TracingConfig
 from tests.support.agent_kit import make_kit
 from tests.support.scripted_model import ScriptedChatModel, reply, tool_call
 from tests.support.world import World
@@ -73,7 +73,7 @@ def test_the_environment_never_enables_tracing_through_our_settings(
     monkeypatch.setenv("LANGSMITH_TRACING", "true")
     monkeypatch.setenv("LANGSMITH_API_KEY", "lsv2_pt_" + "a" * 40)
     cfg = build_tracing(settings(), _NoCredentials())
-    assert cfg.active is False  # our flag is OPS_LANGSMITH_TRACING, and it is unset
+    assert cfg.active is False  # our flag is MINDOS_LANGSMITH_TRACING, and it is unset
 
 
 def test_settings_turn_it_on_and_the_keychain_key_wins() -> None:
@@ -116,24 +116,24 @@ def test_hide_io_sends_structure_only() -> None:
 # ---- the run tree ----------------------------------------------------------------------------
 async def test_a_traced_run_lands_in_the_project_with_its_thread() -> None:
     recorder = Recorder()
-    with on(recorder, project="ops-test").run(
+    with on(recorder, project="mindos-test").run(
         run_id="run_1", thread_id="thr_1", conversation_id="c1"
     ):
         await RunnableLambda(lambda x: x).ainvoke("hi")
     assert recorder.posted
     run = recorder.posted[0]
-    assert run["session_name"] == "ops-test"
+    assert run["session_name"] == "mindos-test"
     assert run["extra"]["metadata"]["thread_id"] == "thr_1"
     assert run["extra"]["metadata"]["conversation_id"] == "c1"
 
 
 async def test_the_agent_address_replaces_the_project_when_an_agent_id_is_set() -> None:
     recorder = Recorder()
-    tracer = on(recorder, agent_id="ops-agent", environment="development", project="ignored")
+    tracer = on(recorder, agent_id="mindos-agent", environment="development", project="ignored")
     with tracer.run(run_id="r", thread_id="t", conversation_id=None):
         await RunnableLambda(lambda x: x).ainvoke("hi")
     run = recorder.posted[0]
-    assert run["address"] == {"kind": "AGENT", "id": "ops-agent", "environment": "DEVELOPMENT"}
+    assert run["address"] == {"kind": "AGENT", "id": "mindos-agent", "environment": "DEVELOPMENT"}
     assert run.get("session_name") != "ignored"  # the address replaces the project
 
 
@@ -144,9 +144,9 @@ async def test_orchestrator_and_subagent_spans_share_one_trace_and_thread() -> N
     kit = make_kit(orchestrator, subagent, tracing=on(recorder))
     await kit.collect(kit.spec("what is on?", thread="thr_9"))
     names = [r["name"] for r in recorder.posted]
-    assert "opsagent.orchestrator" in names and "opsagent.subagent.calendar" in names
+    assert "mindos.orchestrator" in names and "mindos.subagent.calendar" in names
     assert len({r["trace_id"] for r in recorder.posted}) == 1  # one run, one trace
-    sub = next(r for r in recorder.posted if r["name"] == "opsagent.subagent.calendar")
+    sub = next(r for r in recorder.posted if r["name"] == "mindos.subagent.calendar")
     assert sub["extra"]["metadata"]["thread_id"] == "thr_9"  # not inherited: set explicitly
     assert SECRET not in str([r["inputs"] for r in recorder.posted])
 

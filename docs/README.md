@@ -1,8 +1,8 @@
-# opsagent
+# MindOS
 
-**A terminal-native personal operations agent: Gmail, Calendar, Teams, files, and macOS, driven by natural language, with human approval on anything that matters.**
+**A terminal-native personal operations environment: Gmail, Calendar, files, and macOS, driven by natural language, with human approval on anything that matters.**
 
-> **Project status: pre-implementation (design phase).** The repository currently contains only documentation. Every command, path, and feature below is the **proposed contract** from [ARCHITECTURE.md](ARCHITECTURE.md). Nothing is implemented yet unless marked ✅ in [Features](#3-features). `opsagent` / `ops` is a working title.
+> **Project status: pre-implementation (design phase).** The repository currently contains only documentation. Every command, path, and feature below is the **proposed contract** from [ARCHITECTURE.md](ARCHITECTURE.md). Nothing is implemented yet unless marked ✅ in [Features](#3-features). `mindos` / MindOS is the project's name.
 
 Badges are intentionally omitted until CI, a published package, and a license exist.
 
@@ -10,7 +10,7 @@ Badges are intentionally omitted until CI, a published package, and a license ex
 
 ## 1. Overview
 
-`opsagent` is an agentic environment, not a chatbot. You describe intent; an orchestrator plans the work and delegates to specialized subagents (Mail, Calendar, Teams, Files, Convert, System). Side effects pass through a single execution engine with risk-based approval, payload-bound approvals, resumable state in PostgreSQL, and audit records.
+`mindos` is an agentic environment, not a chatbot. You describe intent; an orchestrator plans the work and delegates to specialized subagents (Mail, Calendar, Files, Convert, System). Side effects pass through a single execution engine with risk-based approval, payload-bound approvals, resumable state in PostgreSQL, and audit records.
 
 Product vision and non-negotiable principles: **[MISSION.md](MISSION.md)**.
 
@@ -21,13 +21,13 @@ flowchart LR
   U["User"] --> TUI["Textual TUI"]
   TUI <--> APP["Application layer\n(approvals, policy, events)"]
   APP --> ORCH["Orchestrator"]
-  ORCH --> SUB["Subagents\nMail Calendar Teams Files Convert System"]
+  ORCH --> SUB["Subagents\nMail Calendar Files Convert System"]
   SUB --> ENG["Tool execution engine\nvalidate / authorize / approve / audit"]
-  ENG --> INT["Integrations\nGoogle, Graph, FS, macOS, MCP"]
+  ENG --> INT["Integrations\nGoogle, FS, macOS, MCP"]
   ENG -. "optional, later" .-> SBX["Sandbox + RPC bridge"]
   APP --> PG[("PostgreSQL")]
   ENG --> PG
-  WRK["ops worker\n(jobs, indexing)"] --> PG
+  WRK["mindos worker\n(jobs, indexing)"] --> PG
 ```
 
 - Strict modular monolith; separate processes only for the worker, the optional sandbox, and external MCP servers.
@@ -41,19 +41,20 @@ Legend: ✅ implemented · 🚧 in progress · 📋 planned
 |---|---|---|
 | Foundation | Layered skeleton, import contracts, config, logging | ✅ |
 | Foundation | PostgreSQL schema + migrations | ✅ |
-| TUI | Chat, streaming, tool/subagent blocks, status line (runs against a scripted fake agent: `uv run ops --demo`) | ✅ |
+| TUI | Chat, streaming, tool/subagent blocks, status line (runs against a scripted fake agent: `uv run mindos --demo`) | ✅ |
 | TUI | Approval panel (approve / edit / reject) | ✅ |
-| TUI | Diff view, transcript search, text selection | 📋 |
+| TUI | Select text with the mouse (release copies; Ctrl+C or Cmd+C too), trackpad and keyboard scrolling | ✅ |
+| TUI | `/model` and `/think` pickers: model and reasoning effort for the orchestrator and subagents, changed live | ✅ |
+| TUI | Diff view, transcript search | 📋 |
 | Agent | Orchestrator + todo planning (Deep Agents runtime) | 🚧 built and tested with scripted models; not yet run live |
-| Agent | Subagents: Mail, Calendar, Teams, Files, Convert, System | 📋 |
+| Agent | Subagents: Mail, Calendar, Files, Convert, System | 📋 |
 | Tools | Registry, validation, risk classification, audit | 🚧 built (Phase 04) |
 | Observability | LangSmith tracing (redacted, off by default, thread per conversation) | 🚧 built and tested against an in-memory recorder; no live trace yet |
 | Tools | Dynamic `search_tools` / `load_tools` | 📋 |
 | Approvals | Policy engine, payload hashing, resume after approval | 📋 |
 | Auth | Google OAuth (PKCE, Keychain) | 🚧 token lifecycle built and tested offline; no live sign-in or adapter yet |
-| Auth | Microsoft Graph OAuth (work/school accounts) | 🚧 same as Google |
-| Mail / Calendar | Search, read, draft, send / list, create, update | 📋 |
-| Teams | Read, send | 📋 |
+| Calendar | List, search, create, update, delete (approval-gated, bound to the event; Google adapter) | 🚧 built, tested against a scripted API; not run live |
+| Mail | Search, read, draft, send | 📋 |
 | Files | Multi-root search: live Spotlight + ripgrep by default; per-root pg_trgm accelerator; pgvector for meaning | 📋 |
 | Files | Read / diff-edit / organize | 📋 |
 | Convert | Document conversion | 📋 |
@@ -79,20 +80,20 @@ Legend: ✅ implemented · 🚧 in progress · 📋 planned
 ├── alembic.ini
 ├── migrations/                # Alembic revisions (app tables)
 ├── docs/adr/                  # Architecture Decision Records (decisions that amend ARCHITECTURE.md)
-├── src/opsagent/
+├── src/mindos/
 │   ├── domain/                # Entities, risk/policy models, tool & approval contracts, ports. No I/O.
 │   ├── application/           # Use cases, sessions/runs, approval broker, policy engine, event bus
 │   ├── agents/                # Orchestrator, subagent definitions, prompts, context assembly
 │   ├── tools/                 # Registry, discovery, validation, execution engine, normalization
-│   │   └── namespaces/        # mail/ calendar/ teams/ files/ convert/ system/ (ToolSpecs only)
-│   ├── integrations/          # Adapters implementing ports: google/, microsoft/, filesystem/, macos/, convert/, web/, mcp/, llm/
+│   │   └── namespaces/        # mail/ calendar/ files/ convert/ system/ (ToolSpecs only)
+│   ├── integrations/          # Adapters implementing ports: google/, filesystem/, macos/, convert/, web/, mcp/, llm/
 │   ├── persistence/           # Repositories, checkpointer/store wiring, migrations glue
 │   ├── presentation/tui/      # Textual app, screens, widgets, state reducers, theme/
-│   ├── sandbox/               # Host-side RPC bridge, worker entrypoint, Ops SDK (deferred)
+│   ├── sandbox/               # Host-side RPC bridge, worker entrypoint, MindOS SDK (deferred)
 │   ├── workers/               # Job runner, indexer, filesystem watcher
 │   ├── infra/                 # Config, logging, secrets (Keychain), HTTP, clock
 │   ├── bootstrap/             # Composition root: wires adapters to ports
-│   └── cli.py                 # `ops` entrypoint
+│   └── cli.py                 # `mindos` entrypoint
 ├── tests/
 │   ├── unit/  integration/  architecture/  evals/  security/  fixtures/
 └── scripts/                   # Dev helpers
@@ -121,7 +122,7 @@ Selected direction (versions are resolved at implementation time and pinned in `
 | Persistence for agents | LangGraph PostgreSQL checkpointer and store |
 | Migrations | Alembic |
 | File search | Spotlight (`mdfind`), `ripgrep`, PostgreSQL indexes, FSEvents-based watching |
-| Integrations | Google APIs, Microsoft Graph (MSAL), MCP |
+| Integrations | Google APIs, MCP |
 | Secrets | macOS Keychain (`keyring`) |
 | Tooling | `uv`, `ruff`, `mypy` (or `pyright`), `pytest`, `import-linter` |
 
@@ -136,7 +137,6 @@ Selected direction (versions are resolved at implementation time and pinned in `
 | `ripgrep` | **Yes** | |
 | Gemini API access | **Yes** | API key from Google AI Studio or Google Cloud. |
 | Google Cloud project with OAuth **Desktop** client | Optional (Gmail/Calendar) | Enable Gmail API and Calendar API. |
-| Microsoft Entra app registration (public client) | Optional (Teams) | Work or school account required; admin consent may be needed. |
 | macOS permissions (Full Disk Access / Automation, as needed) | Optional | Only for features that need them. |
 | Container runtime or OS sandbox | Optional | Only if sandboxed programmatic execution is enabled (backend TBD). |
 | Document converters, OCR engine | Optional | Decided at implementation time. |
@@ -147,7 +147,7 @@ Selected direction (versions are resolved at implementation time and pinned in `
 
 ```bash
 # 1. Clone
-git clone <repository-url> opsagent && cd opsagent
+git clone <repository-url> mindos && cd mindos
 
 # 2. Tooling
 brew install uv ripgrep                            # verify formula names/versions
@@ -158,124 +158,120 @@ uv sync
 # 4. Database (default: docker-compose ships PostgreSQL with pgvector; extensions enabled by init script)
 docker compose up -d db
 # Alternative, native: brew install postgresql@16 pgvector, then
-#   createdb opsagent && psql opsagent -c 'CREATE EXTENSION IF NOT EXISTS vector;' -c 'CREATE EXTENSION IF NOT EXISTS pg_trgm;'
+#   createdb mindos && psql mindos -c 'CREATE EXTENSION IF NOT EXISTS vector;' -c 'CREATE EXTENSION IF NOT EXISTS pg_trgm;'
 
 # 5. Configuration
 cp .env.example .env        # then edit (see below)
 
 # 6. Migrations
-uv run ops db migrate
+uv run mindos db migrate
 
 # 7. Verify
-uv run ops doctor
+uv run mindos doctor
 ```
 
 ## 8. Configuration and Environment Variables
 
-Application config lives in `.env` (development) and `~/.config/opsagent/` (policy, allowed roots). **OAuth refresh tokens and API keys are not stored in `.env` in normal use**; they go to the macOS Keychain via `ops auth ...`. A development-only env fallback for the Gemini key is allowed.
+Application config lives in `.env` (development) and `~/.config/mindos/` (policy, allowed roots). **OAuth refresh tokens and API keys are not stored in `.env` in normal use**; they go to the macOS Keychain via `mindos auth ...`. A development-only env fallback for the Gemini key is allowed.
 
 `.env.example` (proposed):
 
 ```dotenv
 # --- Database ---------------------------------------------------------------
-OPS_DATABASE_URL=postgresql://localhost:5432/opsagent
-OPS_DB_POOL_MAX=10
+MINDOS_DATABASE_URL=postgresql://localhost:5432/mindos
+MINDOS_DB_POOL_MAX=10
 
 # --- Models (IDs are configuration; check provider docs for current IDs) -----
-OPS_MODEL_ORCHESTRATOR=            # e.g. a Gemini 3.x Pro/Flash model ID
-OPS_MODEL_SUBAGENT=                # cheaper/faster tier for subagents
-OPS_REASONING_ORCHESTRATOR=        # minimal|low|medium|high|xhigh (must be in the model profile)
-OPS_REASONING_SUBAGENT=            # usually low or medium
-OPS_REASONING_UTILITY=             # routing/titles/summaries: minimal or low
-OPS_INCLUDE_THOUGHTS=true          # show collapsed thought summaries in the TUI
-# Gemini 2.5 only: OPS_THINKING_BUDGET=  (0 off, -1 dynamic, or token cap)
-OPS_MODEL_EMBEDDING=
-OPS_EMBEDDING_DIMENSIONS=
-# Dev-only fallback; prefer: ops auth gemini  (stores key in Keychain)
+MINDOS_MODEL_ORCHESTRATOR=            # e.g. a Gemini 3.x Pro/Flash model ID
+MINDOS_MODEL_SUBAGENT=                # cheaper/faster tier for subagents
+MINDOS_REASONING_ORCHESTRATOR=        # minimal|low|medium|high|xhigh (must be in the model profile)
+MINDOS_REASONING_SUBAGENT=            # usually low or medium
+MINDOS_REASONING_UTILITY=             # routing/titles/summaries: minimal or low
+MINDOS_INCLUDE_THOUGHTS=true          # show collapsed thought summaries in the TUI
+# Gemini 2.5 only: MINDOS_THINKING_BUDGET=  (0 off, -1 dynamic, or token cap)
+MINDOS_MODEL_EMBEDDING=
+MINDOS_MODEL_CHOICES=              # extra models for /model, comma-separated (the provider's list is added)
+MINDOS_EMBEDDING_DIMENSIONS=
+# Dev-only fallback; prefer: mindos auth gemini  (stores key in Keychain)
 # GEMINI_API_KEY=
 
 # --- Google OAuth (Desktop client; client ID is not a secret) ----------------
-OPS_GOOGLE_CLIENT_ID=
-OPS_GOOGLE_CLIENT_SECRET=          # Desktop clients are public clients; PKCE is always used
-
-# --- Microsoft Graph (public client) ----------------------------------------
-OPS_MS_CLIENT_ID=
-OPS_MS_TENANT=organizations
+MINDOS_GOOGLE_CLIENT_ID=
+MINDOS_GOOGLE_CLIENT_SECRET=          # Desktop clients are public clients; PKCE is always used
 
 # --- Filesystem --------------------------------------------------------------
-OPS_ALLOWED_ROOTS=~/Documents:~/Desktop:~/Projects
-OPS_DENY_PATTERNS=                 # additional denylist globs (defaults always apply)
-OPS_INDEXING_ENABLED=true
-OPS_OCR_ENABLED=false
+MINDOS_ALLOWED_ROOTS=~/Documents:~/Desktop:~/Projects
+MINDOS_DENY_PATTERNS=                 # additional denylist globs (defaults always apply)
+MINDOS_INDEXING_ENABLED=true
+MINDOS_OCR_ENABLED=false
 
 # --- Agent limits ------------------------------------------------------------
-OPS_MAX_PARALLEL_SUBAGENTS=3
-OPS_RUN_DEADLINE_SECONDS=900
-OPS_RUN_TOKEN_BUDGET=
+MINDOS_MAX_PARALLEL_SUBAGENTS=3
+MINDOS_RUN_DEADLINE_SECONDS=900
+MINDOS_RUN_TOKEN_BUDGET=
 
 # --- Approvals (stricter-only overrides; defaults in policy.toml) ------------
-OPS_APPROVAL_TTL_R3_SECONDS=3600
+MINDOS_APPROVAL_TTL_R3_SECONDS=3600
 
 # --- Time --------------------------------------------------------------------
-OPS_TIMEZONE=                      # IANA name; defaults to system zone
+MINDOS_TIMEZONE=                      # IANA name; defaults to system zone
 
 # --- Sandbox (optional, deferred) -------------------------------------------
-OPS_SANDBOX_ENABLED=false
+MINDOS_SANDBOX_ENABLED=false
 
 # --- Observability -----------------------------------------------------------
-# LangSmith tracing is off unless OPS_LANGSMITH_TRACING=true (the shell never enables it).
-# Key: `ops auth langsmith` (Keychain), or OPS_LANGSMITH_API_KEY here for development.
-OPS_LANGSMITH_TRACING=false
-OPS_LANGSMITH_PROJECT=opsagent
-# OPS_LANGSMITH_AGENT_ID=             # agent-based workspace: replaces the project
-# OPS_LANGSMITH_ENVIRONMENT=local     # local|development|staging|production
-# OPS_LANGSMITH_ENDPOINT=             # non-US region or self-hosted API URL
-# OPS_LANGSMITH_WORKSPACE_ID=         # when the key reaches several workspaces
-OPS_LANGSMITH_HIDE_IO=false           # true: send run structure only, no inputs or outputs
-OPS_LANGSMITH_SAMPLING_RATE=1.0
-OPS_LOG_LEVEL=INFO
-OPS_LOG_DIR=~/Library/Logs/opsagent
+# LangSmith tracing is off unless MINDOS_LANGSMITH_TRACING=true (the shell never enables it).
+# Key: `mindos auth langsmith` (Keychain), or MINDOS_LANGSMITH_API_KEY here for development.
+MINDOS_LANGSMITH_TRACING=false
+MINDOS_LANGSMITH_PROJECT=mindos
+# MINDOS_LANGSMITH_AGENT_ID=             # agent-based workspace: replaces the project
+# MINDOS_LANGSMITH_ENVIRONMENT=local     # local|development|staging|production
+# MINDOS_LANGSMITH_ENDPOINT=             # non-US region or self-hosted API URL
+# MINDOS_LANGSMITH_WORKSPACE_ID=         # when the key reaches several workspaces
+MINDOS_LANGSMITH_HIDE_IO=false           # true: send run structure only, no inputs or outputs
+MINDOS_LANGSMITH_SAMPLING_RATE=1.0
+MINDOS_LOG_LEVEL=INFO
+MINDOS_LOG_DIR=~/Library/Logs/mindos
 ```
 
 | Variable group | Purpose |
 |---|---|
-| `OPS_DATABASE_URL` | PostgreSQL connection (required) |
-| `OPS_MODEL_*` | Model selection; no defaults baked into code |
-| `OPS_GOOGLE_*`, `OPS_MS_*` | OAuth client identification only |
-| `OPS_ALLOWED_ROOTS`, `OPS_DENY_PATTERNS` | Filesystem boundary |
-| `OPS_MAX_*`, `OPS_RUN_*` | Execution limits |
-| `OPS_APPROVAL_*` | Approval timing (can tighten policy, never loosen it from the model side) |
-| `OPS_LANGSMITH_*` | Tracing: on/off, destination, redaction, sampling (ADR 0007) |
+| `MINDOS_DATABASE_URL` | PostgreSQL connection (required) |
+| `MINDOS_MODEL_*` | Model selection; no defaults baked into code |
+| `MINDOS_GOOGLE_*`, `MINDOS_MS_*` | OAuth client identification only |
+| `MINDOS_ALLOWED_ROOTS`, `MINDOS_DENY_PATTERNS` | Filesystem boundary |
+| `MINDOS_MAX_*`, `MINDOS_RUN_*` | Execution limits |
+| `MINDOS_APPROVAL_*` | Approval timing (can tighten policy, never loosen it from the model side) |
+| `MINDOS_LANGSMITH_*` | Tracing: on/off, destination, redaction, sampling (ADR 0007) |
 
-Approval policy itself is edited with `ops policy ...` (user-only, audited), not through the agent.
+Approval policy itself is edited with `mindos policy ...` (user-only, audited), not through the agent.
 
 ## 9. External Integrations Setup
 
 | Integration | Setup outline | Docs |
 |---|---|---|
-| **LangSmith** (optional) | Create an API key in your org; run `ops auth langsmith`; set `OPS_LANGSMITH_TRACING=true`. Use `OPS_LANGSMITH_AGENT_ID` in an agent-based workspace, else a project. Check traces carry `thread_id` and no secrets before trusting it with real mail. | https://docs.langchain.com/langsmith |
-| **Gemini** | Create an API key; run `ops auth gemini`. Choose model IDs from the current model list and set `OPS_MODEL_*`. | https://ai.google.dev/gemini-api/docs |
+| **LangSmith** (optional) | Create an API key in your org; run `mindos auth langsmith`; set `MINDOS_LANGSMITH_TRACING=true`. Use `MINDOS_LANGSMITH_AGENT_ID` in an agent-based workspace, else a project. Check traces carry `thread_id` and no secrets before trusting it with real mail. | https://docs.langchain.com/langsmith |
+| **Gemini** | Create an API key; run `mindos auth gemini`. Choose model IDs from the current model list and set `MINDOS_MODEL_*`. | https://ai.google.dev/gemini-api/docs |
 | **Google OAuth** | In Google Cloud: create a project, configure the consent screen, create an OAuth client of type **Desktop app**, copy the client ID/secret into `.env`. | https://developers.google.com/identity/protocols/oauth2/native-app |
-| **Gmail** | Enable the Gmail API; grant scopes incrementally with `ops auth google --capability mail-read` (then `mail-compose`, `mail-send` as needed). | https://developers.google.com/gmail/api |
-| **Google Calendar** | Enable the Calendar API; `ops auth google --capability calendar-read|calendar-write`. | https://developers.google.com/calendar/api |
-| **Microsoft Graph** | Entra ID → App registrations → new public client; add delegated permissions (least-privileged for the features you enable); set redirect to loopback; `ops auth microsoft`. Work/school account only. | https://learn.microsoft.com/graph/api/chatmessage-post |
-| **MCP (optional)** | Add allowlisted servers in `~/.config/opsagent/mcp.toml`; each tool is classified before use (default high risk). | https://modelcontextprotocol.io |
+| **Gmail** | Enable the Gmail API; grant scopes incrementally with `mindos auth google --capability mail-read` (then `mail-compose`, `mail-send` as needed). | https://developers.google.com/gmail/api |
+| **Google Calendar** | Enable the Calendar API; `mindos auth google --capability calendar-read|calendar-write`. | https://developers.google.com/calendar/api |
+| **MCP (optional)** | Add allowlisted servers in `~/.config/mindos/mcp.toml`; each tool is classified before use (default high risk). | https://modelcontextprotocol.io |
 | **macOS permissions** | Grant Terminal/iTerm the required privacy permissions (Full Disk Access, Automation) only for features you enable. | System Settings → Privacy & Security |
 | **Sandbox (optional)** | Disabled by default; enabling requires the backend chosen in an ADR. | ARCHITECTURE §4.4 |
 
 ## 10. Running the Application
 
 ```bash
-uv run ops                    # start the interactive TUI
-uv run ops resume             # pick up an unfinished session / pending approvals
-uv run ops worker             # start the background worker (jobs, indexing, watcher)
-uv run ops db migrate         # apply database migrations
-uv run ops doctor             # health: DB, extensions, credentials, integrations, ripgrep, index lag
-uv run ops auth status        # integration states (CONNECTED / NEEDS_REAUTH / NEEDS_SCOPE)
-uv run ops --help             # CLI help
+uv run mindos                    # start the interactive TUI
+uv run mindos resume             # pick up an unfinished session / pending approvals
+uv run mindos worker             # start the background worker (jobs, indexing, watcher)
+uv run mindos db migrate         # apply database migrations
+uv run mindos doctor             # health: DB, extensions, credentials, integrations, ripgrep, index lag
+uv run mindos auth status        # integration states (CONNECTED / NEEDS_REAUTH / NEEDS_SCOPE)
+uv run mindos --help             # CLI help
 ```
 
-Run `ops worker` in a separate terminal or as a launchd agent so scheduled jobs and indexing continue when the TUI is closed.
+Run `mindos worker` in a separate terminal or as a launchd agent so scheduled jobs and indexing continue when the TUI is closed.
 
 ## 11. Usage Examples
 
@@ -291,7 +287,6 @@ Run `ops worker` in a separate terminal or as a launchd agent so scheduled jobs 
 
 > Move Thursday's design review to Friday 11:00 and tell the attendees.
   → Calendar: proposed update shown (attendees notified ⇒ approval required).
-  → Teams: message to attendees proposed; separate approval.
 
 > Find last quarter's vendor contract and convert it to PDF.
   → Files subagent: tiered search (fuzzy name + semantic), freshness-checked.
@@ -301,8 +296,8 @@ Run `ops worker` in a separate terminal or as a launchd agent so scheduled jobs 
   → Files: itemized diffs; approval required outside designated workspace;
     approved edits apply only if files are unchanged since preview.
 
-> Remind me Monday 09:00 to review the Teams thread with Priya.
-  → Scheduled job (timezone-aware). Fires via `ops worker`.
+> Remind me Monday 09:00 to review the design doc with Priya.
+  → Scheduled job (timezone-aware). Fires via `mindos worker`.
 
 > Every weekday 08:30 summarize unread mail from my manager.
   → Recurring scheduled job; any outgoing action still requires approval.
@@ -319,9 +314,9 @@ Run `ops worker` in a separate terminal or as a launchd agent so scheduled jobs 
 | Type check | `uv run mypy src` (or the chosen checker) |
 | Tests | `uv run pytest` |
 | Architecture rules | `uv run lint-imports` |
-| New migration | `uv run alembic revision -m "<msg>"` then review; apply with `ops db migrate` |
-| Debug logs | `OPS_LOG_LEVEL=DEBUG` and inspect `OPS_LOG_DIR` (logs never print into the TUI) |
-| TUI dev | `uv run ops --demo` replays scripted scenarios (type `stream`, `tools`, `approval`, `error`, or `long`) |
+| New migration | `uv run alembic revision -m "<msg>"` then review; apply with `mindos db migrate` |
+| Debug logs | `MINDOS_LOG_LEVEL=DEBUG` and inspect `MINDOS_LOG_DIR` (logs never print into the TUI) |
+| TUI dev | `uv run mindos --demo` replays scripted scenarios (type `stream`, `tools`, `approval`, `error`, or `long`) |
 
 **Conventions:** typed Python, Pydantic models at boundaries, no module-level mutable state, no provider imports outside `integrations/`, no business logic in `presentation/`.
 
@@ -390,7 +385,7 @@ For contributors and AI coding agents:
 **Current limitations**
 
 - No implementation exists; this repository defines design and process only.
-- macOS only. Teams requires a work/school account (personal Microsoft accounts are not supported by the Graph chat-send APIs) and may require tenant admin consent.
+- macOS only. Teams and Microsoft accounts are out of scope (ADR 0008).
 - Requires a local PostgreSQL installation with extensions.
 - Several technical choices are intentionally unresolved (sandbox backend, vector index type, converters, OCR, web search provider); see [ARCHITECTURE §17.3](ARCHITECTURE.md#173-verification-status-and-open-decisions).
 - Library and model versions have not been pinned or validated against each other yet.
@@ -398,12 +393,12 @@ For contributors and AI coding agents:
 **Roadmap (in order; see [ARCHITECTURE §17](ARCHITECTURE.md#17-architectural-evolution))**
 
 0. Spikes (versions, DeepAgents lockdown, HITL resume, Textual feasibility)
-1. Skeleton, config, DB, events, `ops doctor`, LLM and agent-runtime ports
+1. Skeleton, config, DB, events, `mindos doctor`, LLM and agent-runtime ports
 2. TUI (Claude Code-style) on a scripted fake event stream
 3. Tool registry + execution engine + first read-only subagent
 4. Approval broker, policy engine, resume, startup reconciliation
-5. Google and Microsoft auth lifecycle
-6. Mail, Calendar, Teams, Files, Convert, System subagents
+5. Google auth lifecycle
+6. Calendar, Mail, Files, Convert, System subagents
 7. Background jobs, scheduler, worker
 8. Filesystem search: live tiers first, then per-root accelerator and semantic index
 9. Persistent memory

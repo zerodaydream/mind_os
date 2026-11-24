@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from opsagent.application import Application, EventBus
-from opsagent.domain import ApprovalMode, SessionMode
-from opsagent.domain.commands import SetMode
-from opsagent.infra import SystemClock, new_id
+from mindos.application import Application, EventBus
+from mindos.domain import ApprovalMode, SessionMode
+from mindos.domain.commands import SetMode
+from mindos.infra import SystemClock, new_id
 from tests.support.approval_kit import Env
 
 

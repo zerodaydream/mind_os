@@ -8,14 +8,17 @@ separately from the answer and is treated as untrusted by callers.
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from collections.abc import Callable, Mapping
 from typing import Any
 
+from google import genai
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 
-from opsagent.domain import (
+from mindos.domain import (
     GEMINI_API_KEY,
     CredentialProvider,
     LLMRequest,
@@ -27,7 +30,9 @@ from opsagent.domain import (
     resolve_effort,
 )
 
+log = logging.getLogger(__name__)
 ChatFactory = Callable[..., BaseChatModel]
+LIST_TIMEOUT_S = 8
 MAX_RETRIES = 2
 REQUEST_TIMEOUT_S = 90
 
@@ -55,7 +60,9 @@ class GeminiProvider:
 
     # ---- port ------------------------------------------------------------------------------
     def capabilities(self, role: ModelRole) -> ModelCapabilities:
-        model_id = self._model_id(role)
+        return self.capabilities_for(self._model_id(role))
+
+    def capabilities_for(self, model_id: str) -> ModelCapabilities:
         if model_id not in self._capabilities:
             profile = getattr(self._build(model_id), "profile", None) or {}
             levels = tuple(
@@ -75,6 +82,32 @@ class GeminiProvider:
 
     def model_id(self, role: ModelRole) -> str:
         return self._model_id(role)
+
+    # ---- model catalog (what `/model` offers) ---------------------------------------------
+    def select_model(self, role: ModelRole, model_id: str) -> None:
+        self._models[role] = model_id
+
+    def effort_levels(self, model_id: str) -> tuple[ReasoningEffort, ...]:
+        return self.capabilities_for(model_id).effort_levels
+
+    async def list_models(self) -> tuple[str, ...]:
+        """Gemini models that can chat, as the API lists them. Empty if it cannot be reached."""
+        key = self._credentials.get(GEMINI_API_KEY)
+        if not key:
+            return ()
+        try:
+            client = genai.Client(api_key=key)
+            found: list[str] = []
+            async for model in await asyncio.wait_for(client.aio.models.list(), LIST_TIMEOUT_S):
+                name = (model.name or "").removeprefix("models/")
+                if name.startswith("gemini") and "generateContent" in (
+                    model.supported_actions or ()
+                ):
+                    found.append(name)
+            return tuple(found)
+        except Exception:
+            log.warning("could not list Gemini models", exc_info=True)
+            return ()
 
     def chat(self, role: ModelRole, effort: ReasoningEffort | None) -> BaseChatModel:
         """A tool-calling chat model for the agent runtime, with effort mapped for this model.

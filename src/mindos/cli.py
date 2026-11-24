@@ -1,4 +1,4 @@
-"""`ops` command line entry point."""
+"""`mindos` command line entry point."""
 
 from __future__ import annotations
 
@@ -11,22 +11,22 @@ from typing import Annotated
 import typer
 from rich.console import Console
 
-from opsagent import __version__
-from opsagent.bootstrap import AuthKit, StartupError, build_auth, has_failure, run_doctor, run_tui
-from opsagent.domain import GEMINI_API_KEY, LANGSMITH_API_KEY, AuthError, PolicyDecision
-from opsagent.infra import ConfigError, Settings, SystemClock, configure_logging, load_settings
-from opsagent.integrations.auth import CAPABILITIES, KeychainSecretStore, scopes_for, sign_in
-from opsagent.persistence import (
+from mindos import __version__
+from mindos.bootstrap import AuthKit, StartupError, build_auth, has_failure, run_doctor, run_tui
+from mindos.domain import GEMINI_API_KEY, LANGSMITH_API_KEY, AuthError, PolicyDecision
+from mindos.infra import ConfigError, Settings, SystemClock, configure_logging, load_settings
+from mindos.integrations.auth import CAPABILITIES, KeychainSecretStore, scopes_for, sign_in
+from mindos.persistence import (
     AuditRepository,
     current_revision,
     head_revision,
     open_pool,
     upgrade,
 )
-from opsagent.tools import PolicyConfig, PolicyError, load_policy, save_policy
+from mindos.tools import PolicyConfig, PolicyError, load_policy, save_policy
 
 app = typer.Typer(
-    help="Terminal-native personal operations agent.",
+    help="MindOS: a terminal-native personal operations environment.",
     no_args_is_help=False,
     add_completion=False,
 )
@@ -44,7 +44,7 @@ _ICON = {"ok": "[green]ok[/]", "warn": "[yellow]warn[/]", "fail": "[red]FAIL[/]"
 
 def _version(value: bool) -> None:
     if value:
-        console.print(f"ops {__version__}")
+        console.print(f"mindos {__version__}")
         raise typer.Exit
 
 
@@ -214,7 +214,7 @@ def policy_reset(
     console.print(f"Reset policy for '{tool}' in {policy_file}")
 
 
-# ---- ops auth --------------------------------------------------------------------------------
+# ---- mindos auth --------------------------------------------------------------------------------
 Capabilities = Annotated[
     list[str],
     typer.Option("--capability", "-c", help="Permission to enable. Repeat for several."),
@@ -279,13 +279,7 @@ def _connect(provider: str, capabilities: list[str], setting: str) -> None:
 @auth_app.command("google")
 def auth_google(capability: Capabilities = []) -> None:  # noqa: B006 - typer reads the default
     """Sign in to Google (Gmail, Calendar). Run again with more capabilities to add them."""
-    _connect("google", capability, "OPS_GOOGLE_CLIENT_ID")
-
-
-@auth_app.command("microsoft")
-def auth_microsoft(capability: Capabilities = []) -> None:  # noqa: B006
-    """Sign in to Microsoft (Teams). Work or school accounts only."""
-    _connect("microsoft", capability, "OPS_MS_CLIENT_ID")
+    _connect("google", capability, "MINDOS_GOOGLE_CLIENT_ID")
 
 
 @auth_app.command("status")
@@ -298,7 +292,7 @@ def auth_status() -> None:
             scopes = ", ".join(s.rsplit("/", 1)[-1] for s in row.scopes) or "-"
             console.print(f"{row.provider:10} {row.account_id:32} {row.status.value:13} {scopes}")
         if not rows:
-            console.print("No accounts connected. Run `ops auth google` or `ops auth microsoft`.")
+            console.print("No accounts connected. Run `mindos auth google`.")
         has_key = kit.secrets.get(GEMINI_API_KEY) is not None
         console.print(f"gemini     {'key stored in Keychain' if has_key else 'no key in Keychain'}")
 
@@ -307,7 +301,7 @@ def auth_status() -> None:
 
 @auth_app.command("revoke")
 def auth_revoke(
-    provider: Annotated[str, typer.Argument(help="google or microsoft")],
+    provider: Annotated[str, typer.Argument(help="google")],
     account: Annotated[
         str | None, typer.Option(help="Account; default: every connected one.")
     ] = None,
@@ -316,7 +310,7 @@ def auth_revoke(
 
     async def work(kit: AuthKit) -> None:
         if provider not in CAPABILITIES:
-            console.print(f"[red]Unknown provider {provider!r}.[/] Use google or microsoft.")
+            console.print(f"[red]Unknown provider {provider!r}.[/] Use google.")
             raise typer.Exit(2)
         accounts = (
             [account]
@@ -335,13 +329,13 @@ def auth_revoke(
 
 @auth_app.command("langsmith")
 def auth_langsmith() -> None:
-    """Store the LangSmith API key in the Keychain. Turn tracing on with OPS_LANGSMITH_TRACING."""
+    """Store the LangSmith API key in the Keychain. Enable with MINDOS_LANGSMITH_TRACING."""
     key = typer.prompt("LangSmith API key", hide_input=True).strip()
     if not key:
         console.print("[red]No key entered.[/]")
         raise typer.Exit(2)
     KeychainSecretStore().set(LANGSMITH_API_KEY, key)
-    console.print("Stored in the Keychain. Set OPS_LANGSMITH_TRACING=true to send traces.")
+    console.print("Stored in the Keychain. Set MINDOS_LANGSMITH_TRACING=true to send traces.")
 
 
 @auth_app.command("gemini")

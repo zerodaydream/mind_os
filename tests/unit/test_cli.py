@@ -1,4 +1,4 @@
-"""Tests for the `ops` CLI commands."""
+"""Tests for the `mindos` CLI commands."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import keyring
 import pytest
 from typer.testing import CliRunner
 
-from opsagent.cli import app
+from mindos.cli import app
 
 runner = CliRunner()
 
@@ -16,11 +16,11 @@ runner = CliRunner()
 def test_cli_version() -> None:
     result = runner.invoke(app, ["--version"])
     assert result.exit_code == 0
-    assert "ops " in result.stdout
+    assert "mindos " in result.stdout
 
 
 def test_cli_policy_show_default(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("OPS_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("MINDOS_CONFIG_DIR", str(tmp_path))
     result = runner.invoke(app, ["policy", "show"])
     assert result.exit_code == 0
     assert "compiled default policy" in result.stdout
@@ -32,14 +32,14 @@ def audited(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str, str]]:
     """Replace the database write with a recorder, so unit tests need no services."""
     calls: list[tuple[str, str, str]] = []
     monkeypatch.setattr(
-        "opsagent.cli._record_policy_change",
+        "mindos.cli._record_policy_change",
         lambda _s, tool, change, detail: calls.append((tool, change, detail)),
     )
     return calls
 
 
 def test_cli_policy_tighten_and_reset(monkeypatch, tmp_path: Path, audited: list) -> None:  # type: ignore[no-untyped-def,type-arg]
-    monkeypatch.setenv("OPS_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("MINDOS_CONFIG_DIR", str(tmp_path))
     policy_file = tmp_path / "policy.toml"
     assert not policy_file.exists()
 
@@ -76,12 +76,12 @@ def test_cli_policy_tighten_and_reset(monkeypatch, tmp_path: Path, audited: list
 
 
 def test_a_policy_change_that_cannot_be_audited_is_not_made(monkeypatch, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
-    monkeypatch.setenv("OPS_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("MINDOS_CONFIG_DIR", str(tmp_path))
 
     async def database_down(*_a: object, **_k: object) -> None:
         raise ConnectionError("database is down")
 
-    monkeypatch.setattr("opsagent.cli.open_pool", database_down)
+    monkeypatch.setattr("mindos.cli.open_pool", database_down)
     result = runner.invoke(app, ["policy", "tighten", "mail.send_message"])
     assert result.exit_code == 1
     assert "could not be audited" in result.stdout
@@ -91,7 +91,7 @@ def test_a_policy_change_that_cannot_be_audited_is_not_made(monkeypatch, tmp_pat
 def test_an_invalid_policy_file_is_an_error_not_a_silent_default(
     monkeypatch, tmp_path: Path
 ) -> None:  # type: ignore[no-untyped-def]
-    monkeypatch.setenv("OPS_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("MINDOS_CONFIG_DIR", str(tmp_path))
     (tmp_path / "policy.toml").write_text('[policy]\nr0_auto = "yes"\n')
     for args in (["policy", "show"], ["policy", "tighten", "mail.send_message"]):
         result = runner.invoke(app, args)
@@ -103,7 +103,7 @@ def test_tighten_rejects_a_tool_name_that_would_corrupt_the_file(
     tmp_path: Path,
     audited: list,  # type: ignore[no-untyped-def,type-arg]
 ) -> None:
-    monkeypatch.setenv("OPS_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("MINDOS_CONFIG_DIR", str(tmp_path))
     result = runner.invoke(app, ["policy", "tighten", 'x"]\n[policy]\nr0_auto=false'])
     assert result.exit_code == 2
     assert audited == [] and not (tmp_path / "policy.toml").exists()
@@ -114,7 +114,7 @@ def test_resetting_an_override_that_does_not_exist_changes_and_audits_nothing(
     tmp_path: Path,
     audited: list,  # type: ignore[no-untyped-def,type-arg]
 ) -> None:
-    monkeypatch.setenv("OPS_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("MINDOS_CONFIG_DIR", str(tmp_path))
     result = runner.invoke(app, ["policy", "reset", "mail.send_message"])
     assert result.exit_code == 0 and "No override found" in result.stdout
     assert audited == []
@@ -131,4 +131,4 @@ def test_auth_gemini_stores_the_key_in_the_keychain_and_never_echoes_it() -> Non
     result = runner.invoke(app, ["auth", "gemini"], input="AIza-secret-key\n")
     assert result.exit_code == 0 and "Stored" in result.stdout
     assert "AIza-secret-key" not in result.stdout
-    assert keyring.get_password("opsagent", "gemini_api_key") is None  # the test keyring is null
+    assert keyring.get_password("mindos", "gemini_api_key") is None  # the test keyring is null

@@ -1,3 +1,3 @@
-"""opsagent: a terminal-native personal operations agent."""
+"""MindOS: a terminal-native personal operations environment."""
 
 __version__ = "0.1.0"

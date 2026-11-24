@@ -1,4 +1,6 @@
-# ADR 0006: One OAuth client for Google and Microsoft; tokens only in the Keychain
+# ADR 0006: One OAuth client; tokens only in the Keychain
+
+Note: Microsoft and Teams were removed by ADR 0008. Read the Microsoft parts below as history.
 
 Status: Accepted (Phase 06)
 Date: 2026-11-25
@@ -29,8 +31,8 @@ second retry story, and a dependency whose cache format we would have to put in 
 - **Engine.** An `AuthError` raised by an adapter becomes a typed tool error
   (`auth_required`, `needs_scope`, `consent_required`, `auth_unavailable`) and emits
   `AuthRequired` for the first three. It is never retried and tells the model not to retry.
-- **Gemini key.** `ops auth gemini` stores it in the Keychain, and the Keychain wins over `.env`.
-- **Revocation.** `ops auth revoke` always deletes locally. Google is revoked at the provider.
+- **Gemini key.** `mindos auth gemini` stores it in the Keychain, and the Keychain wins over `.env`.
+- **Revocation.** `mindos auth revoke` always deletes locally. Google is revoked at the provider.
   Entra v2 has no revocation endpoint, and the command says "removed locally" for it.
 
 ## Not done here (honest list)

@@ -11,7 +11,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from opsagent.domain import ArtifactStore, redact
+from mindos.domain import ArtifactStore, redact
 
 PREVIEW_CHARS = 160
 _OPEN = "<untrusted"

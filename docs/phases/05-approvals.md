@@ -14,13 +14,13 @@ Maps to ARCHITECTURE §5, §11.4, §14.4. Highest-risk phase; do not rush.
 
 ## Build
 - `risk` classifier R0–R4 from validated args + resolved targets.
-- `PolicyEngine.decide()`; `policy.toml`; `ops policy …` (user-only, audited). Model has no policy tool.
+- `PolicyEngine.decide()`; `policy.toml`; `mindos policy …` (user-only, audited). Model has no policy tool.
 - Taint tracking per run; escalation rule for outbound actions.
 - Approval state machine + repository: unique `idempotency_key`, atomic `CONSUMED` claim, TTL, payload hash (`base_state_hashes`).
 - Approval broker + `ApprovalRequested/Resolved/Expired`; bridge to `interrupt_on` (transport only; engine fails closed independently).
 - Decisions: approve / edit (re-validate, re-classify, new hash) / reject (reason).
 - **Startup reconciliation** (§11.4 steps 1–5) — required here.
-- TUI: wire Phase 03 permission dialog to real broker; pending-approval badge; `ops resume`.
+- TUI: wire Phase 03 permission dialog to real broker; pending-approval badge; `mindos resume`.
 - Batch approvals table (`approval_batches`) created now, used by Phase 13.
 
 ## Gate (all must pass)
@@ -59,11 +59,11 @@ Fixed in review:
   recorded `STARTED` before the call; recovery re-delivers decisions; in-flight effects become `UNKNOWN`.
 - **Quitting the app cancelled pending approvals** (`aclose` ran the cancel path).
 - **Policy**: a corrupt `policy.toml` silently fell back to defaults and invalid entries were dropped;
-  plan mode was displayed but never enforced; `ops policy` was not audited; `R2 = false` meant DENY.
+  plan mode was displayed but never enforced; `mindos policy` was not audited; `R2 = false` meant DENY.
   Parsing is now strict and fails startup, plan mode is enforced, changes are audited and written
   atomically (0600), R3/R4 cannot be relaxed.
 - Dead or stale code removed: `ReadOnlyPolicy` (moved to tests), the `TypeError` fallback around
-  `policy.decide`, `find_started_executions`, `pending_for_run`, and `ops resume`'s ignored argument.
+  `policy.decide`, `find_started_executions`, `pending_for_run`, and `mindos resume`'s ignored argument.
 
 Closed on 2026-11-25 (ADR 0005):
 - **Approvals inside a subagent** are deferred: queued, the run finishes, and the application runs
@@ -74,7 +74,7 @@ Closed on 2026-11-25 (ADR 0005):
 
 Known gaps:
 - `approval_batches` exists but nothing uses it until Phase 13.
-- Migrations `0004` and `0005` must be applied (`uv run ops db migrate`) before the app will start.
+- Migrations `0004` and `0005` must be applied (`uv run mindos db migrate`) before the app will start.
 
 Gate: `ruff`, `mypy`, 9 import-linter contracts, and `pytest` all pass, including the Postgres
 integration tests (20-way claim race, trigger parity for all 100 state pairs) and the real-graph

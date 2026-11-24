@@ -9,9 +9,9 @@ import pytest
 from keyring.backend import KeyringBackend
 from keyring.errors import PasswordDeleteError
 
-from opsagent.bootstrap.credentials import ChainedCredentials
-from opsagent.domain import GEMINI_API_KEY
-from opsagent.integrations.auth import KeychainCredentialProvider, KeychainSecretStore
+from mindos.bootstrap.credentials import ChainedCredentials
+from mindos.domain import GEMINI_API_KEY
+from mindos.integrations.auth import KeychainCredentialProvider, KeychainSecretStore
 
 
 class MemoryKeyring(KeyringBackend):
@@ -49,7 +49,7 @@ def test_secrets_round_trip_under_one_service_and_deleting_twice_is_fine(
     assert store.get("refresh:google:a") is None
     store.set("refresh:google:a", "token")
     assert store.get("refresh:google:a") == "token"
-    assert list(backend.data) == [("opsagent", "refresh:google:a")]
+    assert list(backend.data) == [("mindos", "refresh:google:a")]
     store.delete("refresh:google:a")
     store.delete("refresh:google:a")  # already gone
     assert store.get("refresh:google:a") is None

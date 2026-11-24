@@ -1,4 +1,4 @@
-"""`ops doctor`: environment checks with a fix hint for each failure."""
+"""`mindos doctor`: environment checks with a fix hint for each failure."""
 
 from __future__ import annotations
 
@@ -8,9 +8,9 @@ from typing import Literal
 
 import psycopg
 
-from opsagent.domain import GEMINI_API_KEY, ModelRole
-from opsagent.infra import ConfigError, Settings, SettingsCredentialProvider
-from opsagent.persistence import current_revision, head_revision
+from mindos.domain import GEMINI_API_KEY, ModelRole
+from mindos.infra import ConfigError, Settings, SettingsCredentialProvider
+from mindos.persistence import current_revision, head_revision
 
 Status = Literal["ok", "warn", "fail"]
 REQUIRED_EXTENSIONS = ("vector", "pg_trgm")
@@ -52,7 +52,7 @@ def _check_database(settings: Settings) -> Check:
             "database",
             "fail",
             f"cannot connect: {type(exc).__name__}",
-            "Run `docker compose up -d db`, or set OPS_DATABASE_URL.",
+            "Run `docker compose up -d db`, or set MINDOS_DATABASE_URL.",
         )
 
 
@@ -70,7 +70,7 @@ def _check_extensions(settings: Settings) -> Check:
             "extensions",
             "fail",
             f"missing: {', '.join(missing)}",
-            "Run `ops db migrate`. The database image must include pgvector.",
+            "Run `mindos db migrate`. The database image must include pgvector.",
         )
     return Check("extensions", "ok", ", ".join(REQUIRED_EXTENSIONS))
 
@@ -82,7 +82,10 @@ def _check_schema(settings: Settings) -> Check:
         return Check("schema", "fail", f"cannot read revision: {type(exc).__name__}")
     if current != head:
         return Check(
-            "schema", "fail", f"at {current or 'empty'}, expected {head}", "Run `ops db migrate`."
+            "schema",
+            "fail",
+            f"at {current or 'empty'}, expected {head}",
+            "Run `mindos db migrate`.",
         )
     return Check("schema", "ok", f"revision {head}")
 
@@ -91,7 +94,7 @@ def _check_checkpointer(settings: Settings) -> Check:
     rows = _query(settings, "SELECT to_regclass('public.checkpoints') IS NOT NULL")
     if rows and rows[0][0]:
         return Check("checkpointer", "ok", "LangGraph tables present")
-    return Check("checkpointer", "fail", "LangGraph tables missing", "Run `ops db migrate`.")
+    return Check("checkpointer", "fail", "LangGraph tables missing", "Run `mindos db migrate`.")
 
 
 def _check_models(settings: Settings) -> Check:
@@ -100,13 +103,13 @@ def _check_models(settings: Settings) -> Check:
         try:
             settings.model_for(role)
         except ConfigError:
-            missing.append(f"OPS_MODEL_{role.name}")
+            missing.append(f"MINDOS_MODEL_{role.name}")
     if missing:
         return Check(
             "models",
             "warn",
             f"not set: {', '.join(missing)}",
-            "Set them in .env before starting `ops`.",
+            "Set them in .env before starting `mindos`.",
         )
     return Check("models", "ok", "orchestrator and subagent models configured")
 

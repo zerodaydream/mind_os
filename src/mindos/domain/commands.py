@@ -6,8 +6,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
-from opsagent.domain.reasoning import ReasoningEffort
-from opsagent.domain.risk import ApprovalMode
+from mindos.domain.reasoning import ReasoningEffort
+from mindos.domain.risk import ApprovalMode
 
 
 class _Command(BaseModel):

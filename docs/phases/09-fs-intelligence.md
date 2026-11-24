@@ -22,8 +22,8 @@ Maps to ARCHITECTURE §8. Model: Claude Code's live scan as default, Cursor's in
 Re-measure in this phase; these set the thresholds.
 
 ## Build (in order, benchmark after each)
-1. **Root registry**: `ops roots add|remove|list`; per-root state `LIVE | INDEXED`; per-root exclusion rules (`node_modules`, `.venv`, `.git`, caches, `Library`, build output) plus the global denylist.
-2. **Tier 0**: `mdfind -onlyin <root>` for names and document content. `ops doctor` checks `mdutil -s` per volume.
+1. **Root registry**: `mindos roots add|remove|list`; per-root state `LIVE | INDEXED`; per-root exclusion rules (`node_modules`, `.venv`, `.git`, caches, `Library`, build output) plus the global denylist.
+2. **Tier 0**: `mdfind -onlyin <root>` for names and document content. `mindos doctor` checks `mdutil -s` per volume.
 3. **Tier 1**: `rg` live, argv only, no shell, scoped, parallel across roots under one latency budget.
 4. **Router + fusion** (RRF) across tiers 0/1; freshness `stat` and permission recheck on every hit.
 5. **Latency log** per root; **promotion rule**: live p95 > threshold (default 1.5 s) ⇒ root becomes `INDEXED`.

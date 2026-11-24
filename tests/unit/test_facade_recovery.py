@@ -7,11 +7,11 @@ from collections.abc import Sequence
 from datetime import timedelta
 from typing import Any
 
-from opsagent.application import Application, EventBus
-from opsagent.domain import PolicyDecision, Principal, RiskClass, bind
-from opsagent.domain.commands import Decide, SubmitMessage
-from opsagent.infra import SystemClock, new_id
-from opsagent.tools.policy import PolicyConfig, ToolPolicy
+from mindos.application import Application, EventBus
+from mindos.domain import PolicyDecision, Principal, RiskClass, bind
+from mindos.domain.commands import Decide, SubmitMessage
+from mindos.infra import SystemClock, new_id
+from mindos.tools.policy import PolicyConfig, ToolPolicy
 from tests.support.agent_kit import Kit
 from tests.support.scripted_model import ScriptedChatModel, reply, tool_call
 from tests.support.world import World

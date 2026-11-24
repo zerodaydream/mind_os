@@ -10,8 +10,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
-from opsagent.domain.events import ApprovalView
-from opsagent.domain.risk import Principal, RiskClass
+from mindos.domain.events import ApprovalView
+from mindos.domain.risk import Principal, RiskClass
 
 ApprovalState = Literal[
     "PENDING",

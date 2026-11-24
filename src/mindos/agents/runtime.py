@@ -21,14 +21,15 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.errors import GraphRecursionError
 from langgraph.types import Command
 
-from opsagent.agents.bridge import EngineMiddleware, stub_tools
-from opsagent.agents.hub import DONE, RunHub, RunState
-from opsagent.agents.limits import RunLimits
-from opsagent.agents.messages import split_content, usage_of
-from opsagent.agents.prompts import orchestrator_prompt
-from opsagent.agents.subagents import ChatModels, SubagentRunner
-from opsagent.agents.usage import UsageTracker
-from opsagent.domain import (
+from mindos.agents.bridge import EngineMiddleware, stub_tools
+from mindos.agents.hub import DONE, RunHub, RunState
+from mindos.agents.limits import RunLimits
+from mindos.agents.messages import split_content, usage_of
+from mindos.agents.prompts import orchestrator_prompt
+from mindos.agents.subagents import ChatModels, SubagentRunner
+from mindos.agents.tuning import ModelTuner
+from mindos.agents.usage import UsageTracker
+from mindos.domain import (
     AppEvent,
     ApprovalRecord,
     Clock,
@@ -42,8 +43,8 @@ from opsagent.domain import (
     bind,
     events,
 )
-from opsagent.domain.commands import Decide
-from opsagent.tools import ToolExecutionEngine
+from mindos.domain.commands import Decide
+from mindos.tools import ToolExecutionEngine
 
 log = logging.getLogger(__name__)
 
@@ -64,7 +65,7 @@ class LangChainRuntime:
         clock: Clock,
         tz: ZoneInfo,
         new_id: IdFactory,
-        default_effort: ReasoningEffort,
+        tuner: ModelTuner,
         tracing: Tracing | None = None,
     ) -> None:
         self._models = models
@@ -77,9 +78,9 @@ class LangChainRuntime:
         self._clock = clock
         self._tz = tz
         self._new_id = new_id
-        self._default_effort = default_effort
+        self._tuner = tuner
         self._tracing = tracing
-        self._graphs: dict[ReasoningEffort, Any] = {}
+        self._graphs: dict[tuple[str, ReasoningEffort], Any] = {}
 
     # ---- port ------------------------------------------------------------------------------
     def start(self, run: RunSpec) -> AsyncIterator[AppEvent]:
@@ -148,13 +149,22 @@ class LangChainRuntime:
         if state is not None and state.task is not None and not state.task.done():
             state.task.cancel()
 
+    @property
+    def tuner(self) -> ModelTuner:
+        return self._tuner
+
+    @property
+    def _default_effort(self) -> ReasoningEffort:
+        return self._tuner.effort(ModelRole.ORCHESTRATOR) or ReasoningEffort.HIGH
+
     # ---- graph -----------------------------------------------------------------------------
     def graph(self, effort: ReasoningEffort | None = None) -> Any:
-        """The orchestrator agent for an effort level. Built once per level."""
+        """The orchestrator agent for the current model and an effort. Built once per pair."""
         level = effort or self._default_effort
-        if level not in self._graphs:
+        key = (self._models.model_id(ModelRole.ORCHESTRATOR), level)
+        if key not in self._graphs:
             subagents = "\n".join(f"- {d.name}: {d.description}" for d in self._runner.definitions)
-            self._graphs[level] = create_deep_agent(
+            self._graphs[key] = create_deep_agent(
                 self._models.chat(ModelRole.ORCHESTRATOR, level),
                 tools=stub_tools(self._engine, ORCHESTRATOR),
                 middleware=[
@@ -171,7 +181,7 @@ class LangChainRuntime:
                 checkpointer=self._checkpointer,
                 name=ORCHESTRATOR,
             )
-        return self._graphs[level]
+        return self._graphs[key]
 
     # ---- run -------------------------------------------------------------------------------
     async def _stream(
@@ -258,7 +268,7 @@ class LangChainRuntime:
     def _config(self, thread_id: str, effort: ReasoningEffort) -> dict[str, Any]:
         return {
             "configurable": {"thread_id": thread_id},
-            "run_name": "opsagent.orchestrator",
+            "run_name": "mindos.orchestrator",
             # Kept in the checkpoint (a resume reads the effort) and attached to the trace.
             "metadata": {"effort": effort.value, "thread_id": thread_id},
             "recursion_limit": self._limits.recursion(self._limits.max_steps),

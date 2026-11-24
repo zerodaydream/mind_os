@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from opsagent.agents.fake import load_scenarios
-from opsagent.domain import ApprovalMode, ReasoningEffort, RiskClass, events, parse_event
-from opsagent.domain.events import ApprovalView, Todo
-from opsagent.presentation import viewmodel as vm
-from opsagent.presentation.viewmodel import (
+from mindos.agents.fake import load_scenarios
+from mindos.domain import ApprovalMode, ReasoningEffort, RiskClass, events, parse_event
+from mindos.domain.events import ApprovalView, Todo
+from mindos.presentation import viewmodel as vm
+from mindos.presentation.viewmodel import (
     AssistantRow,
     NoticeRow,
     SessionInfo,

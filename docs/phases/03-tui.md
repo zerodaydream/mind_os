@@ -92,7 +92,7 @@ Source: official public docs, `code.claude.com/docs/en/interactive-mode` (read 2
 Native-scrollback "classic" mode is not reproducible in Textual. Provide `[` dump-to-scrollback instead.
 
 ## Status (built 2026-11-22)
-Built and passing the gate against the scripted fake agent (`uv run ops --demo`; type `stream`, `tools`, `approval`, `error`, or `long`). The real agent connects in Phase 3 through the same `AgentRuntime` port.
+Built and passing the gate against the scripted fake agent (`uv run mindos --demo`; type `stream`, `tools`, `approval`, `error`, or `long`). The real agent connects in Phase 3 through the same `AgentRuntime` port.
 
 Done: welcome block, virtualized transcript with cached per-row lines and sticky tail, markdown and code rendering, tool and subagent rows, plan list, thinking rows, collapsible long output, spinner, multiline prompt with history, slash menu with Tab completion, hint and status lines, approval panel with edit and comment fields, interrupt and exit keys, `Shift+Tab` mode cycle, effort cycle, stash, `?` panel, resize reflow, NO_COLOR and ASCII mode. Slash commands `/help /clear /exit /think /status /cost /model` work; the rest report "not available yet".
 
@@ -104,3 +104,20 @@ Deferred, each with an owner:
 - `Ctrl+R` history search, `Ctrl+G` external editor, `@` path autocomplete, `Option+P` model switch, `Ctrl+B` background task, `Esc Esc` rewind: need Phase 3 (rewind, models), Phase 7 (background), Phase 8 (paths).
 - Collapsing a subagent block, integrations and jobs counts in the status line, R4 typed-count confirmation: need Phases 5, 7 and the policy engine.
 - `/think` changes the displayed level only until the agent runtime reads it in Phase 3.
+
+## Update 2026-11-25: selection, copy, scrolling, pickers
+- **Selecting and copying.** The transcript implements Textual's selection (`get_selection`, offsets
+  in `render_line`, highlight), so dragging with the mouse selects. Releasing the mouse copies the
+  selection; Ctrl+C (when text is selected), Cmd+C, and Ctrl+Shift+C copy it too, and with nothing
+  selected Ctrl+C keeps its old meaning (interrupt, clear, quit). Text selected in the prompt copies
+  as well. Copy uses OSC 52 and, on macOS, `pbcopy`, because macOS Terminal.app ignores OSC 52.
+  Holding Option (iTerm2) or Fn (Terminal.app) while dragging still selects natively.
+- **Scrolling.** Mouse wheel and trackpad scroll the transcript; PgUp/PgDn page; Alt+Up/Down move
+  three lines; Ctrl+Home and Ctrl+End jump to the top and the latest message.
+- **Model and effort.** `/model` and `/think` open a list (arrow keys, mouse, Enter, Esc): first
+  which agent (orchestrator or subagents), then the model or the reasoning level that model supports.
+  Typed forms work too: `/think subagent medium`, `/model subagent <id>`, `/think high`. Changes
+  apply from the next model call and last for the session. The model list is what Gemini reports for
+  chat models, plus configured models and `MINDOS_MODEL_CHOICES`; no model ID is hard-coded.
+  `ModelTuner` (agents) owns the effort per role; graphs are cached by (model, effort).
+- Not done: remembering the choice across sessions; a model list for providers other than Gemini.

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from opsagent.application.reconciliation import reconcile_storage
-from opsagent.domain import Principal, RiskClass
+from mindos.application.reconciliation import reconcile_storage
+from mindos.domain import Principal, RiskClass
 from tests.support.approval_kit import Env
 
 

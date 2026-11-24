@@ -6,8 +6,8 @@ import asyncio
 
 import pytest
 
-from opsagent.domain import AuthStatus
-from opsagent.persistence import (
+from mindos.domain import AuthStatus
+from mindos.persistence import (
     AdvisoryRefreshLock,
     IntegrationStateRepository,
     open_pool,
@@ -28,8 +28,8 @@ async def test_states_upsert_read_back_and_hold_no_secret(db_url: str) -> None:
         state = await repo.get("google", "me@x.com")
         assert state is not None
         assert (state.status, state.scopes) == (AuthStatus.NEEDS_REAUTH, ("openid",))
-        await repo.put("microsoft", "me@corp.com", AuthStatus.CONNECTED, [])
-        assert [s.provider for s in await repo.all()] == ["google", "microsoft"]
+        await repo.put("google", "work@corp.com", AuthStatus.CONNECTED, [])
+        assert [s.account_id for s in await repo.all()] == ["me@x.com", "work@corp.com"]
     finally:
         await pool.close()
 

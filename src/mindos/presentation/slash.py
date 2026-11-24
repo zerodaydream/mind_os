@@ -16,11 +16,11 @@ CATALOG: tuple[SlashCommand, ...] = (
     SlashCommand("/help", "Show commands and shortcuts"),
     SlashCommand("/clear", "Clear the transcript"),
     SlashCommand("/exit", "Quit"),
-    SlashCommand("/think", "Set reasoning effort: /think <minimal|low|medium|high|xhigh>"),
+    SlashCommand("/think", "Pick reasoning effort, or /think [subagent] <level>"),
     SlashCommand("/status", "Show session, models, mode, and run state"),
     SlashCommand("/cost", "Show token use and cost for this session"),
-    SlashCommand("/model", "Show configured models"),
-    SlashCommand("/doctor", "Run `ops doctor` in another terminal", ready=False),
+    SlashCommand("/model", "Pick the model, or /model [subagent] <id>"),
+    SlashCommand("/doctor", "Run `mindos doctor` in another terminal", ready=False),
     SlashCommand("/resume", "Resume a past conversation", ready=False),
     SlashCommand("/memory", "Show and edit saved memory", ready=False),
     SlashCommand("/policy", "Show the active policy", ready=False),
@@ -42,7 +42,10 @@ Ctrl+S           Stash or restore the input
 Ctrl+L           Redraw
 Shift+Tab        Cycle mode
 Option+T         Cycle reasoning effort (needs Option as Meta in your terminal)
-PgUp / PgDn      Scroll the transcript
+PgUp / PgDn      Scroll the transcript (also the mouse wheel or trackpad)
+Alt+Up / Alt+Down  Scroll three lines
+Ctrl+Home / End  Jump to the top / the latest message
+Drag             Select text; releasing copies it. Ctrl+C or Cmd+C copies too
 /                Slash commands
 ?                This list (on an empty input)"""
 

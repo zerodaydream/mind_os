@@ -10,8 +10,8 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Literal
 
-from opsagent.domain import AppEvent, ApprovalMode, ReasoningEffort, events
-from opsagent.domain.events import ApprovalView, Todo
+from mindos.domain import AppEvent, ApprovalMode, ReasoningEffort, events
+from mindos.domain.events import ApprovalView, Todo
 
 NoticeLevel = Literal["info", "warning", "error", "dim"]
 ToolStatus = Literal["running", "ok", "error", "rejected"]

@@ -14,8 +14,8 @@ from collections.abc import AsyncIterator, Mapping
 from importlib import resources
 from typing import Any, cast
 
-from opsagent.domain import AppEvent, RunSpec, events, parse_event
-from opsagent.domain.commands import Decide
+from mindos.domain import AppEvent, RunSpec, events, parse_event
+from mindos.domain.commands import Decide
 
 _KEYWORDS = ("approval", "error", "tools", "long")  # anything else plays "stream"
 _ID_FIELDS = ("message_id", "tool_call_id", "subagent_id")
@@ -27,7 +27,7 @@ Entry = Mapping[str, Any]
 def load_scenarios() -> dict[str, list[Entry]]:
     """Read every bundled `scenarios/*.jsonl` file."""
     out: dict[str, list[Entry]] = {}
-    for item in resources.files("opsagent.agents").joinpath("scenarios").iterdir():
+    for item in resources.files("mindos.agents").joinpath("scenarios").iterdir():
         if item.name.endswith(".jsonl"):
             lines = item.read_text(encoding="utf-8").splitlines()
             out[item.name.removesuffix(".jsonl")] = [json.loads(x) for x in lines if x.strip()]

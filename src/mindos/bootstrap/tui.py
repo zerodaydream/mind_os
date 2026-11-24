@@ -8,19 +8,19 @@ from pathlib import Path
 
 import psycopg
 
-from opsagent import __version__
-from opsagent.agents.fake import FakeRuntime
-from opsagent.application.reconciliation import reconcile_storage
-from opsagent.bootstrap.container import Container, build_container
-from opsagent.domain import ModelRole, ReasoningEffort
-from opsagent.infra import ConfigError, Settings, configure_logging
-from opsagent.persistence import (
+from mindos import __version__
+from mindos.agents.fake import FakeRuntime
+from mindos.application.reconciliation import reconcile_storage
+from mindos.bootstrap.container import Container, build_container
+from mindos.domain import ModelRole, ReasoningEffort
+from mindos.infra import ConfigError, Settings, configure_logging
+from mindos.persistence import (
     open_checkpointer,
     open_pool,
     schema_is_current,
 )
-from opsagent.presentation import OpsApp, SessionInfo
-from opsagent.tools import PolicyError, load_policy
+from mindos.presentation import MindOSApp, SessionInfo
+from mindos.tools import PolicyError, load_policy
 
 
 class StartupError(RuntimeError):
@@ -28,11 +28,11 @@ class StartupError(RuntimeError):
 
 
 def _plain_terminal() -> bool:
-    """NO_COLOR, TERM=dumb, or OPS_ASCII=1 turns off color, motion, and symbols."""
+    """NO_COLOR, TERM=dumb, or MINDOS_ASCII=1 turns off color, motion, and symbols."""
     return (
         bool(os.environ.get("NO_COLOR"))
         or os.environ.get("TERM") == "dumb"
-        or (os.environ.get("OPS_ASCII") == "1")
+        or (os.environ.get("MINDOS_ASCII") == "1")
     )
 
 
@@ -55,7 +55,7 @@ def run_tui(settings: Settings, *, demo: bool = False) -> None:
     configure_logging(settings.log_dir, settings.log_level)
     if demo:
         container = build_container(settings, runtime=FakeRuntime())
-        OpsApp(container.app, _info(settings, container)).run()
+        MindOSApp(container.app, _info(settings, container)).run()
         return
     _preflight(settings)
     asyncio.run(_run_live(settings))
@@ -80,10 +80,10 @@ def _preflight(settings: Settings) -> None:
         current = schema_is_current(settings.database_url)
     except Exception as exc:
         raise StartupError(
-            "Cannot reach the database. Run `docker compose up -d db`, or set OPS_DATABASE_URL."
+            "Cannot reach the database. Run `docker compose up -d db`, or set MINDOS_DATABASE_URL."
         ) from exc
     if not current:
-        raise StartupError("The database schema is out of date. Run `ops db migrate`.")
+        raise StartupError("The database schema is out of date. Run `mindos db migrate`.")
     policy_file = settings.config_dir / "policy.toml"
     try:
         load_policy(policy_file)
@@ -97,7 +97,7 @@ async def _run_live(settings: Settings) -> None:
     try:
         pool = await open_pool(settings.database_url, max_size=settings.db_pool_max)
     except psycopg.Error as exc:
-        raise StartupError("Cannot connect to the database. Run `ops doctor`.") from exc
+        raise StartupError("Cannot connect to the database. Run `mindos doctor`.") from exc
     try:
         async with open_checkpointer(settings.database_url) as saver:
             container = build_container(settings, pool=pool, checkpointer=saver)
@@ -108,9 +108,11 @@ async def _run_live(settings: Settings) -> None:
                     audit=container.audit,
                 )
             try:
-                await OpsApp(container.app, _info(settings, container)).run_async()
+                await MindOSApp(container.app, _info(settings, container)).run_async()
             finally:
                 await container.app.aclose()
+                if container.auth is not None:
+                    await container.auth.http.aclose()
                 if container.tracing is not None:
                     container.tracing.flush()  # sent in the background; do not lose the last runs
     finally:

@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from opsagent.infra.resilience import (
+from mindos.infra.resilience import (
     CircuitBreaker,
     CircuitOpen,
     RetryPolicy,

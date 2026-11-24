@@ -15,7 +15,7 @@ Real workflows (e.g. 400-thread relabel) are too slow, costly, or error-prone vi
 
 ## Build
 - Backend ADR (container vs OS sandbox). Separate process, no secrets, no network, scratch FS, resource caps.
-- Ops SDK stubs → length-prefixed JSON over Unix socket; frame size, rate, ordering limits.
+- MindOS SDK stubs → length-prefixed JSON over Unix socket; frame size, rate, ordering limits.
 - Every call re-enters the engine as principal `SANDBOX`; reads immediate, effects deferred into operation set.
 - Batch approval (Phase 05 tables): per-item hash, approve subset, R4 typed count.
 

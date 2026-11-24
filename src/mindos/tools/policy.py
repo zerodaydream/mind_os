@@ -16,8 +16,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from opsagent.domain import ApprovalMode, PolicyDecision, Principal, RiskClass, SessionMode
-from opsagent.tools.spec import TOOL_NAME
+from mindos.domain import ApprovalMode, PolicyDecision, Principal, RiskClass, SessionMode
+from mindos.tools.spec import TOOL_NAME
 
 log = logging.getLogger(__name__)
 
@@ -85,7 +85,7 @@ class PolicyConfig:
 
     def to_toml(self) -> str:
         lines = [
-            "# User policy configuration (ARCHITECTURE 5.2). Edited by `ops policy ...`.",
+            "# User policy configuration (ARCHITECTURE 5.2). Edited by `mindos policy ...`.",
             "[policy]",
             f"r0_auto = {str(self.r0_auto).lower()}",
             f"r1_auto = {str(self.r1_auto).lower()}",

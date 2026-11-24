@@ -6,10 +6,10 @@ from pathlib import Path
 
 import pytest
 
-from opsagent.bootstrap import StartupError
-from opsagent.bootstrap.tui import _preflight
-from opsagent.domain import ModelRole, ReasoningEffort, bind
-from opsagent.infra import (
+from mindos.bootstrap import StartupError
+from mindos.bootstrap.tui import _preflight
+from mindos.domain import ModelRole, ReasoningEffort, bind
+from mindos.infra import (
     ConfigError,
     Settings,
     SettingsCredentialProvider,
@@ -30,7 +30,7 @@ def test_settings_defaults_and_role_fallback() -> None:
     s = Settings(_env_file=None, model_subagent="m-sub")
     assert s.reasoning_for(ModelRole.ORCHESTRATOR) == ReasoningEffort.HIGH
     assert s.model_for(ModelRole.UTILITY) == "m-sub"
-    with pytest.raises(ConfigError, match="OPS_MODEL_ORCHESTRATOR"):
+    with pytest.raises(ConfigError, match="MINDOS_MODEL_ORCHESTRATOR"):
         s.model_for(ModelRole.ORCHESTRATOR)
     assert s.models() == {ModelRole.SUBAGENT: "m-sub", ModelRole.UTILITY: "m-sub"}
 
@@ -38,18 +38,23 @@ def test_settings_defaults_and_role_fallback() -> None:
 def test_env_file_is_read_without_touching_process_env(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    for var in ("GEMINI_API_KEY", "GOOGLE_API_KEY", "OPS_MODEL_SUBAGENT", "OPS_REASONING_SUBAGENT"):
+    for var in (
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+        "MINDOS_MODEL_SUBAGENT",
+        "MINDOS_REASONING_SUBAGENT",
+    ):
         monkeypatch.delenv(var, raising=False)
     env = tmp_path / ".env"
     env.write_text(
-        "OPS_MODEL_SUBAGENT=from-file\nOPS_REASONING_SUBAGENT=medium\n"
+        "MINDOS_MODEL_SUBAGENT=from-file\nMINDOS_REASONING_SUBAGENT=medium\n"
         "GEMINI_API_KEY=abc123\nUNRELATED_LEGACY=1\n"
     )
     s = load_settings(env)
     assert s.model_subagent == "from-file"
     assert s.reasoning_subagent == ReasoningEffort.MEDIUM
     assert SettingsCredentialProvider(s).get("gemini_api_key") == "abc123"
-    assert "OPS_MODEL_SUBAGENT" not in os.environ
+    assert "MINDOS_MODEL_SUBAGENT" not in os.environ
 
 
 def test_invalid_values_rejected() -> None:
@@ -73,5 +78,5 @@ def test_logs_are_json_with_correlation_and_redaction(tmp_path: Path) -> None:
 
 
 def test_startup_preflight_names_the_missing_model() -> None:
-    with pytest.raises(StartupError, match="OPS_MODEL_ORCHESTRATOR"):
+    with pytest.raises(StartupError, match="MINDOS_MODEL_ORCHESTRATOR"):
         _preflight(Settings(_env_file=None, model_orchestrator=None, model_subagent="m"))

@@ -5,9 +5,9 @@ from datetime import timedelta
 import psycopg
 import pytest
 
-from opsagent.domain import Usage, bind, events
-from opsagent.infra import new_id
-from opsagent.persistence import (
+from mindos.domain import Usage, bind, events
+from mindos.infra import new_id
+from mindos.persistence import (
     ArtifactRepository,
     AuditRepository,
     UsageRepository,

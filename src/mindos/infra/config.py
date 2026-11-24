@@ -8,7 +8,7 @@ from typing import Literal
 from pydantic import AliasChoices, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from opsagent.domain import ModelRole, Pricing, ReasoningEffort
+from mindos.domain import ModelRole, Pricing, ReasoningEffort
 
 
 class ConfigError(RuntimeError):
@@ -16,10 +16,10 @@ class ConfigError(RuntimeError):
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="OPS_", extra="ignore", populate_by_name=True)
+    model_config = SettingsConfigDict(env_prefix="MINDOS_", extra="ignore", populate_by_name=True)
 
     # Database
-    database_url: str = "postgresql://opsagent:opsagent@localhost:5433/opsagent"
+    database_url: str = "postgresql://mindos:mindos@localhost:5433/mindos"
     db_pool_max: int = Field(default=10, ge=1, le=100)
 
     # Models
@@ -27,6 +27,8 @@ class Settings(BaseSettings):
     model_subagent: str | None = None
     model_utility: str | None = None
     model_embedding: str | None = None
+    # Extra models to offer in `/model`, comma-separated. The provider's own list is shown too.
+    model_choices: str = ""
     embedding_dimensions: int | None = Field(default=None, gt=0)
 
     # Reasoning
@@ -42,19 +44,17 @@ class Settings(BaseSettings):
     )
 
     # OAuth client identification. A Desktop client is public, so the Google "secret" is not secret;
-    # PKCE is always used. Tokens go to the Keychain (`ops auth`), never here.
+    # PKCE is always used. Tokens go to the Keychain (`mindos auth`), never here.
     google_client_id: str | None = None
     google_client_secret: SecretStr | None = None
-    ms_client_id: str | None = None
-    ms_tenant: str = "organizations"  # work or school accounts; never personal ones
 
     # LangSmith tracing. Off unless enabled here: the process environment never turns it on.
-    # The API key may instead come from the Keychain (`ops auth langsmith`).
+    # The API key may instead come from the Keychain (`mindos auth langsmith`).
     langsmith_tracing: bool = False
     langsmith_api_key: SecretStr | None = Field(
-        default=None, validation_alias=AliasChoices("OPS_LANGSMITH_API_KEY", "LANGSMITH_API_KEY")
+        default=None, validation_alias=AliasChoices("MINDOS_LANGSMITH_API_KEY", "LANGSMITH_API_KEY")
     )
-    langsmith_project: str = "opsagent"  # used when no agent ID is set
+    langsmith_project: str = "mindos"  # used when no agent ID is set
     langsmith_agent_id: str | None = None  # agent-based workspaces: addresses traces by agent
     langsmith_environment: Literal["local", "development", "staging", "production"] = "local"
     langsmith_endpoint: str | None = None  # regional or self-hosted API URL
@@ -78,8 +78,8 @@ class Settings(BaseSettings):
 
     # Observability
     log_level: str = "INFO"
-    log_dir: Path = Path("~/Library/Logs/opsagent")
-    config_dir: Path = Path("~/.config/opsagent")
+    log_dir: Path = Path("~/Library/Logs/mindos")
+    config_dir: Path = Path("~/.config/mindos")
 
     @field_validator("log_dir", "config_dir")
     @classmethod
@@ -105,7 +105,7 @@ class Settings(BaseSettings):
             if value:
                 return value
         raise ConfigError(
-            f"No model configured for role '{role.value}'. Set OPS_MODEL_{role.name}."
+            f"No model configured for role '{role.value}'. Set MINDOS_MODEL_{role.name}."
         )
 
     def models(self) -> dict[ModelRole, str]:
@@ -117,6 +117,9 @@ class Settings(BaseSettings):
             except ConfigError:
                 continue
         return out
+
+    def extra_models(self) -> tuple[str, ...]:
+        return tuple(m.strip() for m in self.model_choices.split(",") if m.strip())
 
     def pricing(self) -> Pricing | None:
         if self.price_input_per_mtok is None or self.price_output_per_mtok is None:

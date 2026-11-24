@@ -9,7 +9,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from opsagent.domain import (
+from mindos.domain import (
     BoundState,
     EventEmit,
     Evidence,

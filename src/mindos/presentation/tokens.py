@@ -1,7 +1,7 @@
 """Design tokens: one palette and one glyph set shared by Rich rows and Textual CSS.
 
 No widget or renderer hard-codes a color or glyph; they read from here. The CSS side receives
-the same values as `$ops-*` variables (see `OpsApp.get_css_variables`).
+the same values as `$mindos-*` variables (see `MindOSApp.get_css_variables`).
 """
 
 from __future__ import annotations
@@ -23,15 +23,15 @@ class Palette:
 
     def css_variables(self) -> dict[str, str]:
         return {
-            "ops-accent": self.accent,
-            "ops-text": self.text,
-            "ops-dim": self.dim,
-            "ops-border": self.border,
-            "ops-user-bg": self.user_bg,
-            "ops-ok": self.ok,
-            "ops-warn": self.warn,
-            "ops-error": self.error,
-            "ops-danger-bg": self.danger_bg,
+            "mindos-accent": self.accent,
+            "mindos-text": self.text,
+            "mindos-dim": self.dim,
+            "mindos-border": self.border,
+            "mindos-user-bg": self.user_bg,
+            "mindos-ok": self.ok,
+            "mindos-warn": self.warn,
+            "mindos-error": self.error,
+            "mindos-danger-bg": self.danger_bg,
         }
 
 

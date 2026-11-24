@@ -1,6 +1,6 @@
 # MISSION
 
-> **Working title:** `opsagent` (CLI: `ops`). The name is provisional; the identity below is not.
+> **Name:** MindOS (CLI: `mindos`, Python package `mindos`).
 >
 > **Status:** Pre-implementation. This document defines intent and principles. How the system achieves them is in [ARCHITECTURE.md](ARCHITECTURE.md); how to work in the repository is in [README.md](README.md).
 
@@ -17,7 +17,7 @@ It is not a chatbot with plugins. A chatbot answers; this system **operates**. T
 One agent, one terminal, one memory, many capabilities.
 
 - The user states **intent** ("move Thursday's review to Friday and tell the attendees", "find last quarter's vendor contract and convert it to PDF").
-- A single orchestrator interprets the intent, plans, and **delegates** to specialized subagents (mail, calendar, Teams, files, convert, system), each holding only the tools and context it needs.
+- A single orchestrator interprets the intent, plans, and **delegates** to specialized subagents (mail, calendar, files, convert, system), each holding only the tools and context it needs.
 - Work spans **multiple systems and multiple sessions**. It survives closed terminals, expired credentials, and pending approvals, and resumes where it stopped.
 - The agent **remembers** durable facts and preferences, with provenance, and uses them without being asked twice.
 - The user remains the **authority**. Anything with external or irreversible consequences is proposed, shown clearly, and executed only on explicit approval.
@@ -31,7 +31,6 @@ The long-term product is a dependable colleague-grade assistant that a careful p
 |---|---|
 | Personal communication | Search, read, summarize, draft, and (with approval) send Gmail. |
 | Calendar and scheduling | Query availability, create/modify events, reason about time zones. |
-| Team collaboration | Read and (with approval) send Microsoft Teams messages. |
 | Filesystem intelligence | Find files by name, exact text, keywords, or meaning; read, edit with diffs, organize. |
 | Document processing | Convert and transform supported document formats. |
 | macOS automation | Approved, scoped system actions. |

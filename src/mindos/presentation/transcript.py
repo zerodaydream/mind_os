@@ -4,14 +4,16 @@ from __future__ import annotations
 
 from bisect import bisect_right
 
+from rich.cells import cell_len
 from rich.style import Style
 from textual.events import Resize
 from textual.geometry import Size
 from textual.scroll_view import ScrollView
+from textual.selection import Selection
 from textual.strip import Strip
 
-from opsagent.presentation.render import RowRenderer
-from opsagent.presentation.viewmodel import Row
+from mindos.presentation.render import RowRenderer
+from mindos.presentation.viewmodel import Row
 
 
 class Transcript(ScrollView, can_focus=False):
@@ -69,6 +71,27 @@ class Transcript(ScrollView, can_focus=False):
     def jump_to_tail(self) -> None:
         self.scroll_to(y=self.max_scroll_y, animate=False, immediate=True)
 
+    # ---- selection (drag to select, Ctrl+C or release to copy) -------------------------------
+    def get_selection(self, selection: Selection) -> tuple[str, str] | None:
+        """The selected text. Offsets are (column, line index), set in `render_line`."""
+        text = "\n".join(strip.text.rstrip() for lines in self._lines for strip in lines)
+        return selection.extract(text), "\n"
+
+    def selection_updated(self, selection: Selection | None) -> None:
+        self.refresh()
+
+    def _highlight(self, strip: Strip, span: tuple[int, int]) -> Strip:
+        start, end = span
+        text = strip.text
+        first = cell_len(text[:start])
+        last = strip.cell_length if end == -1 else cell_len(text[:end])
+        if last <= first:
+            return strip
+        style = self.screen.get_component_rich_style("screen--selection")
+        return Strip.join(
+            [strip.crop(0, first), strip.crop(first, last).apply_style(style), strip.crop(last)]
+        )
+
     # ---- rendering -------------------------------------------------------------------------
     def render_line(self, y: int) -> Strip:
         _, offset = self.scroll_offset
@@ -78,9 +101,12 @@ class Transcript(ScrollView, can_focus=False):
             return Strip.blank(width, self.rich_style)
         row = bisect_right(self._starts, index) - 1
         strip = self._lines[row][index - self._starts[row]]
-        return (
-            strip if strip.cell_length == width else strip.adjust_cell_length(width, Style.null())
-        )
+        if strip.cell_length != width:
+            strip = strip.adjust_cell_length(width, Style.null())
+        selection = self.text_selection
+        if selection is not None and (span := selection.get_span(index)) is not None:
+            strip = self._highlight(strip, span)
+        return strip.apply_offsets(0, index)  # lets Textual map the mouse to text
 
     def on_resize(self, event: Resize) -> None:
         # Judge "was following the tail" by the old height: a shrinking pane (an approval

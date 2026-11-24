@@ -4,11 +4,11 @@ import psycopg
 import pytest
 from typer.testing import CliRunner
 
-from opsagent.bootstrap import has_failure, run_doctor
-from opsagent.cli import app
-from opsagent.domain import bind
-from opsagent.infra import Settings
-from opsagent.persistence import (
+from mindos.bootstrap import has_failure, run_doctor
+from mindos.cli import app
+from mindos.domain import bind
+from mindos.infra import Settings
+from mindos.persistence import (
     AuditRepository,
     current_revision,
     head_revision,
@@ -112,17 +112,17 @@ def test_doctor_flags_unmigrated_database(db_url: str, tmp_path) -> None:  # typ
     settings = Settings(_env_file=None, database_url=db_url, log_dir=tmp_path)
     results = {c.name: c for c in run_doctor(settings)}
     assert results["schema"].status == "fail"
-    assert "ops db migrate" in (results["schema"].fix or "")
+    assert "mindos db migrate" in (results["schema"].fix or "")
 
 
 def test_cli_doctor_and_migrate(db_url: str, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.chdir(tmp_path)  # no .env here
-    monkeypatch.setenv("OPS_DATABASE_URL", db_url)
-    monkeypatch.setenv("OPS_LOG_DIR", str(tmp_path / "logs"))
+    monkeypatch.setenv("MINDOS_DATABASE_URL", db_url)
+    monkeypatch.setenv("MINDOS_LOG_DIR", str(tmp_path / "logs"))
     runner = CliRunner()
     assert runner.invoke(app, ["doctor"]).exit_code == 1
     migrated = runner.invoke(app, ["db", "migrate"])
     assert migrated.exit_code == 0, migrated.output
     assert runner.invoke(app, ["db", "status"]).exit_code == 0
     assert runner.invoke(app, ["doctor"]).exit_code == 0
-    assert "ops 0.1.0" in runner.invoke(app, ["--version"]).output
+    assert "mindos 0.1.0" in runner.invoke(app, ["--version"]).output

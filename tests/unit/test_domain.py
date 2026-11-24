@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from opsagent.domain import (
+from mindos.domain import (
     TERMINAL_EVENTS,
     ReasoningEffort,
     RiskClass,

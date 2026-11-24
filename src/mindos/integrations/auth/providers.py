@@ -1,16 +1,16 @@
-"""Google and Microsoft Entra as data: endpoints, and the scopes behind each capability.
+"""Google as data: endpoints, and the scopes behind each capability.
 
 A capability is what the user enables (`mail-send`); the scopes are the smallest set that allows
 it. Sign-in asks for exactly the capabilities requested, and adding one later is incremental
-consent (ARCHITECTURE 6.1). Microsoft Graph accepts delegated permissions on work or school
-accounts only for Teams messaging.
+consent (ARCHITECTURE 6.1). Another provider is another entry here.
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from types import MappingProxyType
 
-from opsagent.integrations.auth.oauth2 import OAuthEndpoints
+from mindos.integrations.auth.oauth2 import OAuthEndpoints
 
 GOOGLE = OAuthEndpoints(
     name="google",
@@ -38,35 +38,11 @@ GOOGLE_CAPABILITIES = MappingProxyType(
     }
 )
 
-MICROSOFT_BASE = ("openid", "profile", "offline_access")
-MICROSOFT_CAPABILITIES = MappingProxyType(
-    {
-        "teams-read": ("Chat.Read",),
-        "teams-send": ("ChatMessage.Send", "ChannelMessage.Send"),
-    }
-)
+CAPABILITIES = MappingProxyType({"google": GOOGLE_CAPABILITIES})
+BASE_SCOPES = MappingProxyType({"google": GOOGLE_BASE})
 
 
-def microsoft(tenant: str = "organizations") -> OAuthEndpoints:
-    """Entra v2 endpoints. `organizations` admits work and school accounts, never personal ones."""
-    base = f"https://login.microsoftonline.com/{tenant}/oauth2/v2.0"
-    return OAuthEndpoints(
-        name="microsoft",
-        authorize_url=f"{base}/authorize",
-        token_url=f"{base}/token",
-        revoke_url=None,  # Entra v2 has no token-revocation endpoint; removal is local
-        authorize_params={"prompt": "select_account"},
-        account_claims=("preferred_username", "email"),
-    )
-
-
-CAPABILITIES = MappingProxyType(
-    {"google": GOOGLE_CAPABILITIES, "microsoft": MICROSOFT_CAPABILITIES}
-)
-BASE_SCOPES = MappingProxyType({"google": GOOGLE_BASE, "microsoft": MICROSOFT_BASE})
-
-
-def scopes_for(provider: str, capabilities: list[str]) -> tuple[str, ...]:
+def scopes_for(provider: str, capabilities: Sequence[str]) -> tuple[str, ...]:
     """Base scopes plus those of each capability. Unknown names raise `KeyError`."""
     known = CAPABILITIES[provider]
     unknown = [c for c in capabilities if c not in known]

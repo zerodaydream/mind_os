@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from opsagent.domain import Principal, RiskClass
-from opsagent.persistence.db import Pool
+from mindos.domain import Principal, RiskClass
+from mindos.persistence.db import Pool
 
 
 class ExecutionRepository:

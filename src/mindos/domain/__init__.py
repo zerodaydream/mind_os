@@ -1,7 +1,7 @@
 """Pure domain: entities, enums, events, commands, and ports. Imports nothing internal."""
 
-from opsagent.domain import commands, events
-from opsagent.domain.approvals import (
+from mindos.domain import commands, events
+from mindos.domain.approvals import (
     ALLOWED_TRANSITIONS,
     TERMINAL_STATES,
     ApprovalRecord,
@@ -12,16 +12,16 @@ from opsagent.domain.approvals import (
     Resolution,
     canonical_payload,
 )
-from opsagent.domain.approvals import (
+from mindos.domain.approvals import (
     TTL as APPROVAL_TTL,
 )
-from opsagent.domain.approvals import (
+from mindos.domain.approvals import (
     idempotency_key as approval_idempotency_key,
 )
-from opsagent.domain.approvals import (
+from mindos.domain.approvals import (
     payload_hash as approval_payload_hash,
 )
-from opsagent.domain.auth import (
+from mindos.domain.auth import (
     AccessToken,
     AuthError,
     AuthStatus,
@@ -37,17 +37,33 @@ from opsagent.domain.auth import (
     TokenSource,
     TransientAuthError,
 )
-from opsagent.domain.calendar import CalendarEvent, CalendarReader
-from opsagent.domain.context import CORRELATION_KEYS, bind, current
-from opsagent.domain.cost import Pricing, estimate_cost
-from opsagent.domain.events import (
+from mindos.domain.calendar import (
+    Calendar,
+    CalendarEvent,
+    CalendarReader,
+    CalendarWriter,
+    EventDraft,
+    EventPatch,
+    fingerprint,
+)
+from mindos.domain.context import CORRELATION_KEYS, bind, current
+from mindos.domain.cost import Pricing, estimate_cost
+from mindos.domain.errors import ProviderError
+from mindos.domain.events import (
     SCHEMA_VERSION,
     TERMINAL_EVENTS,
     AppEvent,
     parse_event,
 )
-from opsagent.domain.llm import LLMRequest, LLMResult, ModelCapabilities, ModelRole, Usage
-from opsagent.domain.ports import (
+from mindos.domain.llm import (
+    LLMRequest,
+    LLMResult,
+    ModelCapabilities,
+    ModelChoice,
+    ModelRole,
+    Usage,
+)
+from mindos.domain.ports import (
     GEMINI_API_KEY,
     LANGSMITH_API_KEY,
     AgentRuntime,
@@ -64,16 +80,17 @@ from opsagent.domain.ports import (
     ExecutionLog,
     IdFactory,
     LLMProvider,
+    ModelTuning,
     PolicyEngine,
     RunSpec,
     Tracing,
     UsageSink,
 )
-from opsagent.domain.reasoning import ReasoningEffort, ResolvedEffort, resolve_effort
-from opsagent.domain.redaction import REDACTED, redact, redact_text
-from opsagent.domain.risk import ApprovalMode, PolicyDecision, Principal, RiskClass, SessionMode
-from opsagent.domain.taint import TaintLedger, TaintSource
-from opsagent.domain.tools import (
+from mindos.domain.reasoning import ReasoningEffort, ResolvedEffort, resolve_effort
+from mindos.domain.redaction import REDACTED, redact, redact_text
+from mindos.domain.risk import ApprovalMode, PolicyDecision, Principal, RiskClass, SessionMode
+from mindos.domain.taint import TaintLedger, TaintSource
+from mindos.domain.tools import (
     Evidence,
     SubagentResult,
     SubagentStatus,
@@ -110,14 +127,18 @@ __all__ = [
     "AuthError",
     "AuthStatus",
     "BoundState",
+    "Calendar",
     "CalendarEvent",
     "CalendarReader",
+    "CalendarWriter",
     "Clock",
     "ConsentRequired",
     "CredentialProvider",
     "EditValidator",
     "EditVerdict",
+    "EventDraft",
     "EventEmit",
+    "EventPatch",
     "Evidence",
     "ExecutionLog",
     "IdFactory",
@@ -127,12 +148,15 @@ __all__ = [
     "LLMRequest",
     "LLMResult",
     "ModelCapabilities",
+    "ModelChoice",
     "ModelRole",
+    "ModelTuning",
     "OAuthProvider",
     "PolicyDecision",
     "PolicyEngine",
     "Pricing",
     "Principal",
+    "ProviderError",
     "ReasoningEffort",
     "ReauthRequired",
     "RefreshLock",
@@ -166,6 +190,7 @@ __all__ = [
     "current",
     "estimate_cost",
     "events",
+    "fingerprint",
     "parse_event",
     "redact",
     "redact_text",

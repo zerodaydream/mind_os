@@ -9,8 +9,8 @@ from typing import Any
 import psycopg
 import pytest
 
-from opsagent.application import ApprovalBroker
-from opsagent.domain import (
+from mindos.application import ApprovalBroker
+from mindos.domain import (
     ALLOWED_TRANSITIONS,
     ApprovalRecord,
     ApprovalState,
@@ -18,8 +18,8 @@ from opsagent.domain import (
     RiskClass,
     bind,
 )
-from opsagent.infra import SystemClock, new_id
-from opsagent.persistence import (
+from mindos.infra import SystemClock, new_id
+from mindos.persistence import (
     ApprovalRepository,
     AuditRepository,
     ExecutionRepository,

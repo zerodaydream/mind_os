@@ -10,8 +10,8 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_google_genai import _function_utils as fu
 from pydantic import BaseModel, Field
 
-from opsagent.agents.bridge import stub_tools
-from opsagent.domain import (
+from mindos.agents.bridge import stub_tools
+from mindos.domain import (
     ModelRole,
     Pricing,
     ReasoningEffort,
@@ -19,15 +19,15 @@ from opsagent.domain import (
     Usage,
     estimate_cost,
 )
-from opsagent.infra import Settings, resolve_timezone
-from opsagent.integrations.calendar import FixtureCalendar, sample_events
-from opsagent.integrations.llm import GeminiProvider
-from opsagent.tools import model_schema
-from opsagent.tools.core import WriteTodosInput
+from mindos.infra import Settings, resolve_timezone
+from mindos.integrations.calendar import FixtureCalendar, sample_events
+from mindos.integrations.llm import GeminiProvider
+from mindos.tools import model_schema
+from mindos.tools.core import WriteTodosInput
 from tests.support.agent_kit import make_kit
 from tests.support.scripted_model import ScriptedChatModel
 
-SRC = Path(__file__).resolve().parents[2] / "src" / "opsagent"
+SRC = Path(__file__).resolve().parents[2] / "src" / "mindos"
 IST = ZoneInfo("Asia/Kolkata")
 
 

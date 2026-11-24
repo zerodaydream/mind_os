@@ -14,7 +14,7 @@ from datetime import datetime
 from types import MappingProxyType
 from typing import Any
 
-from opsagent.domain import (
+from mindos.domain import (
     APPROVAL_TTL,
     ApprovalRecord,
     ApprovalTicket,
@@ -31,7 +31,7 @@ from opsagent.domain import (
     current,
     events,
 )
-from opsagent.domain.ports import ApprovalRepository
+from mindos.domain.ports import ApprovalRepository
 
 log = logging.getLogger(__name__)
 
@@ -45,7 +45,6 @@ _SUMMARY: MappingProxyType[str, str] = MappingProxyType(
             ("calendar.create_event", "Create calendar event"),
             ("calendar.update_event", "Update calendar event"),
             ("calendar.delete_event", "Delete calendar event"),
-            ("teams.send_message", "Send Teams message"),
             ("files.delete", "Delete file"),
             ("files.edit", "Edit file"),
             ("system.run_action", "Run system action"),

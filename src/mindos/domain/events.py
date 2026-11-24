@@ -13,9 +13,9 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
-from opsagent.domain.context import current
-from opsagent.domain.reasoning import ReasoningEffort
-from opsagent.domain.risk import ApprovalMode, RiskClass
+from mindos.domain.context import current
+from mindos.domain.reasoning import ReasoningEffort
+from mindos.domain.risk import ApprovalMode, RiskClass
 
 SCHEMA_VERSION = 1
 

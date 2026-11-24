@@ -7,7 +7,7 @@ from typing import Any
 
 from langchain_core.messages import AIMessage
 
-from opsagent.domain import Usage
+from mindos.domain import Usage
 
 
 def split_content(content: Any) -> tuple[str, str]:

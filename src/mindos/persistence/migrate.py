@@ -16,7 +16,7 @@ from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from sqlalchemy import create_engine
 from sqlalchemy.pool import NullPool
 
-from opsagent.persistence.db import sqlalchemy_url
+from mindos.persistence.db import sqlalchemy_url
 
 _MIGRATIONS = Path(__file__).parent / "migrations"
 

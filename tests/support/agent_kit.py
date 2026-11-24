@@ -10,8 +10,8 @@ from zoneinfo import ZoneInfo
 from langchain_core.language_models.chat_models import BaseChatModel
 from langgraph.checkpoint.memory import InMemorySaver
 
-from opsagent.agents import LangChainRuntime, RunLimits, build_runtime
-from opsagent.domain import (
+from mindos.agents import LangChainRuntime, RunLimits, build_runtime
+from mindos.domain import (
     AppEvent,
     CalendarEvent,
     ModelRole,
@@ -19,7 +19,7 @@ from opsagent.domain import (
     ReasoningEffort,
     RunSpec,
 )
-from opsagent.infra import new_id
+from mindos.infra import new_id
 from tests.support.fakes import MemoryArtifacts, MemoryAudit, MemoryCalendar, MemoryUsage
 from tests.support.policies import ReadOnlyPolicy
 from tests.support.scripted_model import ScriptedChatModel
@@ -99,6 +99,8 @@ def make_kit(
     broker: Any = None,
     executions: Any = None,
     tracing: Any = None,
+    writer: Any = None,
+    calendar: Any = None,
 ) -> Kit:
     models = FakeModels(orchestrator, subagent or ScriptedChatModel(script=[]))
     audit, artifacts, usage = (
@@ -106,11 +108,12 @@ def make_kit(
         artifacts or MemoryArtifacts(),
         usage or MemoryUsage(),
     )
-    calendar = MemoryCalendar(events if events is not None else [standup()])
+    calendar = calendar or MemoryCalendar(events if events is not None else [standup()])
     saver = saver or InMemorySaver()
     runtime = build_runtime(
         models=models,
         calendar=calendar,
+        writer=writer,
         tz=IST,
         audit=audit,
         artifacts=artifacts,

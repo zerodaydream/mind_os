@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from opsagent.application import ApprovalBroker
-from opsagent.domain import PolicyDecision
-from opsagent.infra import new_id
-from opsagent.tools.policy import PolicyConfig, PolicyEngine, ToolPolicy
+from mindos.application import ApprovalBroker
+from mindos.domain import PolicyDecision
+from mindos.infra import new_id
+from mindos.tools.policy import PolicyConfig, PolicyEngine, ToolPolicy
 from tests.support.agent_kit import Kit, make_kit
 from tests.support.fakes import ManualClock, MemoryApprovalRepo, MemoryAudit, MemoryExecutionLog
 from tests.support.scripted_model import ScriptedChatModel
@@ -34,6 +34,8 @@ class World:
         subagent: ScriptedChatModel | None = None,
         config: Any = None,
         tracing: Any = None,
+        writer: Any = None,
+        calendar: Any = None,
     ) -> Kit:
         kit = make_kit(
             ScriptedChatModel(script=list(script)),
@@ -44,6 +46,8 @@ class World:
             saver=self.saver,
             executions=self.executions,
             tracing=tracing,
+            writer=writer,
+            calendar=calendar,
         )
         self.saver = kit.saver
         return kit

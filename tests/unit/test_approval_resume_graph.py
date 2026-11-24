@@ -12,9 +12,9 @@ from typing import Any
 
 from langchain_core.messages import ToolMessage
 
-from opsagent.domain import PolicyDecision, ReasoningEffort, bind, events
-from opsagent.domain.commands import Decide
-from opsagent.tools.policy import PolicyConfig, ToolPolicy
+from mindos.domain import PolicyDecision, ReasoningEffort, bind, events
+from mindos.domain.commands import Decide
+from mindos.tools.policy import PolicyConfig, ToolPolicy
 from tests.support.agent_kit import Kit
 from tests.support.scripted_model import ScriptedChatModel, reply, tool_call
 from tests.support.world import World

@@ -1,11 +1,11 @@
 """PostgreSQL persistence: pool, migrations, repositories."""
 
-from opsagent.persistence.approval_repo import ApprovalRepository
-from opsagent.persistence.audit import AuditRepository
-from opsagent.persistence.auth_repo import AdvisoryRefreshLock, IntegrationStateRepository
-from opsagent.persistence.db import open_pool, sqlalchemy_url
-from opsagent.persistence.execution_repo import ExecutionRepository
-from opsagent.persistence.migrate import (
+from mindos.persistence.approval_repo import ApprovalRepository
+from mindos.persistence.audit import AuditRepository
+from mindos.persistence.auth_repo import AdvisoryRefreshLock, IntegrationStateRepository
+from mindos.persistence.db import open_pool, sqlalchemy_url
+from mindos.persistence.execution_repo import ExecutionRepository
+from mindos.persistence.migrate import (
     current_revision,
     head_revision,
     open_checkpointer,
@@ -13,7 +13,7 @@ from opsagent.persistence.migrate import (
     setup_checkpointer,
     upgrade,
 )
-from opsagent.persistence.repositories import ArtifactRepository, UsageRepository
+from mindos.persistence.repositories import ArtifactRepository, UsageRepository
 
 __all__ = [
     "AdvisoryRefreshLock",

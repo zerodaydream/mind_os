@@ -7,13 +7,13 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from opsagent.domain import CalendarEvent, ToolInvocation
-from opsagent.tools import (
+from mindos.domain import CalendarEvent, ToolInvocation
+from mindos.tools import (
     ToolExecutionEngine,
     ToolRegistry,
     calendar_specs,
 )
-from opsagent.tools.calendar import parse_when
+from mindos.tools.calendar import parse_when
 from tests.support.fakes import MemoryArtifacts, MemoryAudit, MemoryCalendar
 from tests.support.policies import ReadOnlyPolicy
 

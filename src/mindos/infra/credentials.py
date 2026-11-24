@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from opsagent.domain import GEMINI_API_KEY
-from opsagent.infra.config import Settings
+from mindos.domain import GEMINI_API_KEY
+from mindos.infra.config import Settings
 
 
 class SettingsCredentialProvider:

@@ -9,8 +9,8 @@ from datetime import timedelta
 import httpx
 import pytest
 
-from opsagent.application import AuthService
-from opsagent.domain import (
+from mindos.application import AuthService
+from mindos.domain import (
     AccessToken,
     AuthError,
     AuthStatus,
@@ -20,9 +20,9 @@ from opsagent.domain import (
     TokenGrant,
     TransientAuthError,
 )
-from opsagent.integrations.auth import LoopbackError, LoopbackReceiver
-from opsagent.integrations.auth.pkce import challenge_for, new_verifier
-from opsagent.integrations.auth.providers import scopes_for
+from mindos.integrations.auth import LoopbackError, LoopbackReceiver
+from mindos.integrations.auth.pkce import challenge_for, new_verifier
+from mindos.integrations.auth.providers import scopes_for
 from tests.support.auth_kit import (
     ACCESS,
     REFRESH,
@@ -119,7 +119,7 @@ async def test_an_open_circuit_refuses_without_calling_the_provider() -> None:
 
 async def test_a_missing_refresh_token_is_reauth_not_a_crash() -> None:
     rig = Rig(json_response(200, token_json()), connected=False)
-    with pytest.raises(ReauthRequired, match="ops auth google"):
+    with pytest.raises(ReauthRequired, match="mindos auth google"):
         await rig.tokens.access_token("google", "me@x.com")
     assert rig.endpoint.calls == []
 
@@ -133,11 +133,7 @@ async def test_a_scope_that_was_never_granted_is_refused_before_any_request() ->
 
 
 async def test_tenant_consent_is_reported_as_consent_required() -> None:
-    rig = Rig(
-        json_response(
-            400, {"error": "invalid_grant", "error_description": "AADSTS65001: no consent"}
-        )
-    )
+    rig = Rig(json_response(400, {"error": "admin_policy_enforced"}))
     with pytest.raises(ConsentRequired):
         await rig.tokens.access_token("google", "me@x.com")
     state = await rig.states.get("google", "me@x.com")
@@ -255,8 +251,8 @@ def test_scopes_are_the_smallest_set_for_the_capabilities_asked() -> None:
         "email",
         "https://www.googleapis.com/auth/gmail.readonly",
     )
-    send = scopes_for("microsoft", ["teams-send"])
-    assert "ChatMessage.Send" in send and "Chat.Read" not in send
+    send = scopes_for("google", ["mail-send"])
+    assert send[-1].endswith("gmail.send") and not any("readonly" in s for s in send)
     with pytest.raises(KeyError):
         scopes_for("google", ["mail-everything"])
 

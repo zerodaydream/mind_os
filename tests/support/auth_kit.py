@@ -11,16 +11,16 @@ from typing import Any
 
 import httpx
 
-from opsagent.application import TokenManager
-from opsagent.domain import (
+from mindos.application import TokenManager
+from mindos.domain import (
     AccessToken,
     AuthStatus,
     IntegrationState,
     OAuthProvider,
     TokenGrant,
 )
-from opsagent.infra.resilience import RetryPolicy
-from opsagent.integrations.auth import GOOGLE, OAuth2Client
+from mindos.infra.resilience import RetryPolicy
+from mindos.integrations.auth import GOOGLE, OAuth2Client
 from tests.support.fakes import ManualClock
 
 REFRESH = "rt-SECRET-refresh-value"

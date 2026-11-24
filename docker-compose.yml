@@ -4,22 +4,22 @@ services:
   db:
     image: pgvector/pgvector:pg16
     environment:
-      POSTGRES_USER: opsagent
-      POSTGRES_PASSWORD: opsagent
-      POSTGRES_DB: opsagent
+      POSTGRES_USER: mindos
+      POSTGRES_PASSWORD: mindos
+      POSTGRES_DB: mindos
     ports:
       - "5433:5432"
     # maintenance_work_mem: HNSW builds fall back to a very slow path above the 64 MB default
     # (measured in Phase 01 spike 7).
     command: ["postgres", "-c", "maintenance_work_mem=512MB"]
     volumes:
-      - opsagent-pg:/var/lib/postgresql/data
+      - mindos-pg:/var/lib/postgresql/data
       - ./docker/initdb:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U opsagent -d opsagent"]
+      test: ["CMD-SHELL", "pg_isready -U mindos -d mindos"]
       interval: 3s
       timeout: 3s
       retries: 20
 
 volumes:
-  opsagent-pg:
+  mindos-pg:

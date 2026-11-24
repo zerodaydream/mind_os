@@ -1,4 +1,4 @@
-from opsagent.domain import TaintLedger, TaintSource
+from mindos.domain import TaintLedger, TaintSource
 
 
 def test_taint_is_per_run_and_only_code_adds_it() -> None:

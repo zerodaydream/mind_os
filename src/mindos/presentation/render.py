@@ -19,8 +19,8 @@ from rich.table import Table
 from rich.text import Text
 from textual.strip import Strip
 
-from opsagent.presentation.tokens import PALETTE, Glyphs, Palette
-from opsagent.presentation.viewmodel import (
+from mindos.presentation.tokens import PALETTE, Glyphs, Palette
+from mindos.presentation.viewmodel import (
     AssistantRow,
     CommandRow,
     NoticeRow,
@@ -110,7 +110,7 @@ class RowRenderer:
         p, g = self._p, self._glyphs
         lines = [
             Text.assemble(
-                (f"{g.thinking} opsagent", Style(color=p.accent, bold=True)),
+                (f"{g.thinking} MindOS", Style(color=p.accent, bold=True)),
                 (f"  v{row.version}", Style(color=p.dim)),
             ),
             Text(f"cwd  {row.cwd}", style=Style(color=p.dim)),

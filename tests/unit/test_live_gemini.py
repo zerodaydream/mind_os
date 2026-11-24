@@ -1,4 +1,4 @@
-"""Calls the real Gemini API. Opt in with OPS_TEST_LIVE=1 and a key in .env or the environment."""
+"""Calls the real Gemini API. Opt in with MINDOS_TEST_LIVE=1 and a key (.env or environment)."""
 
 from __future__ import annotations
 
@@ -6,13 +6,13 @@ import os
 
 import pytest
 
-from opsagent.bootstrap import build_container
-from opsagent.domain import LLMRequest, ModelRole, ReasoningEffort
-from opsagent.infra import load_settings
+from mindos.bootstrap import build_container
+from mindos.domain import LLMRequest, ModelRole, ReasoningEffort
+from mindos.infra import load_settings
 
 pytestmark = [
     pytest.mark.live,
-    pytest.mark.skipif(os.environ.get("OPS_TEST_LIVE") != "1", reason="set OPS_TEST_LIVE=1"),
+    pytest.mark.skipif(os.environ.get("MINDOS_TEST_LIVE") != "1", reason="set MINDOS_TEST_LIVE=1"),
 ]
 
 

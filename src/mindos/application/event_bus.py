@@ -11,7 +11,7 @@ import asyncio
 from collections.abc import AsyncIterator, Iterator
 from contextlib import contextmanager
 
-from opsagent.domain import TERMINAL_EVENTS, AppEvent, Clock
+from mindos.domain import TERMINAL_EVENTS, AppEvent, Clock
 
 _SESSION_KEY = "_session"
 
