@@ -92,6 +92,10 @@ class ApprovalRecord(BaseModel):
     tool_call_id: str | None = None
     original_payload_hash: str | None = None  # set when the user edited the payload
     delivered: bool = False  # the paused graph has received the decision
+    # Raised by a subagent, which cannot pause. The run does not wait: the application executes
+    # the approved call itself, as `agent`, once the user decides (ADR 0005).
+    agent: str | None = None
+    deferred: bool = False
 
 
 class ApprovalTicket(BaseModel):
@@ -129,6 +133,23 @@ class Resolution(BaseModel):
         return self.outcome in ("approved", "edited", "rejected")
 
 
+class BoundState(BaseModel):
+    """What the user's approval is tied to besides the arguments (ARCHITECTURE 5.4).
+
+    `resolved_targets` maps what the arguments named to what it resolved to (a path to its real
+    path, a name to an ID). `base_state_hashes` maps each target to a hash of its current state.
+    If either differs at execution time the approval no longer describes the action.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    resolved_targets: dict[str, str] = {}
+    base_state_hashes: dict[str, str] = {}
+
+    def __bool__(self) -> bool:
+        return bool(self.resolved_targets or self.base_state_hashes)
+
+
 class EditVerdict(BaseModel):
     """The engine's answer to "may these edited arguments replace the approved ones?"."""
 
@@ -138,23 +159,51 @@ class EditVerdict(BaseModel):
     reason: str | None = None
     risk: RiskClass | None = None
     normalized_args: dict[str, Any] = {}
+    bound: BoundState = BoundState()
 
 
-def canonical_payload(tool: str, tool_version: str, principal: str, args: dict[str, Any]) -> str:
-    """Canonical JSON for hashing: sorted keys, no whitespace."""
-    obj = {"tool": tool, "tool_version": tool_version, "principal": principal, "args": args}
+def canonical_payload(
+    tool: str,
+    tool_version: str,
+    principal: str,
+    args: dict[str, Any],
+    bound: BoundState | None = None,
+) -> str:
+    """Canonical JSON for hashing: sorted keys, no whitespace.
+
+    `bound` joins the payload only when it carries something, so a tool with no resolved
+    targets or base state hashes exactly as before.
+    """
+    obj: dict[str, Any] = {
+        "tool": tool,
+        "tool_version": tool_version,
+        "principal": principal,
+        "args": args,
+    }
+    if bound:
+        obj["bound"] = bound.model_dump(mode="json")
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), default=str)
 
 
-def payload_hash(tool: str, tool_version: str, principal: str, args: dict[str, Any]) -> str:
+def payload_hash(
+    tool: str,
+    tool_version: str,
+    principal: str,
+    args: dict[str, Any],
+    bound: BoundState | None = None,
+) -> str:
     """SHA-256 hex digest of the canonical payload."""
     return hashlib.sha256(
-        canonical_payload(tool, tool_version, principal, args).encode()
+        canonical_payload(tool, tool_version, principal, args, bound).encode()
     ).hexdigest()
 
 
 def idempotency_key(run_id: str | None, tool_call_id: str, ph: str) -> str:
-    """Deterministic key that prevents duplicate approvals for the same call."""
+    """Deterministic key that prevents duplicate approvals for the same call.
+
+    `ph` is the hash of the arguments alone (no `BoundState`): the call keeps its identity even
+    if the state it was bound to drifts, and the drift is caught when the approval is verified.
+    """
     raw = json.dumps(
         {"run_id": run_id, "tool_call_id": tool_call_id, "payload_hash": ph}, sort_keys=True
     )

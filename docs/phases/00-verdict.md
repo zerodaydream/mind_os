@@ -14,7 +14,7 @@
 | 1 | **Phase order bug.** Indexer/watcher (Ph 7) needs `jobs` + worker (Ph 9). | Jobs/worker before FS intelligence. |
 | 2 | **TUI too thin.** Original Ph 1 = "minimal shell". Exact Claude Code UI is a large workstream. | Own phase, built on a scripted fake event stream. |
 | 3 | **Event vocabulary lacks Claude Code UX.** Missing: thinking deltas, usage/cost, permission-mode change, slash-command output, rewind. | Add `ThinkingDelta`, `UsageUpdated`, `ModeChanged`, `CommandOutput`, `Rewound` events. |
-| 4 | **DeepAgents risk.** Pre-1.0 (v0.7.x), moves fast; planning tool removed by default in 0.7; built-in fs/shell tools must be disabled (§14, unverified). | Phase 1 spike. Wrap behind an `AgentRuntime` port; fallback = plain LangGraph/LangChain agent. |
+| 4 | **DeepAgents risk.** Pre-1.0 (v0.7.x), moves fast; planning tool removed by default in 0.7; built-in fs/shell tools must be disabled (§14, unverified). | Phase 1 spike. Wrap behind an `AgentRuntime` port. Resolved: ADR 0001 (lockdown works), ADR 0003 (plain agent for Phase 04), ADR 0007 (Deep Agents adopted, lockdown kept). |
 | 5 | **Checkpointer ≠ crash recovery.** Nothing restarts a dead run. | Startup reconciliation (§11.4) is mandatory scope in Approvals phase, not optional. |
 | 6 | **Postgres is heavy** for one user. | Keep (pgvector, SKIP LOCKED, NOTIFY justify it). Ship `docker-compose` + `ops doctor`. Record embedded-mode ADR, don't build it. |
 

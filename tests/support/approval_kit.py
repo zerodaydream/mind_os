@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from opsagent.application.approval_broker import ApprovalBroker
 from opsagent.domain import (
+    AuthError,
+    BoundState,
     Principal,
     Resolution,
     RiskClass,
@@ -70,6 +73,9 @@ class Env:
         self.sent: list[dict[str, Any]] = []
         self.edited: list[str] = []
         self.drafts: list[str] = []
+        self.auth_error: AuthError | None = None  # what `mail.fetch` raises, if set
+        self.fetches = 0
+        self.disk: dict[str, str] = {}  # path -> content: the state `files.edit` binds approvals to
         self.events: list[Any] = []
         self.broker = ApprovalBroker(
             repo=self.repo, audit=self.audit, new_id=self.new_id, clock=self.clock
@@ -83,12 +89,25 @@ class Env:
             self.edited.append(args.path)
             return "edited"
 
+        async def bind_edit(args: EditIn) -> BoundState:
+            content = self.disk.get(args.path, "")
+            return BoundState(
+                resolved_targets={args.path: f"/real{args.path}"},
+                base_state_hashes={args.path: hashlib.sha256(content.encode()).hexdigest()},
+            )
+
         async def draft(args: SendIn, ctx: ToolContext) -> str:
             self.drafts.append(args.recipient)
             return "drafted"
 
         async def search(args: QueryIn, ctx: ToolContext) -> str:
             return f"results for {args.q}"
+
+        async def fetch(args: QueryIn, ctx: ToolContext) -> str:
+            self.fetches += 1
+            if self.auth_error is not None:
+                raise self.auth_error
+            return "fetched"
 
         self.registry = ToolRegistry(
             [
@@ -108,6 +127,7 @@ class Env:
                     input_model=EditIn,
                     handler=edit,
                     classify=_edit_risk,
+                    bind_state=bind_edit,
                     idempotency=ToolIdempotency.NON_IDEMPOTENT,
                 ),
                 ToolSpec(
@@ -118,6 +138,13 @@ class Env:
                     handler=draft,
                     default_risk=RiskClass.R1,
                     idempotency=ToolIdempotency.NON_IDEMPOTENT,
+                ),
+                ToolSpec(
+                    name="mail.fetch",
+                    version="1",
+                    summary="Fetch mail",
+                    input_model=QueryIn,
+                    handler=fetch,
                 ),
                 ToolSpec(
                     name="mail.search",

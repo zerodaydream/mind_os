@@ -37,8 +37,9 @@ class ToolInvocation(_Frozen):
     tool_call_id: str
     run_id: str | None = None
     approval_id: str | None = None  # set when resuming a call the user approved
-    # Only an agent whose graph can pause (the orchestrator) may ask for an approval. A subagent
-    # cannot be paused mid-delegation yet, so for it a REQUIRE_APPROVAL call fails closed.
+    # An agent whose graph can pause (the orchestrator) waits for the user. One that cannot (a
+    # subagent) gets its approval queued as deferred: the call does not run now, and the
+    # application runs it if the user approves (ADR 0005).
     can_pause: bool = False
 
 

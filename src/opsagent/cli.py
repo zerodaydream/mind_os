@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import webbrowser
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Annotated
 
@@ -10,9 +12,10 @@ import typer
 from rich.console import Console
 
 from opsagent import __version__
-from opsagent.bootstrap import StartupError, has_failure, run_doctor, run_tui
-from opsagent.domain import PolicyDecision
-from opsagent.infra import ConfigError, Settings, configure_logging, load_settings
+from opsagent.bootstrap import AuthKit, StartupError, build_auth, has_failure, run_doctor, run_tui
+from opsagent.domain import GEMINI_API_KEY, LANGSMITH_API_KEY, AuthError, PolicyDecision
+from opsagent.infra import ConfigError, Settings, SystemClock, configure_logging, load_settings
+from opsagent.integrations.auth import CAPABILITIES, KeychainSecretStore, scopes_for, sign_in
 from opsagent.persistence import (
     AuditRepository,
     current_revision,
@@ -31,6 +34,9 @@ db_app = typer.Typer(help="Database commands.", no_args_is_help=True)
 app.add_typer(db_app, name="db")
 policy_app = typer.Typer(help="Approval policy configuration commands.", no_args_is_help=True)
 app.add_typer(policy_app, name="policy")
+
+auth_app = typer.Typer(help="Connect and disconnect accounts.", no_args_is_help=True)
+app.add_typer(auth_app, name="auth")
 
 console = Console()
 _ICON = {"ok": "[green]ok[/]", "warn": "[yellow]warn[/]", "fail": "[red]FAIL[/]"}
@@ -206,3 +212,144 @@ def policy_reset(
     _record_policy_change(settings, tool, "reset", "removed override")
     save_policy(policy_file, cfg.without_override(tool))
     console.print(f"Reset policy for '{tool}' in {policy_file}")
+
+
+# ---- ops auth --------------------------------------------------------------------------------
+Capabilities = Annotated[
+    list[str],
+    typer.Option("--capability", "-c", help="Permission to enable. Repeat for several."),
+]
+
+
+async def _with_auth(settings: Settings, work: Callable[[AuthKit], Awaitable[None]]) -> None:
+    pool = await open_pool(settings.database_url, max_size=2)
+    kit = build_auth(settings, pool, SystemClock())
+    try:
+        await work(kit)
+    finally:
+        await kit.http.aclose()
+        await pool.close()
+
+
+def _run_auth(work: Callable[[AuthKit], Awaitable[None]]) -> None:
+    try:
+        asyncio.run(_with_auth(load_settings(), work))
+    except ConfigError as exc:
+        console.print(f"[red]configuration error:[/] {exc}")
+        raise typer.Exit(2) from exc
+    except AuthError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(1) from exc
+    except Exception as exc:
+        console.print(f"[red]auth failed:[/] {type(exc).__name__}. Is the database up?")
+        raise typer.Exit(1) from exc
+
+
+def _connect(provider: str, capabilities: list[str], setting: str) -> None:
+    if not capabilities:
+        known = ", ".join(CAPABILITIES[provider])
+        console.print(f"[red]Choose what to enable[/] with --capability. Available: {known}.")
+        raise typer.Exit(2)
+    try:
+        wanted = scopes_for(provider, capabilities)
+    except KeyError as exc:
+        console.print(f"[red]{exc.args[0]}[/]")
+        raise typer.Exit(2) from exc
+
+    async def work(kit: AuthKit) -> None:
+        client = kit.clients.get(provider)
+        if client is None:
+            console.print(f"[red]{provider} is not configured.[/] Set {setting} in .env.")
+            raise typer.Exit(2)
+        earlier = {
+            s for st in await kit.service.status() if st.provider == provider for s in st.scopes
+        }
+        grant = await sign_in(
+            client,
+            tuple(dict.fromkeys([*wanted, *sorted(earlier)])),  # keep what was already granted
+            open_url=webbrowser.open,
+            say=console.print,
+        )
+        state = await kit.service.connect(provider, grant)
+        console.print(f"[green]Connected[/] {provider} as {state.account_id}.")
+
+    _run_auth(work)
+
+
+@auth_app.command("google")
+def auth_google(capability: Capabilities = []) -> None:  # noqa: B006 - typer reads the default
+    """Sign in to Google (Gmail, Calendar). Run again with more capabilities to add them."""
+    _connect("google", capability, "OPS_GOOGLE_CLIENT_ID")
+
+
+@auth_app.command("microsoft")
+def auth_microsoft(capability: Capabilities = []) -> None:  # noqa: B006
+    """Sign in to Microsoft (Teams). Work or school accounts only."""
+    _connect("microsoft", capability, "OPS_MS_CLIENT_ID")
+
+
+@auth_app.command("status")
+def auth_status() -> None:
+    """Show each account's state. Never prints a token."""
+
+    async def work(kit: AuthKit) -> None:
+        rows = await kit.service.status()
+        for row in rows:
+            scopes = ", ".join(s.rsplit("/", 1)[-1] for s in row.scopes) or "-"
+            console.print(f"{row.provider:10} {row.account_id:32} {row.status.value:13} {scopes}")
+        if not rows:
+            console.print("No accounts connected. Run `ops auth google` or `ops auth microsoft`.")
+        has_key = kit.secrets.get(GEMINI_API_KEY) is not None
+        console.print(f"gemini     {'key stored in Keychain' if has_key else 'no key in Keychain'}")
+
+    _run_auth(work)
+
+
+@auth_app.command("revoke")
+def auth_revoke(
+    provider: Annotated[str, typer.Argument(help="google or microsoft")],
+    account: Annotated[
+        str | None, typer.Option(help="Account; default: every connected one.")
+    ] = None,
+) -> None:
+    """Disconnect: revoke at the provider where possible, delete the Keychain entry."""
+
+    async def work(kit: AuthKit) -> None:
+        if provider not in CAPABILITIES:
+            console.print(f"[red]Unknown provider {provider!r}.[/] Use google or microsoft.")
+            raise typer.Exit(2)
+        accounts = (
+            [account]
+            if account
+            else [s.account_id for s in await kit.service.status() if s.provider == provider]
+        )
+        if not accounts:
+            console.print(f"Nothing connected for {provider}.")
+        for name in accounts:
+            remote = await kit.service.revoke(provider, name)
+            how = "revoked at the provider and removed" if remote else "removed locally"
+            console.print(f"{provider} {name}: {how}.")
+
+    _run_auth(work)
+
+
+@auth_app.command("langsmith")
+def auth_langsmith() -> None:
+    """Store the LangSmith API key in the Keychain. Turn tracing on with OPS_LANGSMITH_TRACING."""
+    key = typer.prompt("LangSmith API key", hide_input=True).strip()
+    if not key:
+        console.print("[red]No key entered.[/]")
+        raise typer.Exit(2)
+    KeychainSecretStore().set(LANGSMITH_API_KEY, key)
+    console.print("Stored in the Keychain. Set OPS_LANGSMITH_TRACING=true to send traces.")
+
+
+@auth_app.command("gemini")
+def auth_gemini() -> None:
+    """Store the Gemini API key in the Keychain. The key is typed hidden, never echoed."""
+    key = typer.prompt("Gemini API key", hide_input=True).strip()
+    if not key:
+        console.print("[red]No key entered.[/]")
+        raise typer.Exit(2)
+    KeychainSecretStore().set(GEMINI_API_KEY, key)
+    console.print("Stored in the Keychain.")

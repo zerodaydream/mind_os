@@ -1,6 +1,6 @@
 # ADR 0003: Phase 04 uses the plain LangChain agent adapter, not DeepAgents
 
-Status: Accepted (Phase 04)
+Status: Superseded by ADR 0007 (the runtime is now Deep Agents; the engine design below still stands)
 Date: 2026-11-22
 Versions: `langchain` 1.5.2, `langgraph` 1.2.24 (DeepAgents is not a dependency)
 

@@ -37,7 +37,7 @@ Maps to ARCHITECTURE §3, §4.1–4.3, §9.1 (checkpoints). First real agent wir
 - No framework fs/shell tools exposed. No subagent-spawns-subagent.
 
 ## Status (built 2026-11-22)
-Built and passing the gate. Decision record: `docs/adr/0003-langchain-runtime.md` (plain LangChain agent adapter; DeepAgents deferred).
+Built and passing the gate. Decision records: `docs/adr/0003-langchain-runtime.md` (stub tools and one engine bridge; its plain-LangChain runtime choice is superseded by `docs/adr/0007-deep-agents-runtime-and-langsmith-tracing.md`, which moved the runtime to Deep Agents).
 
 Done:
 - **Engine** (`tools/`): `ToolSpec` registry (duplicate or malformed names fail startup, grants naming unknown tools fail startup); `ToolExecutionEngine.execute` runs lookup, per-agent grant, run budget, validation, risk, policy, execute (timeout, jittered retry for read tools only), normalize, audit. Every refusal is a structured result the model can read. `ReadOnlyPolicy` allows R0 and denies the rest (fail closed until Phase 05).
@@ -55,3 +55,11 @@ Not done, with owner:
 - **`tool_executions` table, approvals, resume, startup reconciliation**: Phase 05. `AgentRuntime.resume` raises until then.
 - **Google Calendar adapter and keychain credentials**: Phase 06. `ask_user` and `search_tools`: later phases.
 - **Context percentage and per-model pricing in the status line**: `UsageUpdated.context_pct` is unset; one price pair applies to all roles.
+
+## Update 2026-11-25 (ADR 0007)
+The runtime moved from `create_agent` to `deepagents.create_deep_agent`. The engine, stub tools,
+bridge, allowlist, and every test in this phase are unchanged and pass on the new harness. Our
+`_repair_thread` was deleted: Deep Agents' `PatchToolCallsMiddleware` does it. LangSmith tracing was
+added behind a `Tracing` port (off by default, redacted, one thread per conversation).
+Not verified: a live Gemini run through the Deep Agents harness (its summarization middleware is on
+by default), and a live LangSmith trace.

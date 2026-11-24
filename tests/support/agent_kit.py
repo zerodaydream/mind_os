@@ -98,6 +98,7 @@ def make_kit(
     policy: Any = None,
     broker: Any = None,
     executions: Any = None,
+    tracing: Any = None,
 ) -> Kit:
     models = FakeModels(orchestrator, subagent or ScriptedChatModel(script=[]))
     audit, artifacts, usage = (
@@ -126,5 +127,6 @@ def make_kit(
         },
         broker=broker,
         executions=executions,
+        tracing=tracing,
     )
     return Kit(runtime, models, audit, artifacts, usage, calendar, saver)

@@ -10,6 +10,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from opsagent.domain import (
+    BoundState,
     EventEmit,
     Evidence,
     Principal,
@@ -51,6 +52,7 @@ class ToolContext:
 Handler = Callable[[Any, ToolContext], Awaitable[Any]]
 Classifier = Callable[[Any], RiskClass]
 EvidenceFn = Callable[[Any], Iterable[Evidence]]
+BindState = Callable[[Any], Awaitable[BoundState]]
 
 
 @dataclass(frozen=True)
@@ -73,6 +75,10 @@ class ToolSpec:
     taint_source: TaintSource | None = None  # what taints a run; default TOOL_OUTPUT if untrusted
     max_result_chars: int = 6000
     evidence: EvidenceFn | None = None
+    # Resolves what the arguments point at and fingerprints its state (a file's real path and
+    # content hash). The approval binds to it; if it drifts before execution, the approval is void.
+    # A handler must still re-check at the moment it acts.
+    bind_state: BindState | None = None
     namespace: str = field(init=False)
 
     def __post_init__(self) -> None:

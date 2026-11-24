@@ -147,6 +147,8 @@ class MemoryApprovalRepo:
         thread_id: str | None = None,
         conversation_id: str | None = None,
         tool_call_id: str | None = None,
+        agent: str | None = None,
+        deferred: bool = False,
     ) -> bool:
         if any(r.idempotency_key == idempotency_key for r in self.records.values()):
             return False
@@ -168,6 +170,8 @@ class MemoryApprovalRepo:
             thread_id=thread_id,
             conversation_id=conversation_id,
             tool_call_id=tool_call_id,
+            agent=agent,
+            deferred=deferred,
         )
         return True
 

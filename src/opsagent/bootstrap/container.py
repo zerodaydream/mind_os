@@ -7,9 +7,12 @@ from typing import Any
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 
-from opsagent.agents import RunLimits, UnavailableRuntime, build_runtime
+from opsagent import __version__
+from opsagent.agents import LangChainRuntime, RunLimits, UnavailableRuntime, build_runtime
 from opsagent.application import Application, ApprovalBroker, EventBus
+from opsagent.bootstrap.credentials import ChainedCredentials
 from opsagent.domain import (
+    LANGSMITH_API_KEY,
     AgentRuntime,
     ApprovalBrokerPort,
     AuditSink,
@@ -18,6 +21,7 @@ from opsagent.domain import (
     LLMProvider,
     ModelRole,
     SessionMode,
+    Tracing,
 )
 from opsagent.infra import (
     Settings,
@@ -26,8 +30,10 @@ from opsagent.infra import (
     new_id,
     resolve_timezone,
 )
+from opsagent.integrations.auth import KeychainCredentialProvider, KeychainSecretStore
 from opsagent.integrations.calendar import FixtureCalendar, sample_events
 from opsagent.integrations.llm import GeminiProvider
+from opsagent.integrations.tracing import LangSmithTracing, TracingConfig
 from opsagent.persistence import (
     ApprovalRepository,
     ArtifactRepository,
@@ -50,6 +56,27 @@ class Container:
     broker: ApprovalBrokerPort | None = None
     executions: ExecutionLog | None = None
     audit: AuditSink | None = None
+    tracing: Tracing | None = None
+
+
+def build_tracing(settings: Settings, credentials: CredentialProvider) -> LangSmithTracing:
+    """Tracing from our settings only. The Keychain key wins over the settings value."""
+    fallback = settings.langsmith_api_key
+    key = credentials.get(LANGSMITH_API_KEY) or (fallback.get_secret_value() if fallback else None)
+    return LangSmithTracing(
+        TracingConfig(
+            enabled=settings.langsmith_tracing,
+            api_key=key,
+            project=settings.langsmith_project,
+            agent_id=settings.langsmith_agent_id,
+            environment=settings.langsmith_environment,
+            endpoint=settings.langsmith_endpoint,
+            workspace_id=settings.langsmith_workspace_id,
+            hide_io=settings.langsmith_hide_io,
+            sampling_rate=settings.langsmith_sampling_rate,
+            version=__version__,
+        )
+    )
 
 
 def build_container(
@@ -64,7 +91,10 @@ def build_container(
     Pass `runtime` to substitute a fake. Without one, a real agent runtime is built when both
     `pool` and `checkpointer` are given; otherwise runs fail with a clear message.
     """
-    credentials = SettingsCredentialProvider(settings)
+    # The Keychain wins; the settings value is a development fallback.
+    credentials = ChainedCredentials(
+        KeychainCredentialProvider(KeychainSecretStore()), SettingsCredentialProvider(settings)
+    )
     clock = SystemClock()
     llm = GeminiProvider(
         models=settings.models(),
@@ -75,6 +105,7 @@ def build_container(
     broker: ApprovalBrokerPort | None = None
     executions: ExecutionLog | None = None
     audit: AuditSink | None = None
+    tracing = build_tracing(settings, credentials)
     mode = SessionMode()  # shared: the UI sets it, the policy engine enforces it
     if runtime is None and pool is not None and checkpointer is not None:
         tz = resolve_timezone(settings.timezone)
@@ -105,6 +136,7 @@ def build_container(
             clock=clock,
             new_id=new_id,
             efforts={role: settings.reasoning_for(role) for role in ModelRole},
+            tracing=tracing,
             broker=broker,
             executions=executions,
         )
@@ -114,6 +146,7 @@ def build_container(
         bus=bus,
         new_id=new_id,
         broker=broker,
+        executor=runtime if isinstance(runtime, LangChainRuntime) else None,
         mode=mode,
     )
     return Container(
@@ -125,4 +158,5 @@ def build_container(
         broker=broker,
         executions=executions,
         audit=audit,
+        tracing=tracing,
     )

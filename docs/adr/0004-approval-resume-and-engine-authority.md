@@ -37,7 +37,7 @@ and that an interrupt raised inside a subagent is swallowed as a failed delegati
 - **Taint is set by code.** The engine marks a run after a tool with untrusted output returns, and the
   approval row keeps the flag so a resumed run regains it.
 
-## Open decision: approvals raised inside a subagent
+## Open decision: approvals raised inside a subagent (resolved by ADR 0005: deferred approvals)
 A subagent has no checkpointer (ADR 0003), so it cannot pause. Until this is decided, a call that needs
 approval from a subagent **fails closed**: `approval_unavailable`, no approval row, and the subagent
 reports it. Architecture 3.2 expects `Delegating -> AwaitingApproval`; this does not deliver it.
@@ -46,7 +46,7 @@ Options: (a) let subagent graphs inherit the checkpointer, let the interrupt pro
 `needs_input` with `pending_approvals`, and have the orchestrator execute the approved call itself.
 This must be decided before the first subagent tool with a side effect (Mail send, Phase 06+).
 
-## Not yet in the payload hash
+## Not yet in the payload hash (resolved by ADR 0005: `BoundState`)
 Architecture 5.4 also hashes `resolved_targets` and `base_state_hashes`. No tool has either yet, so the
 hash covers tool, version, principal, and normalized arguments. Add both with the first tool that needs
 them (file edits, mail send); the edit flow must recompute them through the engine.

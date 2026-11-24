@@ -154,7 +154,7 @@ Cross-module contracts are **typed**: Pydantic v2 models for commands, events, t
 
 ### 3.0 Agent runtime port
 
-DeepAgents is pre-1.0 and changes quickly. The orchestrator and subagents run behind a domain port, `AgentRuntime` (`start(run)`, `resume(thread_id, decision)`, `cancel(run_id)`, event stream out). DeepAgents/LangGraph is one adapter in `agents/`; a plain LangGraph/LangChain agent is the fallback adapter. Nothing outside `agents/` imports framework types. Whether DeepAgents' built-in filesystem/shell tools can be fully removed is decided by the Phase 0 spike (§17.3); if not, DeepAgents is dropped.
+Deep Agents is pre-1.0 and changes quickly, so its version is pinned. The orchestrator and subagents are built with `deepagents.create_deep_agent` and run behind a domain port, `AgentRuntime` (`start(run)`, `resume(thread_id, decision)`, `cancel(run_id)`, event stream out). Deep Agents on LangGraph is the adapter in `agents/`. Nothing outside `agents/` imports framework types. Its harness (summarization, dangling-tool-call repair, prompt caching) is used; its filesystem, shell, and `task` tools are not: models see only our stub tools, the engine runs every call, and a test asserts the visible set equals the allowlist on every upgrade (ADR 0001, 0007).
 
 ### 3.1 Responsibilities
 
@@ -359,7 +359,7 @@ Host-side Execution   (adapters run in the host process with the host's credenti
 - The model has **no tool** that reads, writes, or relaxes policy. Policy changes happen only through user-initiated UI/CLI actions (`ops policy ...`), each audited.
 - The engine can only **escalate** relative to config: *taint escalation* (§14.4) and the risk classifier may raise the requirement; nothing at runtime lowers it.
 - Per-tool "always allow" grants are user-created, scoped (tool + constraints such as recipient domain or path root), optionally expiring, and revocable.
-- Enforcement is **in the engine** (stage 7), not only in the agent framework. DeepAgents' `interrupt_on` (including conditional predicates) is used as the *pause/resume transport* for the TUI flow; the engine independently refuses to execute any `REQUIRE_APPROVAL` call that lacks a valid, unconsumed approval. A misconfigured graph therefore fails closed.
+- Enforcement is **in the engine** (stage 7), not only in the agent framework. LangGraph's `interrupt()`, raised from our tool bridge, is the *pause/resume transport* for the TUI flow; the engine independently refuses to execute any `REQUIRE_APPROVAL` call that lacks a valid, unconsumed approval. A misconfigured graph therefore fails closed.
 
 ### 5.3 State machine
 
@@ -859,7 +859,7 @@ Each run tracks a `taint` set: `{external_email, external_doc, web, mcp, ...}`, 
 |---|---|
 | Structured logging | `structlog` JSON to file (rotating) and optional stderr in debug. TUI never prints logs to the terminal surface. |
 | Correlation IDs | `session_id`, `conversation_id`, `thread_id`, `run_id`, `step_id`, `subagent_id`, `tool_call_id`, `approval_id`, `job_id`, `request_id`; propagated via `contextvars` and included in every log/audit/trace record. |
-| Tracing | OpenTelemetry-compatible spans around LLM calls, subagent runs, tool pipeline stages, DB and HTTP calls; exporter optional (local file by default). LangSmith or similar is optional and off by default (privacy). |
+| Tracing | LangSmith, behind the `Tracing` port. Off by default; only `OPS_LANGSMITH_TRACING` turns it on (never the shell environment). Inputs and outputs are redacted before send, or hidden entirely. One trace per run with `thread_id` on the orchestrator and every subagent run; routed to an agent address or a project. Flushed on exit (ADR 0007). Spans for DB and HTTP calls are future work. |
 | Metrics | Tool latency/error rate/retry counts, approval rates (approved/edited/rejected/expired), time-to-approve, circuit-breaker state, job lag, index lag, retrieval latency, queue depth. |
 | Provider usage & cost | `provider_usage` per call: model, tokens in/out/cached/thinking, latency, estimated cost; per-run and daily budgets with soft/hard limits. |
 | Audit events | Append-only, typed (`approval.*`, `tool.executed`, `policy.changed`, `auth.*`, `memory.*`, `file.mutated`). Record who/what/why with hashes; reconstruct "what did the agent do on my behalf" from audit alone. |
@@ -936,6 +936,6 @@ Ordering rule: a phase may depend only on earlier phases. (Jobs precede file ind
 - Google OAuth consent-screen publishing status effects on refresh-token lifetime, and Gmail restricted-scope verification requirements for the intended distribution.
 - macOS sandbox backend (container runtime vs. OS-level mechanism), converter toolset, FSEvents library, OCR engine.
 - Embedding model choice/dimensions and Gemini grounding vs. a dedicated web search API.
-- Whether DeepAgents' built-in filesystem/shell tools can be fully disabled in the pinned version (required by §14). **Resolved by Phase 0 spike:** assert the agent's effective tool list equals ours; if it cannot be made so, use the plain LangGraph adapter behind `AgentRuntime` (§3.0). Record as an ADR.
+- Whether DeepAgents' built-in filesystem/shell tools can be fully disabled in the pinned version (required by §14). *Update: yes, by allowlist (ADR 0001); Deep Agents adopted in ADR 0007; live Gemini run through the harness and summarization limits still unverified.* **Resolved by Phase 0 spike:** assert the agent's effective tool list equals ours; if it cannot be made so, use the plain LangGraph adapter behind `AgentRuntime` (§3.0). Record as an ADR.
 
 **Open decisions (each needs an ADR):** sandbox backend; HNSW vs IVFFlat; web search provider; whether a lighter embedded-store mode is worth supporting later for users unwilling to run PostgreSQL.

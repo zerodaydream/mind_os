@@ -32,6 +32,8 @@ from opsagent.domain import (
     ApprovalRecord,
     ArtifactStore,
     AuditSink,
+    AuthError,
+    BoundState,
     EditVerdict,
     EventEmit,
     Evidence,
@@ -41,12 +43,14 @@ from opsagent.domain import (
     PolicyEngine,
     Principal,
     RiskClass,
+    ScopeRequired,
     TaintLedger,
     TaintSource,
     ToolIdempotency,
     ToolInvocation,
     ToolResult,
     ToolStatus,
+    TransientAuthError,
     approval_idempotency_key,
     approval_payload_hash,
     bind,
@@ -166,7 +170,33 @@ class ToolExecutionEngine:
         decision = self._policy.decide(tool=tool, risk=risk, principal=principal, tainted=False)
         if decision is PolicyDecision.DENY:
             return EditVerdict(ok=False, reason="policy does not allow the edited call", risk=risk)
-        return EditVerdict(ok=True, risk=risk, normalized_args=_normalized(validated))
+        try:
+            bound = await self._bind(spec, validated)
+        except ToolError as exc:
+            return EditVerdict(ok=False, reason=redact_text(str(exc))[:_ERROR_CHARS], risk=risk)
+        return EditVerdict(ok=True, risk=risk, normalized_args=_normalized(validated), bound=bound)
+
+    @staticmethod
+    async def _bind(spec: ToolSpec, args: BaseModel) -> BoundState:
+        """The state an approval for these arguments is tied to. Empty for most tools."""
+        return await spec.bind_state(args) if spec.bind_state else BoundState()
+
+    async def run_approved(self, record: ApprovalRecord, emit: EventEmit) -> ToolResult:
+        """Run a deferred approval's call, as the agent that asked, on the engine's own checks.
+
+        The arguments come from the approval row. Verification and the atomic claim are the same
+        as for any approved call, so a double delivery or a drifted payload runs nothing.
+        """
+        inv = ToolInvocation(
+            tool=record.tool,
+            args=json.loads(record.args_json),
+            agent=record.agent or "",
+            tool_call_id=record.tool_call_id or "",
+            run_id=record.run_id,
+            principal=record.principal,
+            approval_id=record.id,
+        )
+        return await self.execute(inv, emit=emit)
 
     async def execute(
         self,
@@ -229,6 +259,8 @@ class ToolExecutionEngine:
                 )
             except ToolError as exc:
                 result = await fail("error", exc.code, redact_text(str(exc))[:_ERROR_CHARS])
+            except AuthError as exc:
+                result = await self._auth_failed(inv, ctx, fail, exc)
             except Exception:
                 log.exception("tool %s crashed", spec.name)  # details stay in the log
                 result = await fail(
@@ -253,6 +285,24 @@ class ToolExecutionEngine:
         if ok:
             self._taint_from(inv, spec)
         return result
+
+    async def _auth_failed(
+        self,
+        inv: ToolInvocation,
+        ctx: ToolContext,
+        fail: Callable[[ToolStatus, str, str], Awaitable[ToolResult]],
+        exc: AuthError,
+    ) -> ToolResult:
+        """An adapter could not get a token. Tell the user how to fix it; never retry."""
+        if not isinstance(exc, TransientAuthError):
+            scope_delta = exc.scope_delta if isinstance(exc, ScopeRequired) else ()
+            ctx.emit(
+                events.AuthRequired(
+                    run_id=inv.run_id, provider=exc.provider, scope_delta=scope_delta
+                )
+            )
+        advice = "Nothing was changed. Tell the user; do not retry."
+        return await fail("error", exc.code, f"{redact_text(str(exc))[:_ERROR_CHARS]} {advice}")
 
     async def _start_execution(self, inv: ToolInvocation, gate: _Gate) -> str | None:
         """Persist STARTED before a side effect runs (ARCHITECTURE 4.2 step 8). None: do not run."""
@@ -392,14 +442,6 @@ class ToolExecutionEngine:
     ) -> ToolResult:
         """Create (or find) the approval and return a pending_approval ToolResult."""
         inv, spec = call.inv, call.spec
-        if not inv.can_pause:
-            return await self._deny(
-                call,
-                "approval_unavailable",
-                f"'{spec.name}' needs the user's approval, which cannot be requested from here. "
-                "Nothing was executed. Report that this action needs approval.",
-                risk=risk,
-            )
         if self._broker is None:  # fail closed: no broker means no approval path
             return await self._deny(
                 call,
@@ -407,6 +449,12 @@ class ToolExecutionEngine:
                 f"Policy requires approval for '{spec.name}' (risk {risk.value}), "
                 "but no approval broker is configured. Nothing was executed.",
                 risk=risk,
+            )
+        try:
+            bound = await self._bind(spec, args)
+        except ToolError as exc:  # cannot say what the user would be approving: do not ask
+            return await self._deny(
+                call, exc.code, redact_text(str(exc))[:_ERROR_CHARS], risk=risk, status="error"
             )
         try:
             ticket = await self._broker.request(
@@ -418,6 +466,9 @@ class ToolExecutionEngine:
                 run_id=inv.run_id,
                 tool_call_id=inv.tool_call_id,
                 tainted=tainted,
+                bound=bound,
+                agent=inv.agent,
+                deferred=not inv.can_pause,
             )
         except Exception:
             log.exception("approval broker request failed for %s", spec.name)
@@ -435,13 +486,21 @@ class ToolExecutionEngine:
                 inv,
                 {"risk": risk.value, "approval_id": view.approval_id, "tainted": tainted},
             )
+        if view.deferred:  # the agent cannot wait: tell it so, and that the user now decides
+            content = (
+                f"[approval_queued:{view.approval_id}] '{spec.name}' needs the user's approval. "
+                "It was queued and nothing ran. Do not retry it or work around it; "
+                "stop and report it as awaiting approval."
+            )
+        else:
+            content = (
+                f"[approval_required:{view.approval_id}] Waiting for user to approve '{spec.name}'."
+            )
         return ToolResult(
             tool_call_id=inv.tool_call_id,
             tool=inv.tool,
             status="pending_approval",
-            content=(
-                f"[approval_required:{view.approval_id}] Waiting for user to approve '{spec.name}'."
-            ),
+            content=content,
             preview=f"pending approval for {spec.name}",
             error_code="approval_required",
             duration_ms=_elapsed_ms(call.started),
@@ -499,11 +558,16 @@ class ToolExecutionEngine:
         if isinstance(validated, str):
             return await self._invalidate(call, record, "invalid_arguments")
         args, risk = validated
+        try:
+            bound = await self._bind(spec, args)
+        except ToolError:
+            return await self._invalidate(call, record, "state_unavailable")
         live_hash = approval_payload_hash(
-            spec.name, spec.version, inv.principal.value, _normalized(args)
+            spec.name, spec.version, inv.principal.value, _normalized(args), bound
         )
         if live_hash != record.payload_hash:
-            return await self._invalidate(call, record, "payload_mismatch")
+            reason = "state_changed" if bound else "payload_mismatch"
+            return await self._invalidate(call, record, reason)
         if risk.rank > record.risk.rank:
             return await self._invalidate(call, record, "risk_raised")
         return args, risk

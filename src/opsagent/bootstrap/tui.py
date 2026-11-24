@@ -111,5 +111,7 @@ async def _run_live(settings: Settings) -> None:
                 await OpsApp(container.app, _info(settings, container)).run_async()
             finally:
                 await container.app.aclose()
+                if container.tracing is not None:
+                    container.tracing.flush()  # sent in the background; do not lose the last runs
     finally:
         await pool.close()

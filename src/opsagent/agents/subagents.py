@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from typing import Annotated, Any, Protocol
 from zoneinfo import ZoneInfo
 
-from langchain.agents import create_agent
+from deepagents import create_deep_agent
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.errors import GraphRecursionError
@@ -35,6 +35,7 @@ from opsagent.domain import (
     TaskBrief,
     ToolIdempotency,
     bind,
+    current,
     events,
     redact_text,
 )
@@ -122,7 +123,7 @@ class SubagentRunner:
         if name not in self._graphs:
             definition = self._defs[name]
             engine = self._engine
-            self._graphs[name] = create_agent(
+            self._graphs[name] = create_deep_agent(
                 self._models.chat(definition.role, self._efforts.get(definition.role)),
                 tools=stub_tools(engine, name),
                 middleware=[
@@ -131,7 +132,7 @@ class SubagentRunner:
                         hub=self._hub,
                         agent=name,
                         system_prompt=self._prompt_for(definition),
-                        can_pause=False,  # no checkpointer: a subagent cannot wait for a human
+                        can_pause=False,  # no checkpointer: its approvals are deferred, not awaited
                     )
                 ],
                 # False: never inherit the orchestrator's checkpointer when run inside a tool.
@@ -186,7 +187,15 @@ class SubagentRunner:
         try:
             out = await self.graph(definition.name).ainvoke(
                 {"messages": [HumanMessage(render_brief(brief))]},
-                {"recursion_limit": state.limits.recursion(state.limits.subagent_steps)},
+                {
+                    "recursion_limit": state.limits.recursion(state.limits.subagent_steps),
+                    "run_name": f"opsagent.subagent.{definition.name}",
+                    # LangSmith does not copy metadata to child runs: say which thread this is.
+                    "metadata": {
+                        "thread_id": current().get("thread_id"),
+                        "subagent": definition.name,
+                    },
+                },
             )
             messages = out["messages"]
         except GraphRecursionError:
@@ -215,7 +224,12 @@ class SubagentRunner:
             status = (
                 "partial"  # a tool failed and was not just a corrected typo; answer may be thin
             )
+        if status in ("success", "partial") and ledger.pending_approvals:
+            status = "needs_input"  # the user must decide before the work can finish
+            note = "Waiting for the user to approve: " + ", ".join(ledger.pending_approvals) + "."
         summary = redact_text(text or note)[:SUMMARY_CHARS]
+        if status == "needs_input":
+            summary = f"{note} {summary}".strip()
         if status == "partial" and note:
             summary = f"{note} {summary}".strip()
         return SubagentResult(
@@ -223,6 +237,7 @@ class SubagentRunner:
             summary=summary,
             evidence=tuple(ledger.evidence),
             artifacts=tuple(ledger.artifacts),
+            pending_approvals=tuple(ledger.pending_approvals),
             errors=tuple(ledger.errors),
         )
 

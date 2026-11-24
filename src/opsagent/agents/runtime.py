@@ -11,11 +11,12 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import AbstractContextManager, nullcontext
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from langchain.agents import create_agent
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from deepagents import create_deep_agent
+from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.errors import GraphRecursionError
 from langgraph.types import Command
@@ -29,11 +30,15 @@ from opsagent.agents.subagents import ChatModels, SubagentRunner
 from opsagent.agents.usage import UsageTracker
 from opsagent.domain import (
     AppEvent,
+    ApprovalRecord,
     Clock,
+    EventEmit,
     IdFactory,
     ModelRole,
     ReasoningEffort,
     RunSpec,
+    ToolResult,
+    Tracing,
     bind,
     events,
 )
@@ -43,7 +48,6 @@ from opsagent.tools import ToolExecutionEngine
 log = logging.getLogger(__name__)
 
 ORCHESTRATOR = "orchestrator"
-_INTERRUPTED = "Interrupted before this tool ran. The result is unknown; do not assume it worked."
 
 
 class LangChainRuntime:
@@ -61,6 +65,7 @@ class LangChainRuntime:
         tz: ZoneInfo,
         new_id: IdFactory,
         default_effort: ReasoningEffort,
+        tracing: Tracing | None = None,
     ) -> None:
         self._models = models
         self._engine = engine
@@ -73,6 +78,7 @@ class LangChainRuntime:
         self._tz = tz
         self._new_id = new_id
         self._default_effort = default_effort
+        self._tracing = tracing
         self._graphs: dict[ReasoningEffort, Any] = {}
 
     # ---- port ------------------------------------------------------------------------------
@@ -87,6 +93,10 @@ class LangChainRuntime:
     def resume(self, thread_id: str, decision: Decide) -> AsyncIterator[AppEvent]:
         return self._resume(thread_id, decision)
 
+    async def run_approved(self, record: ApprovalRecord, emit: EventEmit) -> ToolResult:
+        """Run a deferred approval (a subagent's) through the engine. No graph is involved."""
+        return await self._engine.run_approved(record, emit)
+
     async def _resume(self, thread_id: str, decision: Decide) -> AsyncIterator[AppEvent]:
         """Deliver a decision to the graph paused on this approval.
 
@@ -99,7 +109,7 @@ class LangChainRuntime:
         if found is None:
             log.info("no paused run is waiting on %s; nothing to resume", decision.approval_id)
             return
-        interrupt_id, payload = found
+        interrupt_id, payload, effort = found
         run_id = str(payload.get("run_id") or thread_id)
         ids = {
             "run_id": run_id,
@@ -110,20 +120,28 @@ class LangChainRuntime:
         async for event in self._stream(
             run_id,
             ids,
-            lambda state: self._drive_resume(thread_id, {interrupt_id: answer}, state),
+            lambda state: self._drive_resume(thread_id, {interrupt_id: answer}, effort, state),
         ):
             yield event
 
     async def _find_interrupt(
         self, thread_id: str, approval_id: str
-    ) -> tuple[str, dict[str, Any]] | None:
+    ) -> tuple[str, dict[str, Any], ReasoningEffort] | None:
+        """The interrupt waiting on this approval, and the effort its run started with."""
         snapshot = await self.graph().aget_state({"configurable": {"thread_id": thread_id}})
         for task in snapshot.tasks:
             for pending in task.interrupts:
                 value = pending.value
                 if isinstance(value, dict) and value.get("approval_id") == approval_id:
-                    return str(pending.id), value
+                    return str(pending.id), value, self._saved_effort(snapshot.metadata)
         return None
+
+    def _saved_effort(self, metadata: dict[str, Any] | None) -> ReasoningEffort:
+        """Effort is recorded in each checkpoint's metadata; a missing or unknown one is default."""
+        try:
+            return ReasoningEffort(str((metadata or {}).get("effort")))
+        except ValueError:
+            return self._default_effort
 
     async def cancel(self, run_id: str) -> None:
         state = self._hub.get(run_id)
@@ -136,7 +154,7 @@ class LangChainRuntime:
         level = effort or self._default_effort
         if level not in self._graphs:
             subagents = "\n".join(f"- {d.name}: {d.description}" for d in self._runner.definitions)
-            self._graphs[level] = create_agent(
+            self._graphs[level] = create_deep_agent(
                 self._models.chat(ModelRole.ORCHESTRATOR, level),
                 tools=stub_tools(self._engine, ORCHESTRATOR),
                 middleware=[
@@ -187,7 +205,7 @@ class LangChainRuntime:
     ) -> None:
         try:
             # The tool bridge finds the run through these IDs, so the runtime binds them itself.
-            with bind(**ids):
+            with bind(**ids), self._trace(ids):
                 async with asyncio.timeout(self._limits.deadline_s):
                     await drive(state)
         except TimeoutError:
@@ -201,6 +219,16 @@ class LangChainRuntime:
         finally:
             state.queue.put_nowait(DONE)
 
+    def _trace(self, ids: dict[str, Any]) -> AbstractContextManager[None]:
+        """One trace per run, tagged with its thread. A resume continues the same thread."""
+        if self._tracing is None:
+            return nullcontext()
+        return self._tracing.run(
+            run_id=str(ids["run_id"]),
+            thread_id=str(ids["thread_id"]),
+            conversation_id=ids.get("conversation_id"),
+        )
+
     @staticmethod
     def _stop(state: RunState, reason: str) -> None:
         """A cap was hit: end honestly with a partial result instead of failing."""
@@ -211,22 +239,28 @@ class LangChainRuntime:
     async def _drive(self, run: RunSpec, state: RunState) -> None:
         effort = run.effort or self._default_effort
         graph = self.graph(effort)
-        config = self._config(run.thread_id)
-        await self._repair_thread(graph, config)
+        config = self._config(run.thread_id, effort)
         await self._consume(
             graph, {"messages": [HumanMessage(run.user_text)]}, config, state, effort
         )
 
-    async def _drive_resume(self, thread_id: str, resume: dict[str, Any], state: RunState) -> None:
-        # The effort chosen for the original run is not checkpointed, so a resume uses the default.
-        effort = self._default_effort
+    async def _drive_resume(
+        self, thread_id: str, resume: dict[str, Any], effort: ReasoningEffort, state: RunState
+    ) -> None:
         await self._consume(
-            self.graph(effort), Command(resume=resume), self._config(thread_id), state, effort
+            self.graph(effort),
+            Command(resume=resume),
+            self._config(thread_id, effort),
+            state,
+            effort,
         )
 
-    def _config(self, thread_id: str) -> dict[str, Any]:
+    def _config(self, thread_id: str, effort: ReasoningEffort) -> dict[str, Any]:
         return {
             "configurable": {"thread_id": thread_id},
+            "run_name": "opsagent.orchestrator",
+            # Kept in the checkpoint (a resume reads the effort) and attached to the trace.
+            "metadata": {"effort": effort.value, "thread_id": thread_id},
             "recursion_limit": self._limits.recursion(self._limits.max_steps),
         }
 
@@ -293,32 +327,3 @@ class LangChainRuntime:
             usage=usage,
             effort=effort,
         )
-
-    @staticmethod
-    async def _repair_thread(graph: Any, config: dict[str, Any]) -> None:
-        """Answer tool calls left dangling by an earlier stop or cancel.
-
-        Providers reject a history that has a tool call without a response. After a step limit,
-        deadline, or Esc the last model message may still hold unanswered calls.
-        """
-        snapshot = await graph.aget_state(config)
-        messages = list(snapshot.values.get("messages", ())) if snapshot.values else []
-        for index in range(len(messages) - 1, -1, -1):
-            message = messages[index]
-            if isinstance(message, AIMessage) and message.tool_calls:
-                answered = {
-                    m.tool_call_id for m in messages[index + 1 :] if isinstance(m, ToolMessage)
-                }
-                dangling = [c for c in message.tool_calls if c["id"] not in answered]
-                if dangling:
-                    fixes = [
-                        ToolMessage(
-                            content=_INTERRUPTED,
-                            tool_call_id=c["id"] or "",
-                            name=c["name"],
-                            status="error",
-                        )
-                        for c in dangling
-                    ]
-                    await graph.aupdate_state(config, {"messages": fixes}, as_node="tools")
-                return

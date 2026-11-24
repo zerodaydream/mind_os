@@ -8,11 +8,12 @@ from datetime import timedelta
 from typing import Any
 
 from opsagent.application import Application, EventBus
-from opsagent.domain import Principal, RiskClass, bind
+from opsagent.domain import PolicyDecision, Principal, RiskClass, bind
 from opsagent.domain.commands import Decide, SubmitMessage
 from opsagent.infra import SystemClock, new_id
+from opsagent.tools.policy import PolicyConfig, ToolPolicy
 from tests.support.agent_kit import Kit
-from tests.support.scripted_model import reply, tool_call
+from tests.support.scripted_model import ScriptedChatModel, reply, tool_call
 from tests.support.world import World
 
 TODO_A = {"todos": [{"id": "1", "text": "first", "status": "pending"}]}
@@ -37,6 +38,14 @@ async def until(sub: Any, *types: str, seen: list[Any] | None = None) -> Any:
 async def settle() -> None:
     for _ in range(5):
         await asyncio.sleep(0.02)
+
+
+async def reaches(world: World, approval_id: str, state: str) -> None:
+    for _ in range(500):
+        if world.repo.records[approval_id].state == state:
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"{approval_id} never reached {state}")
 
 
 def one_call_kit(world: World, *tail: Any) -> Kit:
@@ -263,3 +272,85 @@ async def test_a_decision_for_a_run_that_was_never_paused_is_not_silently_swallo
     assert "not executed" in note.text
     assert world.repo.records[aid].state == "INVALIDATED"
     assert world.repo.records[aid].delivered is True
+
+
+# ---- deferred approvals: a subagent asked, so no graph waits (ADR 0005) -----------------------
+def deferred_kit(world: World) -> Kit:
+    search = tool_call(
+        "calendar.search_events", {"start": "2026-11-23", "end": "2026-11-23"}, "cs1"
+    )
+    return world.kit(
+        reply("go", calls=[tool_call("delegate", {"subagent": "calendar", "goal": "g"}, "d1")]),
+        reply("it is waiting for your approval"),
+        subagent=ScriptedChatModel(script=[reply("", calls=[search]), reply("queued")]),
+        config=PolicyConfig(
+            overrides=[ToolPolicy("calendar.search_events", PolicyDecision.REQUIRE_APPROVAL)]
+        ),
+    )
+
+
+def deferred_app(world: World, kit: Kit) -> Application:
+    return Application(
+        runtime=kit.runtime,
+        bus=EventBus(SystemClock()),
+        new_id=new_id,
+        broker=world.broker(),
+        executor=kit.runtime,
+    )
+
+
+async def test_a_deferred_approval_is_decided_after_the_run_has_finished() -> None:
+    world = World()
+    app = deferred_app(world, deferred_kit(world))
+    with app.bus.subscribe() as sub:
+        app.submit_message(SubmitMessage(text="go"))
+        seen: list[Any] = []
+        request = await asyncio.wait_for(until(sub, "approval.requested", seen=seen), 5)
+        await asyncio.wait_for(until(sub, "run.finished", seen=seen), 5)  # nobody waits on it
+        assert request.approval.deferred
+        assert app.decide(Decide(approval_id=request.approval.approval_id, decision="approve"))
+        after: list[Any] = []
+        done = await asyncio.wait_for(until(sub, "notification", seen=after), 5)
+        assert [e.type for e in after] == ["approval.resolved", "notification"]  # no 2nd finish
+        assert done.level == "info" and "done" in done.text
+        await reaches(world, request.approval.approval_id, "EXECUTED")
+    record = world.repo.records[request.approval.approval_id]
+    assert record.delivered and [t[2] for t in world.repo.transitions] == [
+        "APPROVED",
+        "CONSUMED",
+        "EXECUTED",
+    ]
+
+
+async def test_rejecting_a_deferred_approval_runs_nothing() -> None:
+    world = World()
+    app = deferred_app(world, deferred_kit(world))
+    with app.bus.subscribe() as sub:
+        app.submit_message(SubmitMessage(text="go"))
+        aid = (await asyncio.wait_for(until(sub, "approval.requested"), 5)).approval.approval_id
+        await asyncio.wait_for(until(sub, "run.finished"), 5)
+        app.decide(Decide(approval_id=aid, decision="reject"))
+        await asyncio.wait_for(until(sub, "approval.resolved"), 5)
+    await settle()
+    assert world.repo.records[aid].state == "REJECTED" and world.repo.records[aid].delivered
+
+
+async def test_a_deferred_approval_survives_a_restart_and_runs_once() -> None:
+    world = World()
+    first = deferred_app(world, deferred_kit(world))
+    with first.bus.subscribe() as sub:
+        first.submit_message(SubmitMessage(text="go"))
+        aid = (await asyncio.wait_for(until(sub, "approval.requested"), 5)).approval.approval_id
+        await asyncio.wait_for(until(sub, "run.finished"), 5)
+    await first.aclose()
+
+    second = deferred_app(world, deferred_kit(world))  # a new process, the same database
+    with second.bus.subscribe() as sub:
+        assert await second.recover() == 1
+        shown = await asyncio.wait_for(until(sub, "approval.requested"), 5)
+        assert shown.approval.approval_id == aid and shown.approval.deferred
+        assert second.decide(Decide(approval_id=aid, decision="approve"))
+        await reaches(world, aid, "EXECUTED")
+    await settle()
+    assert [t[2] for t in world.repo.transitions].count("CONSUMED") == 1
+    assert await deferred_app(world, deferred_kit(world)).recover() == 0  # settled: not shown again

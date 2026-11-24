@@ -4,13 +4,18 @@ import os
 import uuid
 from collections.abc import Iterator
 
+import keyring
 import psycopg
 import pytest
+from keyring.backends.null import Keyring as NullKeyring
 from psycopg import sql
 
 # Never inherit dev tracing or keys from the shell into tests.
 os.environ["LANGSMITH_TRACING"] = "false"
 os.environ["LANGCHAIN_TRACING_V2"] = "false"
+
+# Tests never touch the real Keychain: the null backend stores nothing and finds nothing.
+keyring.set_keyring(NullKeyring())
 
 ADMIN_URL = os.environ.get(
     "OPS_TEST_ADMIN_URL", "postgresql://opsagent:opsagent@localhost:5433/postgres"

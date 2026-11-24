@@ -29,7 +29,11 @@ class World:
         return ApprovalBroker(repo=self.repo, audit=self.audit, new_id=new_id, clock=self.clock)
 
     def kit(
-        self, *script: Any, subagent: ScriptedChatModel | None = None, config: Any = None
+        self,
+        *script: Any,
+        subagent: ScriptedChatModel | None = None,
+        config: Any = None,
+        tracing: Any = None,
     ) -> Kit:
         kit = make_kit(
             ScriptedChatModel(script=list(script)),
@@ -39,6 +43,7 @@ class World:
             audit=self.audit,
             saver=self.saver,
             executions=self.executions,
+            tracing=tracing,
         )
         self.saver = kit.saver
         return kit

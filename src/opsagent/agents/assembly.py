@@ -25,6 +25,7 @@ from opsagent.domain import (
     PolicyEngine,
     Pricing,
     ReasoningEffort,
+    Tracing,
     UsageSink,
 )
 from opsagent.tools import (
@@ -53,6 +54,7 @@ def build_runtime(
     clock: Clock,
     new_id: IdFactory,
     efforts: Mapping[ModelRole, ReasoningEffort],
+    tracing: Tracing | None = None,
     broker: ApprovalBrokerPort | None = None,
     executions: ExecutionLog | None = None,
 ) -> LangChainRuntime:
@@ -100,4 +102,5 @@ def build_runtime(
         tz=tz,
         new_id=new_id,
         default_effort=efforts.get(ModelRole.ORCHESTRATOR, ReasoningEffort.HIGH),
+        tracing=tracing,
     )

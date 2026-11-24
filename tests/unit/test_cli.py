@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import keyring
 import pytest
 from typer.testing import CliRunner
 
@@ -117,3 +118,17 @@ def test_resetting_an_override_that_does_not_exist_changes_and_audits_nothing(
     result = runner.invoke(app, ["policy", "reset", "mail.send_message"])
     assert result.exit_code == 0 and "No override found" in result.stdout
     assert audited == []
+
+
+def test_auth_requires_a_capability_and_rejects_unknown_ones() -> None:
+    bare = runner.invoke(app, ["auth", "google"])
+    assert bare.exit_code == 2 and "mail-send" in bare.stdout
+    unknown = runner.invoke(app, ["auth", "google", "-c", "mail-everything"])
+    assert unknown.exit_code == 2 and "unknown google capability" in unknown.stdout
+
+
+def test_auth_gemini_stores_the_key_in_the_keychain_and_never_echoes_it() -> None:
+    result = runner.invoke(app, ["auth", "gemini"], input="AIza-secret-key\n")
+    assert result.exit_code == 0 and "Stored" in result.stdout
+    assert "AIza-secret-key" not in result.stdout
+    assert keyring.get_password("opsagent", "gemini_api_key") is None  # the test keyring is null

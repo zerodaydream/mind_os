@@ -19,6 +19,7 @@ from opsagent.domain import (
     ApprovalRecord,
     ApprovalTicket,
     AuditSink,
+    BoundState,
     Clock,
     EditValidator,
     IdFactory,
@@ -92,15 +93,25 @@ class ApprovalBroker:
         run_id: str | None,
         tool_call_id: str,
         tainted: bool = False,
+        bound: BoundState | None = None,
+        agent: str | None = None,
+        deferred: bool = False,
     ) -> ApprovalTicket:
-        """Create a PENDING approval, or return the one a replay of this call already made."""
-        ph = approval_payload_hash(tool, tool_version, principal.value, args)
-        idem = approval_idempotency_key(run_id, tool_call_id, ph)
+        """Create a PENDING approval, or return the one a replay of this call already made.
+
+        The key names the call by its arguments alone; the stored hash also covers `bound`.
+        """
+        bound = bound or BoundState()
+        ph = approval_payload_hash(tool, tool_version, principal.value, args, bound)
+        idem = approval_idempotency_key(
+            run_id, tool_call_id, approval_payload_hash(tool, tool_version, principal.value, args)
+        )
         ids = current()
         expires_at = self._clock.now() + APPROVAL_TTL[risk]
         approval_id = self._new_id("apr")
         summary = _SUMMARY.get(tool, tool.replace(".", " ").title())
-        preview = json.dumps(args, indent=2, default=str)[:_PREVIEW_CHARS]
+        shown = {**args, "_resolved_targets": bound.resolved_targets} if bound else args
+        preview = json.dumps(shown, indent=2, default=str)[:_PREVIEW_CHARS]
 
         created = await self._repo.create(
             approval_id=approval_id,
@@ -119,6 +130,8 @@ class ApprovalBroker:
             thread_id=ids.get("thread_id"),
             conversation_id=ids.get("conversation_id"),
             tool_call_id=tool_call_id,
+            agent=agent,
+            deferred=deferred,
         )
         if not created:
             existing = await self._repo.get_by_idempotency_key(idem)
@@ -142,6 +155,7 @@ class ApprovalBroker:
             payload_hash=ph,
             tainted=tainted,
             expires_at=expires_at,
+            deferred=deferred,
         )
         return ApprovalTicket(view=view, created=True)
 
@@ -222,7 +236,11 @@ class ApprovalBroker:
                 ),
             )
         new_ph = approval_payload_hash(
-            record.tool, record.tool_version, record.principal.value, verdict.normalized_args
+            record.tool,
+            record.tool_version,
+            record.principal.value,
+            verdict.normalized_args,
+            verdict.bound,
         )
         ok = await self._repo.transition(
             approval_id,
@@ -368,4 +386,5 @@ def view_of(record: ApprovalRecord) -> events.ApprovalView:
         payload_hash=record.payload_hash,
         tainted=record.tainted,
         expires_at=datetime.fromisoformat(record.expires_at) if record.expires_at else None,
+        deferred=record.deferred,
     )

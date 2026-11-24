@@ -27,5 +27,5 @@ ARCHITECTURE §14 forbids framework filesystem/shell tools. Open question (§17.
 ## Open
 - Verify the allowlist also covers subagents created through our own `delegate` (Phase 03).
 
-## Update (Phase 04)
-Superseded for the runtime choice by ADR 0003: Phase 04 ships the plain LangChain adapter. The allowlist invariant above is kept and tested there.
+## Update (Phase 04, then ADR 0007)
+Phase 04 shipped the plain LangChain adapter (ADR 0003). ADR 0007 returns to Deep Agents and keeps the allowlist invariant above, tested on the real harness. The plain adapter is no longer a fallback in the tree; reverting the pin and two call sites restores it.

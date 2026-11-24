@@ -10,9 +10,12 @@ from opsagent.domain import (
     ApprovalMode,
     PolicyDecision,
     Principal,
+    ReauthRequired,
     RiskClass,
+    ScopeRequired,
     SessionMode,
     TaintSource,
+    TransientAuthError,
     events,
 )
 from opsagent.tools.policy import PolicyConfig, PolicyEngine, ToolPolicy
@@ -59,16 +62,44 @@ async def test_a_replay_stays_on_its_approval_even_after_taint_is_forgotten() ->
     assert again.approval_id == first.approval_id and env.drafts == []
 
 
-async def test_fails_closed_without_a_broker_and_for_agents_that_cannot_pause() -> None:
+async def test_fails_closed_without_a_broker() -> None:
     bare = Env(with_broker=False)
     result = await bare.propose()
     assert result.status == "denied" and result.error_code == "policy_denied"
     assert bare.sent == []
 
+
+async def test_an_agent_that_cannot_pause_gets_a_deferred_approval_and_does_not_run() -> None:
     env = Env()
     result = await env.propose(can_pause=False)
-    assert result.status == "denied" and result.error_code == "approval_unavailable"
-    assert env.repo.records == {}  # no orphan approval nobody can answer
+    assert result.status == "pending_approval" and "approval_queued" in result.content
+    record = env.repo.records[result.approval_id or ""]
+    assert (record.deferred, record.agent, record.state) == (True, "main", "PENDING")
+    assert env.sent == []
+    requested = [e for e in env.events if isinstance(e, events.ApprovalRequested)]
+    assert [e.approval.deferred for e in requested] == [True]
+
+
+async def test_a_deferred_approval_runs_once_from_the_stored_row_and_never_twice() -> None:
+    env = Env()
+    pending = await env.propose(can_pause=False)
+    aid = pending.approval_id or ""
+    await env.approve(aid)
+    record = env.repo.records[aid]
+    first = await env.engine.run_approved(record, env.events.append)
+    again = await env.engine.run_approved(env.repo.records[aid], env.events.append)
+    assert first.status == "ok" and len(env.sent) == 1
+    assert again.error_code == "approval_already_used" and len(env.sent) == 1
+    assert env.state(aid) == "EXECUTED"
+
+
+async def test_a_deferred_edit_runs_the_edited_arguments() -> None:
+    env = Env()
+    aid = (await env.propose(can_pause=False)).approval_id or ""
+    edited = {"recipient": "boss@example.com", "body": "Edited"}
+    await env.broker.resolve(aid, decision="edit", edited_args=edited)
+    await env.engine.run_approved(env.repo.records[aid], env.events.append)
+    assert env.sent[0]["body"] == "Edited"
 
 
 # ---- approved execution ----------------------------------------------------------------------
@@ -109,6 +140,32 @@ async def test_mutating_the_payload_after_approval_prevents_execution() -> None:
     assert any(
         isinstance(e, events.ApprovalResolved) and e.outcome == "invalidated" for e in env.events
     )
+
+
+async def test_state_changed_after_approval_voids_it_and_nothing_runs() -> None:
+    env = Env()
+    env.disk["/work/a.md"] = "v1"
+    pending = await env.propose("files.edit", {"path": "/work/a.md"})
+    aid = pending.approval_id or ""
+    assert "_resolved_targets" in env.repo.records[aid].payload_preview
+    await env.approve(aid)
+    env.disk["/work/a.md"] = "v2"  # the file changed after the user looked
+    result = await env.run_approved(aid, "files.edit", {"path": "/work/a.md"})
+    assert result.error_code == "approval_invalidated"
+    assert env.edited == [] and env.state(aid) == "INVALIDATED"
+
+
+async def test_unchanged_state_runs_and_a_replay_survives_drift_on_the_same_approval() -> None:
+    env = Env()
+    env.disk["/work/a.md"] = "v1"
+    first = await env.propose("files.edit", {"path": "/work/a.md"})
+    env.disk["/work/a.md"] = "v2"  # resume re-runs the node: it must find the approval, not fork
+    again = await env.propose("files.edit", {"path": "/work/a.md"})
+    assert again.approval_id == first.approval_id and len(env.repo.records) == 1
+    env.disk["/work/a.md"] = "v1"
+    await env.approve(first.approval_id or "")
+    ran = await env.run_approved(first.approval_id or "", "files.edit", {"path": "/work/a.md"})
+    assert ran.status == "ok" and env.edited == ["/work/a.md"]
 
 
 async def test_an_edited_approval_runs_the_stored_edit_not_what_the_caller_sends() -> None:
@@ -321,3 +378,35 @@ async def test_r2_risk_comes_from_the_classifier_for_approvals() -> None:
     env = Env()
     result = await env.propose("files.edit", {"path": "/work/a.txt"})
     assert env.repo.records[result.approval_id or ""].risk is RiskClass.R2
+
+
+# ---- auth failures from an adapter (ARCHITECTURE 6.3) ----------------------------------------
+async def test_a_reauth_failure_tells_the_user_how_and_is_never_retried() -> None:
+    env = Env()
+    env.auth_error = ReauthRequired(
+        "google", "google needs you to sign in again. Run: ops auth google"
+    )
+    result = await env.propose("mail.fetch", {"q": "x"})
+    assert result.status == "error" and result.error_code == "auth_required"
+    assert "ops auth google" in result.content and "do not retry" in result.content
+    assert env.fetches == 1  # a read tool is retried on transient errors, not on auth
+    auth = [e for e in env.events if isinstance(e, events.AuthRequired)]
+    assert [(e.provider, e.scope_delta) for e in auth] == [("google", ())]
+
+
+async def test_a_missing_scope_carries_the_delta_in_the_event() -> None:
+    env = Env()
+    env.auth_error = ScopeRequired("google", "needs more permission", ("gmail.send",))
+    result = await env.propose("mail.fetch", {"q": "x"})
+    assert result.error_code == "needs_scope"
+    assert [e.scope_delta for e in env.events if isinstance(e, events.AuthRequired)] == [
+        ("gmail.send",)
+    ]
+
+
+async def test_an_unreachable_provider_is_reported_without_asking_for_a_sign_in() -> None:
+    env = Env()
+    env.auth_error = TransientAuthError("google", "google is unavailable; try again shortly.")
+    result = await env.propose("mail.fetch", {"q": "x"})
+    assert result.error_code == "auth_unavailable"
+    assert not [e for e in env.events if isinstance(e, events.AuthRequired)]

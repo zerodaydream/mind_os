@@ -65,12 +65,16 @@ Fixed in review:
 - Dead or stale code removed: `ReadOnlyPolicy` (moved to tests), the `TypeError` fallback around
   `policy.decide`, `find_started_executions`, `pending_for_run`, and `ops resume`'s ignored argument.
 
-Known gaps (not fixed, by decision):
-- **Approvals inside a subagent fail closed** instead of pausing (ADR 0004, open decision).
-- **`resolved_targets` / `base_state_hashes` are not in the payload hash yet** (ADR 0004).
-- A resume uses the default reasoning effort; the effort chosen for the original run is not stored.
+Closed on 2026-11-25 (ADR 0005):
+- **Approvals inside a subagent** are deferred: queued, the run finishes, and the application runs
+  the call as the asking agent once the user approves. The model is not resumed.
+- **`resolved_targets` / `base_state_hashes`** are in the payload hash (`BoundState`,
+  `ToolSpec.bind_state`). No tool uses them yet.
+- **Reasoning effort** of the original run is kept in the checkpoint and used on resume.
+
+Known gaps:
 - `approval_batches` exists but nothing uses it until Phase 13.
-- The migration `0004` must be applied (`uv run ops db migrate`) before the app will start.
+- Migrations `0004` and `0005` must be applied (`uv run ops db migrate`) before the app will start.
 
 Gate: `ruff`, `mypy`, 9 import-linter contracts, and `pytest` all pass, including the Postgres
 integration tests (20-way claim race, trigger parity for all 100 state pairs) and the real-graph

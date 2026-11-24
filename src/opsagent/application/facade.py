@@ -12,9 +12,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Coroutine
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 from opsagent.application.approval_broker import view_of
 from opsagent.application.event_bus import EventBus
@@ -24,6 +24,7 @@ from opsagent.domain import (
     AppEvent,
     ApprovalBrokerPort,
     ApprovalRecord,
+    ApprovedCallRunner,
     IdFactory,
     RunSpec,
     SessionMode,
@@ -53,17 +54,21 @@ class Application:
         bus: EventBus,
         new_id: IdFactory,
         broker: ApprovalBrokerPort | None = None,
+        executor: ApprovedCallRunner | None = None,
         mode: SessionMode | None = None,
     ) -> None:
         self._runtime = runtime
         self._bus = bus
         self._new_id = new_id
         self._broker = broker
+        self._executor = executor
         self._mode = mode or SessionMode()
         self._tasks: dict[str, list[asyncio.Task[None]]] = {}  # run_id -> live stretches
         self._locks: dict[str, asyncio.Lock] = {}  # run_id -> one stretch at a time
         self._awaiting: dict[str, _RunContext] = {}  # approval_id -> run awaiting the user
         self._undelivered: dict[str, set[str]] = {}  # run_id -> approvals the graph has not got
+        self._deferred: set[str] = set()  # approvals no graph waits on (a subagent asked)
+        self._deferred_tasks: set[asyncio.Task[None]] = set()
         self._threads: dict[str, str] = {}  # conversation_id -> thread_id (history lives there)
         self._closing = False  # shutting down: stop work, but keep approvals for the next start
 
@@ -100,6 +105,9 @@ class Application:
         ctx = self._awaiting.pop(command.approval_id, None)
         if ctx is None:
             return False
+        if command.approval_id in self._deferred:
+            self._spawn_deferred(ctx, self._settle_deferred(ctx, command))
+            return True
         self._spawn(ctx, lambda: self._decide(ctx, command))
         return True
 
@@ -134,7 +142,7 @@ class Application:
         (ARCHITECTURE 11.4, "terminal closed").
         """
         self._closing = True
-        tasks = [t for group in self._tasks.values() for t in group]
+        tasks = [t for group in self._tasks.values() for t in group] + list(self._deferred_tasks)
         for task in tasks:
             task.cancel()
         if tasks:
@@ -159,7 +167,9 @@ class Application:
             ctx = _context_of(record)
             if ctx is None:
                 continue
-            if record.state == "PENDING":
+            if record.deferred:
+                await self._recover_deferred(ctx, record)
+            elif record.state == "PENDING":
                 self._rehydrate(ctx, record)
             elif record.state == "EXPIRED":
                 await self._broker.mark_delivered(record.id)
@@ -178,6 +188,92 @@ class Application:
         return len(records) - abandoned
 
     # ---- approvals -------------------------------------------------------------------------
+    # A deferred approval belongs to a subagent, which cannot pause, so its run has already moved
+    # on. The user's decision is applied here and, if approved, the application runs the call
+    # through the engine itself. The model is not resumed: the user is told what happened.
+    def _spawn_deferred(self, ctx: _RunContext, work: Coroutine[Any, Any, None]) -> None:
+        task = asyncio.create_task(work, name=f"deferred-{ctx.run_id}")
+        self._deferred_tasks.add(task)
+        task.add_done_callback(self._deferred_tasks.discard)
+
+    async def _settle_deferred(self, ctx: _RunContext, command: Decide) -> None:
+        assert self._broker is not None
+        approval_id = command.approval_id
+        with bind(run_id=ctx.run_id, conversation_id=ctx.conversation_id, thread_id=ctx.thread_id):
+            resolution = await self._broker.resolve(
+                approval_id,
+                decision=command.decision,
+                edited_args=command.edited_args,
+                comment=command.comment,
+            )
+            if resolution.outcome == "refused":
+                self._awaiting[approval_id] = ctx
+                self._notify(ctx, "warning", f"Edit not accepted: {resolution.detail}.")
+                return
+            if resolution.outcome == "unavailable":
+                self._notify(ctx, "dim", f"That approval is {resolution.detail}.")
+                return
+            if resolution.outcome == "expired":
+                self._bus.publish(
+                    events.ApprovalExpired(run_id=ctx.run_id, approval_id=approval_id)
+                )
+                await self._broker.mark_delivered(approval_id)
+                return
+            self._bus.publish(
+                events.ApprovalResolved(
+                    run_id=ctx.run_id, approval_id=approval_id, outcome=resolution.outcome
+                )
+            )
+            record = await self._broker.get(approval_id)
+            if resolution.outcome == "rejected" or record is None:
+                await self._broker.mark_delivered(approval_id)
+                return
+            await self._run_deferred(ctx, record)
+
+    async def _run_deferred(self, ctx: _RunContext, record: ApprovalRecord) -> None:
+        """Execute an approved deferred call and tell the user the truth about the outcome."""
+        assert self._broker is not None
+        if self._executor is None:
+            self._notify(ctx, "warning", f"{record.summary}: approved, but nothing can run it.")
+            return
+        try:
+            result = await self._executor.run_approved(record, self._emit)
+        except asyncio.CancelledError:
+            raise  # shutting down: the claim (if any) stays for reconciliation to report
+        except Exception:
+            log.exception("deferred call %s failed", record.id)
+            self._notify(ctx, "warning", f"{record.summary}: failed unexpectedly.")
+        else:
+            if result.status == "ok":
+                self._notify(ctx, "info", f"{record.summary}: done. {result.preview}")
+            else:
+                self._notify(
+                    ctx,
+                    "warning",
+                    f"{record.summary}: not done ({result.error_code}). Nothing else ran.",
+                )
+        await self._broker.mark_delivered(record.id)
+
+    async def _recover_deferred(self, ctx: _RunContext, record: ApprovalRecord) -> None:
+        """After a restart: ask again if pending; finish an approved call the app never ran."""
+        assert self._broker is not None
+        if record.state == "PENDING":
+            self._awaiting[record.id] = ctx
+            self._deferred.add(record.id)
+            self._bus.publish(events.ApprovalRequested(run_id=ctx.run_id, approval=view_of(record)))
+        elif record.state in ("APPROVED", "APPROVED_EDITED"):
+            self._spawn_deferred(ctx, self._run_deferred(ctx, record))
+        else:  # decided and settled (or expired) while the app was closed: nothing is waiting
+            await self._broker.mark_delivered(record.id)
+
+    def _emit(self, event: AppEvent) -> None:
+        self._bus.publish(event)
+
+    def _notify(
+        self, ctx: _RunContext, level: Literal["info", "warning", "dim"], text: str
+    ) -> None:
+        self._bus.publish(events.Notification(run_id=ctx.run_id, level=level, text=text))
+
     async def _decide(self, ctx: _RunContext, command: Decide) -> AsyncIterator[AppEvent]:
         """Record the user's decision, say what happened, then deliver it to the paused graph."""
         if self._broker is None:  # demo runtime: it owns the whole flow
@@ -316,7 +412,10 @@ class Application:
             self._bus.publish(event)
             if isinstance(event, events.ApprovalRequested):
                 self._awaiting[event.approval.approval_id] = ctx
-                self._undelivered.setdefault(ctx.run_id, set()).add(event.approval.approval_id)
+                if event.approval.deferred:  # nothing is paused on it: the run may finish
+                    self._deferred.add(event.approval.approval_id)
+                else:
+                    self._undelivered.setdefault(ctx.run_id, set()).add(event.approval.approval_id)
             elif isinstance(event, TERMINAL_EVENTS):
                 return "terminal"
         return "suspended" if self._undelivered.get(ctx.run_id) else "done"

@@ -122,7 +122,8 @@ class EngineMiddleware(AgentMiddleware):
             )
 
         result = await self._engine.execute(invocation(), emit=emit, admit=admit)
-        if result.status == "pending_approval" and result.approval_id is not None:
+        # Only a graph with a checkpointer can pause. A subagent's approval is already deferred.
+        if self._can_pause and result.status == "pending_approval" and result.approval_id:
             decision = lg_interrupt(
                 {
                     "approval_id": result.approval_id,
@@ -155,7 +156,8 @@ def _finished(result: ToolResult, run_id: str | None) -> events.ToolCallFinished
         run_id=run_id,
         tool_call_id=result.tool_call_id,
         tool=result.tool,
-        status="rejected" if result.status == "denied" else result.status,
+        # "rejected" is the UI's "did not run": denied, or queued for the user (a subagent's call).
+        status="rejected" if result.status in ("denied", "pending_approval") else result.status,
         duration_ms=result.duration_ms,
         result_preview=result.preview,
         artifact_ref=result.artifact_ref,

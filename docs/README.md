@@ -44,13 +44,14 @@ Legend: ✅ implemented · 🚧 in progress · 📋 planned
 | TUI | Chat, streaming, tool/subagent blocks, status line (runs against a scripted fake agent: `uv run ops --demo`) | ✅ |
 | TUI | Approval panel (approve / edit / reject) | ✅ |
 | TUI | Diff view, transcript search, text selection | 📋 |
-| Agent | Orchestrator + todo planning | 📋 |
+| Agent | Orchestrator + todo planning (Deep Agents runtime) | 🚧 built and tested with scripted models; not yet run live |
 | Agent | Subagents: Mail, Calendar, Teams, Files, Convert, System | 📋 |
-| Tools | Registry, validation, risk classification, audit | 📋 |
+| Tools | Registry, validation, risk classification, audit | 🚧 built (Phase 04) |
+| Observability | LangSmith tracing (redacted, off by default, thread per conversation) | 🚧 built and tested against an in-memory recorder; no live trace yet |
 | Tools | Dynamic `search_tools` / `load_tools` | 📋 |
 | Approvals | Policy engine, payload hashing, resume after approval | 📋 |
-| Auth | Google OAuth (PKCE, Keychain) | 📋 |
-| Auth | Microsoft Graph OAuth (work/school accounts) | 📋 |
+| Auth | Google OAuth (PKCE, Keychain) | 🚧 token lifecycle built and tested offline; no live sign-in or adapter yet |
+| Auth | Microsoft Graph OAuth (work/school accounts) | 🚧 same as Google |
 | Mail / Calendar | Search, read, draft, send / list, create, update | 📋 |
 | Teams | Read, send | 📋 |
 | Files | Multi-root search: live Spotlight + ripgrep by default; per-root pg_trgm accelerator; pgvector for meaning | 📋 |
@@ -112,7 +113,8 @@ Selected direction (versions are resolved at implementation time and pinned in `
 | Concern | Choice |
 |---|---|
 | Language | Python |
-| Agents | LangChain `create_agent` on LangGraph, behind `AgentRuntime` (ADR 0003; DeepAgents deferred) |
+| Agents | `deepagents.create_deep_agent` on LangGraph, behind `AgentRuntime` (ADR 0007); built-in fs/shell/task tools are locked out |
+| Tracing | LangSmith, off by default, redacted, one thread per conversation (ADR 0007) |
 | LLM | Google Gemini 3.x family (model IDs in config) via LangChain integration, behind a provider port |
 | TUI | Textual |
 | Database | PostgreSQL + `pgvector` + `pg_trgm` (built-in FTS for memory only) |
@@ -221,6 +223,16 @@ OPS_TIMEZONE=                      # IANA name; defaults to system zone
 OPS_SANDBOX_ENABLED=false
 
 # --- Observability -----------------------------------------------------------
+# LangSmith tracing is off unless OPS_LANGSMITH_TRACING=true (the shell never enables it).
+# Key: `ops auth langsmith` (Keychain), or OPS_LANGSMITH_API_KEY here for development.
+OPS_LANGSMITH_TRACING=false
+OPS_LANGSMITH_PROJECT=opsagent
+# OPS_LANGSMITH_AGENT_ID=             # agent-based workspace: replaces the project
+# OPS_LANGSMITH_ENVIRONMENT=local     # local|development|staging|production
+# OPS_LANGSMITH_ENDPOINT=             # non-US region or self-hosted API URL
+# OPS_LANGSMITH_WORKSPACE_ID=         # when the key reaches several workspaces
+OPS_LANGSMITH_HIDE_IO=false           # true: send run structure only, no inputs or outputs
+OPS_LANGSMITH_SAMPLING_RATE=1.0
 OPS_LOG_LEVEL=INFO
 OPS_LOG_DIR=~/Library/Logs/opsagent
 ```
@@ -233,6 +245,7 @@ OPS_LOG_DIR=~/Library/Logs/opsagent
 | `OPS_ALLOWED_ROOTS`, `OPS_DENY_PATTERNS` | Filesystem boundary |
 | `OPS_MAX_*`, `OPS_RUN_*` | Execution limits |
 | `OPS_APPROVAL_*` | Approval timing (can tighten policy, never loosen it from the model side) |
+| `OPS_LANGSMITH_*` | Tracing: on/off, destination, redaction, sampling (ADR 0007) |
 
 Approval policy itself is edited with `ops policy ...` (user-only, audited), not through the agent.
 
@@ -240,6 +253,7 @@ Approval policy itself is edited with `ops policy ...` (user-only, audited), not
 
 | Integration | Setup outline | Docs |
 |---|---|---|
+| **LangSmith** (optional) | Create an API key in your org; run `ops auth langsmith`; set `OPS_LANGSMITH_TRACING=true`. Use `OPS_LANGSMITH_AGENT_ID` in an agent-based workspace, else a project. Check traces carry `thread_id` and no secrets before trusting it with real mail. | https://docs.langchain.com/langsmith |
 | **Gemini** | Create an API key; run `ops auth gemini`. Choose model IDs from the current model list and set `OPS_MODEL_*`. | https://ai.google.dev/gemini-api/docs |
 | **Google OAuth** | In Google Cloud: create a project, configure the consent screen, create an OAuth client of type **Desktop app**, copy the client ID/secret into `.env`. | https://developers.google.com/identity/protocols/oauth2/native-app |
 | **Gmail** | Enable the Gmail API; grant scopes incrementally with `ops auth google --capability mail-read` (then `mail-compose`, `mail-send` as needed). | https://developers.google.com/gmail/api |

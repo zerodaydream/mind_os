@@ -153,6 +153,7 @@ class ApprovalView(BaseModel):
     payload_hash: str
     tainted: bool = False
     expires_at: datetime | None = None
+    deferred: bool = False  # the run does not wait on this; the app runs the call on approval
 
 
 class ApprovalRequested(_Event):

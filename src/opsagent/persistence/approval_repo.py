@@ -50,6 +50,8 @@ class ApprovalRepository:
         thread_id: str | None = None,
         conversation_id: str | None = None,
         tool_call_id: str | None = None,
+        agent: str | None = None,
+        deferred: bool = False,
     ) -> bool:
         async with self._pool.connection() as conn:
             cur = await conn.execute(
@@ -57,8 +59,9 @@ class ApprovalRepository:
                 INSERT INTO approvals
                   (id, run_id, tool, tool_version, principal, risk, state,
                    payload_hash, idempotency_key, args_json, summary, payload_preview,
-                   tainted, expires_at, thread_id, conversation_id, tool_call_id)
-                VALUES (%s,%s,%s,%s,%s,%s,'PENDING',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                   tainted, expires_at, thread_id, conversation_id, tool_call_id,
+                   agent, deferred)
+                VALUES (%s,%s,%s,%s,%s,%s,'PENDING',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 ON CONFLICT (idempotency_key) DO NOTHING
                 RETURNING id
                 """,
@@ -79,6 +82,8 @@ class ApprovalRepository:
                     thread_id,
                     conversation_id,
                     tool_call_id,
+                    agent,
+                    deferred,
                 ),
             )
             return await cur.fetchone() is not None
@@ -200,4 +205,6 @@ def _row_to_record(row: dict[str, Any]) -> ApprovalRecord:
         tool_call_id=row.get("tool_call_id"),
         original_payload_hash=row.get("original_payload_hash"),
         delivered=row.get("delivered_at") is not None,
+        agent=row.get("agent"),
+        deferred=bool(row.get("deferred", False)),
     )

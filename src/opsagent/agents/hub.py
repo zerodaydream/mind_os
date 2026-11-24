@@ -28,9 +28,13 @@ class Ledger:
     evidence: list[Evidence] = field(default_factory=list)
     artifacts: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    pending_approvals: list[str] = field(default_factory=list)
 
     def add(self, result: ToolResult) -> None:
-        if result.status == "ok":
+        if result.status == "pending_approval":  # queued for the user: not a failure
+            if result.approval_id:
+                self.pending_approvals.append(result.approval_id)
+        elif result.status == "ok":
             for item in result.evidence:
                 if item not in self.evidence:
                     self.evidence.append(item)

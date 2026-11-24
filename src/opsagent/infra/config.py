@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 from pydantic import AliasChoices, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -39,6 +40,27 @@ class Settings(BaseSettings):
     gemini_api_key: SecretStr | None = Field(
         default=None, validation_alias=AliasChoices("GEMINI_API_KEY", "GOOGLE_API_KEY")
     )
+
+    # OAuth client identification. A Desktop client is public, so the Google "secret" is not secret;
+    # PKCE is always used. Tokens go to the Keychain (`ops auth`), never here.
+    google_client_id: str | None = None
+    google_client_secret: SecretStr | None = None
+    ms_client_id: str | None = None
+    ms_tenant: str = "organizations"  # work or school accounts; never personal ones
+
+    # LangSmith tracing. Off unless enabled here: the process environment never turns it on.
+    # The API key may instead come from the Keychain (`ops auth langsmith`).
+    langsmith_tracing: bool = False
+    langsmith_api_key: SecretStr | None = Field(
+        default=None, validation_alias=AliasChoices("OPS_LANGSMITH_API_KEY", "LANGSMITH_API_KEY")
+    )
+    langsmith_project: str = "opsagent"  # used when no agent ID is set
+    langsmith_agent_id: str | None = None  # agent-based workspaces: addresses traces by agent
+    langsmith_environment: Literal["local", "development", "staging", "production"] = "local"
+    langsmith_endpoint: str | None = None  # regional or self-hosted API URL
+    langsmith_workspace_id: str | None = None
+    langsmith_hide_io: bool = False  # send run structure only: no inputs, no outputs
+    langsmith_sampling_rate: float = Field(default=1.0, ge=0, le=1)
 
     # Agent limits
     max_parallel_subagents: int = Field(default=3, ge=1, le=16)

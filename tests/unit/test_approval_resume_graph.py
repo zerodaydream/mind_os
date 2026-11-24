@@ -12,7 +12,7 @@ from typing import Any
 
 from langchain_core.messages import ToolMessage
 
-from opsagent.domain import PolicyDecision, bind, events
+from opsagent.domain import PolicyDecision, ReasoningEffort, bind, events
 from opsagent.domain.commands import Decide
 from opsagent.tools.policy import PolicyConfig, ToolPolicy
 from tests.support.agent_kit import Kit
@@ -64,6 +64,16 @@ async def test_pause_then_approve_resumes_the_same_run_and_finishes() -> None:
     assert list(world.repo.records) == [aid]  # no orphan approval from the replay
     assert world.repo.records[aid].state == "EXECUTED"
     assert world.repo.records[aid].actor == "USER"
+
+
+async def test_a_resume_keeps_the_reasoning_effort_the_run_started_with() -> None:
+    world = World()
+    kit = world.kit(reply("go", calls=[tool_call("write_todos", TODO_A, "t1")]), reply("done"))
+    evts = await kit.collect(kit.spec("do it", thread="thr_1", effort=ReasoningEffort.LOW))
+    aid = requested(evts)[0]
+    out = await decide(world, kit, aid)
+    used = {e.reasoning_effort for e in out if isinstance(e, events.UsageUpdated)}
+    assert used == {ReasoningEffort.LOW}  # the kit's default is HIGH
 
 
 async def test_reject_gives_the_model_a_structured_not_executed_result() -> None:
@@ -166,8 +176,8 @@ async def test_two_approvals_in_one_turn_resume_one_at_a_time() -> None:
     assert len(world.repo.records) == 2
 
 
-async def test_a_gated_call_inside_a_subagent_fails_closed_without_an_orphan_approval() -> None:
-    """A subagent has no checkpointer, so it cannot pause. It must be told so, not hang."""
+async def test_a_gated_call_inside_a_subagent_is_deferred_and_the_run_finishes() -> None:
+    """A subagent cannot pause. Its approval is queued; the run moves on and tells the user."""
     world = World()
     config = PolicyConfig(
         overrides=[ToolPolicy("calendar.search_events", PolicyDecision.REQUIRE_APPROVAL)]
@@ -182,13 +192,21 @@ async def test_a_gated_call_inside_a_subagent_fails_closed_without_an_orphan_app
         config=config,
     )
     evts = await kit.collect(kit.spec("x", thread="thr_1"))
-    assert world.repo.records == {}  # nothing to approve, nothing orphaned
-    assert requested(evts) == []
-    assert "run.finished" in [e.type for e in evts] or any(
-        isinstance(e, events.AssistantMessageComplete) for e in evts
+    (record,) = world.repo.records.values()
+    assert (record.deferred, record.agent, record.state) == (True, "calendar", "PENDING")
+    assert requested(evts) == [record.id]
+    assert [e.approval.deferred for e in evts if isinstance(e, events.ApprovalRequested)] == [True]
+    # nothing is paused on it: the orchestrator went on and wrote its final answer
+    assert any(
+        isinstance(e, events.AssistantMessageComplete) and e.text == "reported" for e in evts
     )
-    results = [m.content for m in tool_messages(kit)]
-    assert any("approval_unavailable" in str(c) for c in results)
+    delegated = str([m.content for m in tool_messages(kit)])
+    assert "needs_input" in delegated and record.id in delegated
+    assert world.repo.records[record.id].state == "PENDING"  # the call did not run
+
+    await world.broker().resolve(record.id, decision="approve")
+    result = await kit.runtime.run_approved(world.repo.records[record.id], lambda _e: None)
+    assert result.status == "ok" and world.repo.records[record.id].state == "EXECUTED"
 
 
 async def test_resume_binds_the_run_so_audit_and_budget_see_it() -> None:

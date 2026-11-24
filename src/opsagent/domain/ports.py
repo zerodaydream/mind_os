@@ -6,6 +6,7 @@ Adapters implement these in `integrations/` or `agents/` and are wired in `boots
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Callable
+from contextlib import AbstractContextManager
 from datetime import datetime
 from typing import Any, Protocol, runtime_checkable
 
@@ -14,6 +15,7 @@ from pydantic import BaseModel, ConfigDict
 from opsagent.domain.approvals import (
     ApprovalRecord,
     ApprovalTicket,
+    BoundState,
     EditVerdict,
     Resolution,
 )
@@ -22,9 +24,11 @@ from opsagent.domain.events import AppEvent
 from opsagent.domain.llm import LLMRequest, LLMResult, ModelCapabilities, ModelRole, Usage
 from opsagent.domain.reasoning import ReasoningEffort
 from opsagent.domain.risk import PolicyDecision, Principal, RiskClass
+from opsagent.domain.tools import ToolResult
 
 # Credential names understood by `CredentialProvider.get`.
 GEMINI_API_KEY = "gemini_api_key"
+LANGSMITH_API_KEY = "langsmith_api_key"
 
 IdFactory = Callable[[str], str]
 """`new_id("run")` returns a sortable unique ID such as `run_01J...`."""
@@ -42,6 +46,22 @@ class CredentialProvider(Protocol):
     """Secrets come from here only. Values must never be logged or placed in events."""
 
     def get(self, name: str) -> str | None: ...
+
+
+class Tracing(Protocol):
+    """Records what an agent run did, for the developer. Implemented by the LangSmith adapter.
+
+    A run happens inside `run(...)`. Whatever is recorded is redacted first and may be turned off
+    entirely; the application behaves the same either way.
+    """
+
+    def run(
+        self, *, run_id: str, thread_id: str, conversation_id: str | None
+    ) -> AbstractContextManager[None]: ...
+
+    def flush(self) -> None:
+        """Send what is buffered. Call before the process exits or the last traces are lost."""
+        ...
 
 
 class RunSpec(BaseModel):
@@ -155,6 +175,8 @@ class ApprovalRepository(Protocol):
         thread_id: str | None,
         conversation_id: str | None,
         tool_call_id: str | None,
+        agent: str | None = None,
+        deferred: bool = False,
     ) -> bool:
         """Insert a PENDING row. False if the idempotency key already exists (a replay)."""
         ...
@@ -229,6 +251,16 @@ class EditValidator(Protocol):
     ) -> EditVerdict: ...
 
 
+class ApprovedCallRunner(Protocol):
+    """Runs a call the user approved, outside any paused graph (implemented by the tool engine).
+
+    For a deferred approval: the call takes its arguments from the approval row and goes through
+    the same verification and atomic claim as any approved call.
+    """
+
+    async def run_approved(self, record: ApprovalRecord, emit: EventEmit) -> ToolResult: ...
+
+
 class ApprovalBrokerPort(Protocol):
     """Creates, tracks, and resolves approval requests. Used by the engine and the facade."""
 
@@ -247,6 +279,9 @@ class ApprovalBrokerPort(Protocol):
         run_id: str | None,
         tool_call_id: str,
         tainted: bool,
+        bound: BoundState | None = None,
+        agent: str | None = None,
+        deferred: bool = False,
     ) -> ApprovalTicket: ...
 
     async def get(self, approval_id: str) -> ApprovalRecord | None: ...

@@ -19,12 +19,15 @@ Source is in `src/opsagent/`. Layers: `domain`, `application`, `agents`, `tools`
 - Dependencies point inward. `pyproject.toml` holds the import-linter contracts; keep them green.
 - `domain` is pure: no I/O and no provider, database, or framework imports.
 - Provider SDKs are imported only inside `integrations/`. Only `bootstrap/` wires adapters to ports.
+- Agents are built with `deepagents.create_deep_agent`. Models see stub tools only; the engine runs every call. Never register a `HarnessProfile`, a filesystem or shell backend, or tools outside the allowlist.
+- LangSmith tracing is configured through `Settings` only (`OPS_LANGSMITH_*`). Never read tracing flags from the process environment, and never send unredacted payloads.
 - Import from a package root (`opsagent.domain`), not from its internal modules.
 - No module-level mutable state. Pass dependencies in through constructors.
 - Never log, print, or emit secrets. Secrets come from a `CredentialProvider`.
 - Never load `.env` into the process environment. `load_settings()` parses it explicitly.
 - Migrations are forward-only raw SQL in `persistence/migrations/versions/`.
 - The `audit_events` table is append-only. Do not add code paths that update or delete it.
+- Don't default to the smallest fix. Fix the root cause, even if the change is bigger.
 
 ## Conventions
 

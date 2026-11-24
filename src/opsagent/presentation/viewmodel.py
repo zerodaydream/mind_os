@@ -338,7 +338,8 @@ def reduce(state: ViewState, event: AppEvent) -> ViewState:  # noqa: PLR0911, PL
 
 def _end_run(state: ViewState, run_id: str | None) -> ViewState:
     remaining = state.active_runs - {run_id or ""}
-    kept = tuple(a for a in state.approvals if a.run_id != run_id)
+    # A deferred approval outlives its run: nothing waits on it, and the user may still decide.
+    kept = tuple(a for a in state.approvals if a.run_id != run_id or a.view.deferred)
     return replace(
         state,
         active_runs=remaining,
