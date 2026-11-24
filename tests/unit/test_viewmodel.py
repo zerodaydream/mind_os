@@ -151,3 +151,18 @@ def test_approval_view_round_trip_in_state() -> None:
     )
     state = vm.reduce(vm.initial_state(INFO), events.ApprovalRequested(run_id="r", approval=view))
     assert state.approvals[0].view == view
+
+
+def test_a_replayed_approval_request_does_not_stack_a_second_dialog() -> None:
+    view = ApprovalView(
+        approval_id="apr_1",
+        tool="t.x",
+        risk=RiskClass.R3,
+        summary="s",
+        payload_preview="{}",
+        payload_hash="h",
+    )
+    state = vm.initial_state(INFO)
+    for _ in range(3):  # a resume, then a recovery after restart
+        state = vm.reduce(state, events.ApprovalRequested(run_id="r", approval=view))
+    assert [a.view.approval_id for a in state.approvals] == ["apr_1"]

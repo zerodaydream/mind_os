@@ -39,3 +39,17 @@ class ApprovalMode(StrEnum):
 
     DEFAULT = "default"
     PLAN = "plan"
+
+
+class SessionMode:
+    """The active session mode. One holder is shared by the UI facade and the policy engine."""
+
+    def __init__(self, mode: ApprovalMode = ApprovalMode.DEFAULT) -> None:
+        self._mode = mode
+
+    @property
+    def current(self) -> ApprovalMode:
+        return self._mode
+
+    def set(self, mode: ApprovalMode) -> None:
+        self._mode = mode

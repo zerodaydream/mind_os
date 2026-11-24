@@ -19,6 +19,7 @@ from opsagent.domain import (
     AuditSink,
     CalendarReader,
     Clock,
+    ExecutionLog,
     IdFactory,
     ModelRole,
     PolicyEngine,
@@ -53,6 +54,7 @@ def build_runtime(
     new_id: IdFactory,
     efforts: Mapping[ModelRole, ReasoningEffort],
     broker: ApprovalBrokerPort | None = None,
+    executions: ExecutionLog | None = None,
 ) -> LangChainRuntime:
     hub = RunHub()
     tracker = UsageTracker(sink=usage, pricing=pricing)
@@ -82,6 +84,8 @@ def build_runtime(
         audit=audit,
         artifacts=artifacts,
         broker=broker,
+        executions=executions,
+        new_id=new_id,
     )
     runner.bind_engine(engine)
     return LangChainRuntime(

@@ -7,8 +7,12 @@ normalization, and audit are ours, not the framework's. `awrap_model_call` also 
 the agent has no grant for, so the model-visible set always equals the allowlist (ADR 0001, 0003).
 
 Approval flow: when the engine returns `status="pending_approval"`, the bridge calls
-`langgraph.types.interrupt()` which pauses the graph at the checkpoint. On `resume()` the
-bridge reads the decision from the interrupt value and either rejects or re-executes.
+`langgraph.types.interrupt()`, which pauses the graph at its checkpoint. This is transport only.
+LangGraph re-runs this whole function from the top on resume, so everything before the interrupt
+is idempotent: the engine returns the same pending approval for a replay without announcing it
+again. After the interrupt returns, the bridge always goes back through the engine, which reads
+the approval's real state from the database. What the UI passed in the resume value is used only
+for the rejection message; it can never cause an execution.
 """
 
 from __future__ import annotations
@@ -61,12 +65,14 @@ class EngineMiddleware(AgentMiddleware):
         hub: RunHub,
         agent: str,
         system_prompt: Callable[[], str],
+        can_pause: bool,
     ) -> None:
         super().__init__()
         self._engine = engine
         self._hub = hub
         self._agent = agent
         self._system_prompt = system_prompt
+        self._can_pause = can_pause  # only a checkpointed graph can wait for a human
 
     async def awrap_model_call(
         self,
@@ -101,77 +107,44 @@ class EngineMiddleware(AgentMiddleware):
                 subagent_id=subagent_id,
             )
         )
-        result = await self._engine.execute(
-            ToolInvocation(
+        tool_call_id = call["id"] or ""
+        admit = state.budget.admit if state else None
+
+        def invocation(approval_id: str | None = None) -> ToolInvocation:
+            return ToolInvocation(
                 tool=call["name"],
                 args=args,
                 agent=self._agent,
-                tool_call_id=call["id"] or "",
+                tool_call_id=tool_call_id,
                 run_id=run_id,
-            ),
-            emit=emit,
-            admit=state.budget.admit if state else None,
-        )
-        if state and subagent_id:
-            state.ledger(subagent_id).add(result)
+                approval_id=approval_id,
+                can_pause=self._can_pause,
+            )
 
-        # Approval interrupt path: pause the graph and wait for a user decision.
+        result = await self._engine.execute(invocation(), emit=emit, admit=admit)
         if result.status == "pending_approval" and result.approval_id is not None:
-            # LangGraph checkpoints here; execution resumes when Command(resume=...) is sent.
-            decision: dict[str, Any] = lg_interrupt(
+            decision = lg_interrupt(
                 {
                     "approval_id": result.approval_id,
                     "tool": call["name"],
                     "run_id": run_id,
+                    "conversation_id": ids.get("conversation_id"),
+                    "thread_id": ids.get("thread_id"),
                 }
             )
-            # On resume, decision is the dict passed via Command(resume=...).
-            action = decision.get("action", "reject") if isinstance(decision, dict) else "reject"
-            approval_id = (
-                decision.get("approval_id", result.approval_id)
-                if isinstance(decision, dict)
-                else result.approval_id
-            )
-            if action == "reject":
-                comment = decision.get("comment", "") if isinstance(decision, dict) else ""
-                emit(_finished_rejected(result, run_id))
-                return ToolMessage(
-                    content=f"[rejected by user: {comment}]",
-                    tool_call_id=call["id"] or "",
-                    name=call["name"],
-                    status="error",
+            comment = decision.get("comment") if isinstance(decision, dict) else None
+            result = await self._engine.execute(invocation(result.approval_id), emit=emit)
+            if result.error_code == "approval_rejected":
+                reason = comment or "no reason given"
+                result = result.model_copy(
+                    update={"content": f"[rejected by user: {reason}; not executed]"}
                 )
-            # approved or edited: re-run the tool (edited_args may override)
-            edited_args: dict[str, Any] | None = (
-                decision.get("edited_args") if isinstance(decision, dict) else None
-            )
-            final_args = edited_args if edited_args is not None else args
-            result2 = await self._engine.execute(
-                ToolInvocation(
-                    tool=call["name"],
-                    args=final_args,
-                    agent=self._agent,
-                    tool_call_id=call["id"] or "",
-                    run_id=run_id,
-                    approval_id=approval_id,
-                ),
-                emit=emit,
-                admit=state.budget.admit if state else None,
-            )
-            if state and subagent_id:
-                state.ledger(subagent_id).add(result2)
-            emit(_finished(result2, run_id))
-            return ToolMessage(
-                content=result2.content,
-                tool_call_id=call["id"] or "",
-                name=call["name"],
-                status="success" if result2.status == "ok" else "error",
-            )
-
+        if state and subagent_id:
+            state.ledger(subagent_id).add(result)
         emit(_finished(result, run_id))
         return ToolMessage(
             content=result.content,
-            tool_call_id=call["id"] or "",
+            tool_call_id=tool_call_id,
             name=call["name"],
             status="success" if result.status == "ok" else "error",
         )
@@ -186,16 +159,4 @@ def _finished(result: ToolResult, run_id: str | None) -> events.ToolCallFinished
         duration_ms=result.duration_ms,
         result_preview=result.preview,
         artifact_ref=result.artifact_ref,
-    )
-
-
-def _finished_rejected(result: ToolResult, run_id: str | None) -> events.ToolCallFinished:
-    return events.ToolCallFinished(
-        run_id=run_id,
-        tool_call_id=result.tool_call_id,
-        tool=result.tool,
-        status="rejected",
-        duration_ms=result.duration_ms,
-        result_preview="rejected by user",
-        artifact_ref=None,
     )

@@ -209,7 +209,8 @@ async def test_approval_dialog_focuses_safe_option_and_approves() -> None:
         dialog = app.query_one(ApprovalDialog)
         assert dialog._selected == 2  # focus starts on "No"
         assert app.prompt.disabled
-        assert "waiting" in str(app.query_one("#spinner").render()).lower()
+        # the spinner repaints on a 0.1 s tick, so wait for it instead of racing it
+        await until(pilot, lambda: "waiting" in str(app.query_one("#spinner").render()).lower())
         await pilot.press("a")
         await until(pilot, lambda: not app.state.running)
         await pilot.pause(0.1)

@@ -17,7 +17,6 @@ from opsagent.domain import (
 )
 from opsagent.tools import (
     WRITE_TODOS,
-    ReadOnlyPolicy,
     ToolContext,
     ToolError,
     ToolExecutionEngine,
@@ -26,7 +25,8 @@ from opsagent.tools import (
     TransientToolError,
     read_artifact_spec,
 )
-from tests.support.fakes import MemoryArtifacts, MemoryAudit
+from tests.support.fakes import MemoryArtifacts, MemoryAudit, MemoryExecutionLog
+from tests.support.policies import ReadOnlyPolicy
 
 
 class EchoIn(BaseModel):
@@ -67,6 +67,7 @@ class Env:
             policy=policy or ReadOnlyPolicy(),
             audit=self.audit,
             artifacts=self.artifacts,
+            executions=MemoryExecutionLog(),
             sleep=sleep,
             jitter=lambda: 1.0,
         )
@@ -164,7 +165,9 @@ async def test_risk_comes_from_the_classifier_not_the_default() -> None:
 
 async def test_custom_policy_can_deny_r0() -> None:
     class Deny:
-        def decide(self, *, tool: str, risk: RiskClass, principal: Principal) -> PolicyDecision:
+        def decide(
+            self, *, tool: str, risk: RiskClass, principal: Principal, tainted: bool = False
+        ) -> PolicyDecision:
             return PolicyDecision.DENY
 
     result = await Env(spec(), policy=Deny()).run("demo.echo", {"text": "a"})
@@ -173,7 +176,9 @@ async def test_custom_policy_can_deny_r0() -> None:
 
 async def test_require_approval_fails_closed_in_this_phase() -> None:
     class Ask:
-        def decide(self, *, tool: str, risk: RiskClass, principal: Principal) -> PolicyDecision:
+        def decide(
+            self, *, tool: str, risk: RiskClass, principal: Principal, tainted: bool = False
+        ) -> PolicyDecision:
             return PolicyDecision.REQUIRE_APPROVAL
 
     assert (await Env(spec(), policy=Ask()).run("demo.echo", {"text": "a"})).status == "denied"

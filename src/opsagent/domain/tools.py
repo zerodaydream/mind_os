@@ -36,7 +36,10 @@ class ToolInvocation(_Frozen):
     agent: str  # which agent asks; grants are per agent
     tool_call_id: str
     run_id: str | None = None
-    approval_id: str | None = None
+    approval_id: str | None = None  # set when resuming a call the user approved
+    # Only an agent whose graph can pause (the orchestrator) may ask for an approval. A subagent
+    # cannot be paused mid-delegation yet, so for it a REQUIRE_APPROVAL call fails closed.
+    can_pause: bool = False
 
 
 ToolStatus = Literal["ok", "error", "denied", "pending_approval"]

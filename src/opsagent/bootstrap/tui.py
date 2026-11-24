@@ -10,17 +10,17 @@ import psycopg
 
 from opsagent import __version__
 from opsagent.agents.fake import FakeRuntime
-from opsagent.application.reconciliation import run_reconciliation
+from opsagent.application.reconciliation import reconcile_storage
 from opsagent.bootstrap.container import Container, build_container
 from opsagent.domain import ModelRole, ReasoningEffort
 from opsagent.infra import ConfigError, Settings, configure_logging
 from opsagent.persistence import (
-    ApprovalRepository,
     open_checkpointer,
     open_pool,
     schema_is_current,
 )
 from opsagent.presentation import OpsApp, SessionInfo
+from opsagent.tools import PolicyError, load_policy
 
 
 class StartupError(RuntimeError):
@@ -84,6 +84,13 @@ def _preflight(settings: Settings) -> None:
         ) from exc
     if not current:
         raise StartupError("The database schema is out of date. Run `ops db migrate`.")
+    policy_file = settings.config_dir / "policy.toml"
+    try:
+        load_policy(policy_file)
+    except PolicyError as exc:
+        raise StartupError(
+            f"{policy_file} is not valid: {exc}. Fix it, or remove it to use the defaults."
+        ) from exc
 
 
 async def _run_live(settings: Settings) -> None:
@@ -94,7 +101,12 @@ async def _run_live(settings: Settings) -> None:
     try:
         async with open_checkpointer(settings.database_url) as saver:
             container = build_container(settings, pool=pool, checkpointer=saver)
-            await run_reconciliation(ApprovalRepository(pool))
+            if container.broker and container.executions and container.audit:
+                await reconcile_storage(
+                    broker=container.broker,
+                    executions=container.executions,
+                    audit=container.audit,
+                )
             try:
                 await OpsApp(container.app, _info(settings, container)).run_async()
             finally:

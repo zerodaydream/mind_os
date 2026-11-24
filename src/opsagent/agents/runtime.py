@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -77,100 +77,53 @@ class LangChainRuntime:
 
     # ---- port ------------------------------------------------------------------------------
     def start(self, run: RunSpec) -> AsyncIterator[AppEvent]:
-        return self._stream(run)
+        ids = {
+            "run_id": run.run_id,
+            "conversation_id": run.conversation_id,
+            "thread_id": run.thread_id,
+        }
+        return self._stream(run.run_id, ids, lambda state: self._drive(run, state))
 
     def resume(self, thread_id: str, decision: Decide) -> AsyncIterator[AppEvent]:
-        return self._stream_resume(thread_id, decision)
+        return self._resume(thread_id, decision)
 
-    async def _stream_resume(
-        self, thread_id: str, decision: Decide
-    ) -> AsyncIterator[AppEvent]:
-        """Resume a graph that was interrupted waiting for an approval decision.
+    async def _resume(self, thread_id: str, decision: Decide) -> AsyncIterator[AppEvent]:
+        """Deliver a decision to the graph paused on this approval.
 
-        Uses the thread_id as the hub run_id for the duration of the resume so the bridge
-        can emit events. Events stream just like _stream.
+        The checkpoint is the source of truth for what is paused, so the run's IDs and the
+        interrupt to answer come from it, not from the caller. With several approvals pending
+        (parallel tool calls) LangGraph needs the interrupt ID. If nothing is paused on this
+        approval it was already delivered; that is a no-op, never an error.
         """
-        run_id = thread_id
-        state = self._hub.open(run_id, self._limits)
-        outcome_map: dict[str, Any] = {
-            "approve": "approved",
-            "edit": "edited",
-            "reject": "rejected",
+        found = await self._find_interrupt(thread_id, decision.approval_id)
+        if found is None:
+            log.info("no paused run is waiting on %s; nothing to resume", decision.approval_id)
+            return
+        interrupt_id, payload = found
+        run_id = str(payload.get("run_id") or thread_id)
+        ids = {
+            "run_id": run_id,
+            "conversation_id": payload.get("conversation_id"),
+            "thread_id": thread_id,
         }
-        outcome = outcome_map.get(decision.decision, "rejected")
-        state.emit(
-            events.ApprovalResolved(
-                run_id=run_id,
-                approval_id=decision.approval_id,
-                outcome=outcome,
-            )
-        )
-        resume_value: dict[str, Any] = {
-            "action": decision.decision,
-            "approval_id": decision.approval_id,
-            "edited_args": decision.edited_args,
-            "comment": decision.comment,
-        }
-        state.task = asyncio.create_task(
-            self._work_resume(thread_id, resume_value, state),
-            name=f"resume-{thread_id}",
-        )
-        try:
-            while True:
-                item = await state.queue.get()
-                if item is DONE:
-                    return
-                if isinstance(item, BaseException):
-                    raise item
-                yield item  # type: ignore[misc]
-        finally:
-            state.task.cancel()
-            await asyncio.gather(state.task, return_exceptions=True)
-            self._hub.close(run_id)
+        answer = {"approval_id": decision.approval_id, "comment": decision.comment}
+        async for event in self._stream(
+            run_id,
+            ids,
+            lambda state: self._drive_resume(thread_id, {interrupt_id: answer}, state),
+        ):
+            yield event
 
-    async def _work_resume(
-        self, thread_id: str, resume_value: dict[str, Any], state: RunState
-    ) -> None:
-        try:
-            async with asyncio.timeout(self._limits.deadline_s):
-                await self._drive_resume(thread_id, resume_value, state)
-        except TimeoutError:
-            self._stop(state, f"the {self._limits.deadline_s:g}s run deadline passed")
-        except GraphRecursionError:
-            self._stop(state, f"the step limit of {self._limits.max_steps} was reached")
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            state.queue.put_nowait(exc)
-        finally:
-            state.queue.put_nowait(DONE)
-
-    async def _drive_resume(
-        self, thread_id: str, resume_value: dict[str, Any], state: RunState
-    ) -> None:
-        effort = self._default_effort
-        graph = self.graph(effort)
-        config: dict[str, Any] = {
-            "configurable": {"thread_id": thread_id},
-            "recursion_limit": self._limits.recursion(self._limits.max_steps),
-        }
-        message_id = self._new_id("msg")
-        stream = graph.astream(
-            Command(resume=resume_value),
-            config,
-            stream_mode=["messages", "updates"],
-        )
-        async for mode, data in stream:
-            if mode == "messages":
-                self._on_chunk(state, message_id, *data)
-            elif mode == "updates":
-                for node, update in data.items():
-                    if node != "model":
-                        continue
-                    for message in update.get("messages", ()):
-                        if isinstance(message, AIMessage):
-                            await self._on_message(state, message_id, message, effort)
-                            message_id = self._new_id("msg")
+    async def _find_interrupt(
+        self, thread_id: str, approval_id: str
+    ) -> tuple[str, dict[str, Any]] | None:
+        snapshot = await self.graph().aget_state({"configurable": {"thread_id": thread_id}})
+        for task in snapshot.tasks:
+            for pending in task.interrupts:
+                value = pending.value
+                if isinstance(value, dict) and value.get("approval_id") == approval_id:
+                    return str(pending.id), value
+        return None
 
     async def cancel(self, run_id: str) -> None:
         state = self._hub.get(run_id)
@@ -194,6 +147,7 @@ class LangChainRuntime:
                         system_prompt=lambda: orchestrator_prompt(
                             now=self._clock.now(), tz=self._tz, subagents=subagents
                         ),
+                        can_pause=True,  # the orchestrator graph is checkpointed
                     )
                 ],
                 checkpointer=self._checkpointer,
@@ -202,9 +156,15 @@ class LangChainRuntime:
         return self._graphs[level]
 
     # ---- run -------------------------------------------------------------------------------
-    async def _stream(self, run: RunSpec) -> AsyncIterator[AppEvent]:
-        state = self._hub.open(run.run_id, self._limits)
-        state.task = asyncio.create_task(self._work(run, state), name=f"work-{run.run_id}")
+    async def _stream(
+        self,
+        run_id: str,
+        ids: dict[str, Any],
+        drive: Callable[[RunState], Awaitable[None]],
+    ) -> AsyncIterator[AppEvent]:
+        """Run `drive` as a worker task and yield its ordered events until it finishes."""
+        state = self._hub.open(run_id, self._limits)
+        state.task = asyncio.create_task(self._work(ids, state, drive), name=f"work-{run_id}")
         try:
             while True:
                 item = await state.queue.get()
@@ -216,16 +176,20 @@ class LangChainRuntime:
         finally:
             state.task.cancel()
             await asyncio.gather(state.task, return_exceptions=True)
-            self._hub.close(run.run_id)
+            self._hub.close(run_id)
+            self._engine.end_run(run_id)  # a resume re-reads taint from the approval record
 
-    async def _work(self, run: RunSpec, state: RunState) -> None:
+    async def _work(
+        self,
+        ids: dict[str, Any],
+        state: RunState,
+        drive: Callable[[RunState], Awaitable[None]],
+    ) -> None:
         try:
             # The tool bridge finds the run through these IDs, so the runtime binds them itself.
-            with bind(
-                run_id=run.run_id, conversation_id=run.conversation_id, thread_id=run.thread_id
-            ):
+            with bind(**ids):
                 async with asyncio.timeout(self._limits.deadline_s):
-                    await self._drive(run, state)
+                    await drive(state)
         except TimeoutError:
             self._stop(state, f"the {self._limits.deadline_s:g}s run deadline passed")
         except GraphRecursionError:
@@ -247,17 +211,35 @@ class LangChainRuntime:
     async def _drive(self, run: RunSpec, state: RunState) -> None:
         effort = run.effort or self._default_effort
         graph = self.graph(effort)
-        config = {
-            "configurable": {"thread_id": run.thread_id},
+        config = self._config(run.thread_id)
+        await self._repair_thread(graph, config)
+        await self._consume(
+            graph, {"messages": [HumanMessage(run.user_text)]}, config, state, effort
+        )
+
+    async def _drive_resume(self, thread_id: str, resume: dict[str, Any], state: RunState) -> None:
+        # The effort chosen for the original run is not checkpointed, so a resume uses the default.
+        effort = self._default_effort
+        await self._consume(
+            self.graph(effort), Command(resume=resume), self._config(thread_id), state, effort
+        )
+
+    def _config(self, thread_id: str) -> dict[str, Any]:
+        return {
+            "configurable": {"thread_id": thread_id},
             "recursion_limit": self._limits.recursion(self._limits.max_steps),
         }
-        await self._repair_thread(graph, config)
+
+    async def _consume(
+        self,
+        graph: Any,
+        graph_input: Any,
+        config: dict[str, Any],
+        state: RunState,
+        effort: ReasoningEffort,
+    ) -> None:
         message_id = self._new_id("msg")
-        stream = graph.astream(
-            {"messages": [HumanMessage(run.user_text)]},
-            config,
-            stream_mode=["messages", "updates"],
-        )
+        stream = graph.astream(graph_input, config, stream_mode=["messages", "updates"])
         async for mode, data in stream:
             if mode == "messages":
                 self._on_chunk(state, message_id, *data)

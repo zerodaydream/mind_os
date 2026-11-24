@@ -6,6 +6,9 @@ from opsagent.domain.approvals import (
     TERMINAL_STATES,
     ApprovalRecord,
     ApprovalState,
+    ApprovalTicket,
+    EditVerdict,
+    Resolution,
     canonical_payload,
 )
 from opsagent.domain.approvals import (
@@ -37,7 +40,9 @@ from opsagent.domain.ports import (
     AuditSink,
     Clock,
     CredentialProvider,
+    EditValidator,
     EventEmit,
+    ExecutionLog,
     IdFactory,
     LLMProvider,
     PolicyEngine,
@@ -46,8 +51,8 @@ from opsagent.domain.ports import (
 )
 from opsagent.domain.reasoning import ReasoningEffort, ResolvedEffort, resolve_effort
 from opsagent.domain.redaction import REDACTED, redact, redact_text
-from opsagent.domain.risk import ApprovalMode, PolicyDecision, Principal, RiskClass
-from opsagent.domain.taint import TaintSource
+from opsagent.domain.risk import ApprovalMode, PolicyDecision, Principal, RiskClass, SessionMode
+from opsagent.domain.taint import TaintLedger, TaintSource
 from opsagent.domain.tools import (
     Evidence,
     SubagentResult,
@@ -75,6 +80,7 @@ __all__ = [
     "ApprovalRecord",
     "ApprovalRepository",
     "ApprovalState",
+    "ApprovalTicket",
     "ArtifactSlice",
     "ArtifactStore",
     "AuditSink",
@@ -82,8 +88,11 @@ __all__ = [
     "CalendarReader",
     "Clock",
     "CredentialProvider",
+    "EditValidator",
+    "EditVerdict",
     "EventEmit",
     "Evidence",
+    "ExecutionLog",
     "IdFactory",
     "LLMProvider",
     "LLMRequest",
@@ -95,11 +104,14 @@ __all__ = [
     "Pricing",
     "Principal",
     "ReasoningEffort",
+    "Resolution",
     "ResolvedEffort",
     "RiskClass",
     "RunSpec",
+    "SessionMode",
     "SubagentResult",
     "SubagentStatus",
+    "TaintLedger",
     "TaintSource",
     "TaskBrief",
     "ToolIdempotency",

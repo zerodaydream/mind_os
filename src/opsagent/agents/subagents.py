@@ -131,6 +131,7 @@ class SubagentRunner:
                         hub=self._hub,
                         agent=name,
                         system_prompt=self._prompt_for(definition),
+                        can_pause=False,  # no checkpointer: a subagent cannot wait for a human
                     )
                 ],
                 # False: never inherit the orchestrator's checkpointer when run inside a tool.
@@ -270,6 +271,7 @@ def delegate_spec(runner: SubagentRunner, *, timeout_s: float) -> ToolSpec:
         handler=handler,
         # Phase 04 subagents are read-only. A side-effecting subagent must not be READ_ONLY.
         idempotency=ToolIdempotency.NON_IDEMPOTENT,
+        orchestration=True,
         timeout_s=timeout_s,
         untrusted_output=True,  # the summary is model text built from untrusted tool data
         max_result_chars=8000,

@@ -3,6 +3,7 @@
 from opsagent.persistence.approval_repo import ApprovalRepository
 from opsagent.persistence.audit import AuditRepository
 from opsagent.persistence.db import open_pool, sqlalchemy_url
+from opsagent.persistence.execution_repo import ExecutionRepository
 from opsagent.persistence.migrate import (
     current_revision,
     head_revision,
@@ -17,6 +18,7 @@ __all__ = [
     "ApprovalRepository",
     "ArtifactRepository",
     "AuditRepository",
+    "ExecutionRepository",
     "UsageRepository",
     "current_revision",
     "head_revision",

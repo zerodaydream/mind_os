@@ -1,8 +1,8 @@
-"""In-memory fakes for the audit, artifact, usage, and calendar ports."""
+"""In-memory fakes for the audit, artifact, usage, calendar, approval, and execution ports."""
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from opsagent.domain import (
@@ -102,13 +102,31 @@ class MemoryCalendar:
         return next((e for e in self.events if e.id == event_id), None)
 
 
-class MemoryApprovalRepo:
-    """In-memory implementation of ApprovalRepository for unit tests."""
+class ManualClock:
+    """A clock tests can move. Approval expiry is decided against it."""
 
-    def __init__(self) -> None:
+    def __init__(self, now: datetime | None = None) -> None:
+        self._now = now or datetime(2026, 11, 23, 12, 0, tzinfo=UTC)
+
+    def now(self) -> datetime:
+        return self._now
+
+    def advance(self, delta: timedelta) -> None:
+        self._now += delta
+
+
+class MemoryApprovalRepo:
+    """In-memory `ApprovalRepository` that behaves like the SQL one, including its guards.
+
+    It mirrors: the UNIQUE idempotency key, the legal-transition trigger, the expiry condition
+    inside the atomic UPDATE, `actor` kept when a later transition names none, immutable payloads
+    after a decision, and `original_payload_hash` set on the first edit.
+    """
+
+    def __init__(self, clock: ManualClock | None = None) -> None:
+        self.clock = clock or ManualClock()
         self.records: dict[str, ApprovalRecord] = {}
         self.transitions: list[tuple[str, str, str]] = []  # (id, from, to)
-        self.started_executions: list[tuple[str, str, str | None]] = []
 
     async def create(
         self,
@@ -126,7 +144,12 @@ class MemoryApprovalRepo:
         tainted: bool,
         expires_at: datetime,
         run_id: str | None,
-    ) -> None:
+        thread_id: str | None = None,
+        conversation_id: str | None = None,
+        tool_call_id: str | None = None,
+    ) -> bool:
+        if any(r.idempotency_key == idempotency_key for r in self.records.values()):
+            return False
         self.records[approval_id] = ApprovalRecord(
             id=approval_id,
             run_id=run_id,
@@ -142,6 +165,15 @@ class MemoryApprovalRepo:
             payload_preview=payload_preview,
             tainted=tainted,
             expires_at=expires_at.isoformat(),
+            thread_id=thread_id,
+            conversation_id=conversation_id,
+            tool_call_id=tool_call_id,
+        )
+        return True
+
+    def _expired(self, rec: ApprovalRecord) -> bool:
+        return bool(rec.expires_at) and datetime.fromisoformat(rec.expires_at or "") <= (
+            self.clock.now()
         )
 
     async def transition(
@@ -153,54 +185,107 @@ class MemoryApprovalRepo:
         actor: str | None = None,
         payload_hash: str | None = None,
         args_json: str | None = None,
+        require_unexpired: bool = False,
     ) -> bool:
         rec = self.records.get(approval_id)
         if rec is None or rec.state not in from_states:
             return False
+        if require_unexpired and self._expired(rec):
+            return False
         if to_state not in ALLOWED_TRANSITIONS[rec.state]:
             raise ValueError(f"invalid approval state transition: {rec.state} -> {to_state}")
+        if payload_hash is not None and to_state != "APPROVED_EDITED":
+            raise ValueError("approval payload is immutable after a decision")
         self.transitions.append((approval_id, rec.state, to_state))
-        self.records[approval_id] = ApprovalRecord(
-            id=rec.id,
-            run_id=rec.run_id,
-            tool=rec.tool,
-            tool_version=rec.tool_version,
-            principal=rec.principal,
-            risk=rec.risk,
-            state=to_state,  # type: ignore[arg-type]
-            payload_hash=payload_hash or rec.payload_hash,
-            idempotency_key=rec.idempotency_key,
-            args_json=args_json or rec.args_json,
-            summary=rec.summary,
-            payload_preview=rec.payload_preview,
-            tainted=rec.tainted,
-            expires_at=rec.expires_at,
-            actor=actor or rec.actor,
+        edited = payload_hash is not None
+        self.records[approval_id] = rec.model_copy(
+            update={
+                "state": to_state,
+                "payload_hash": payload_hash or rec.payload_hash,
+                "args_json": args_json or rec.args_json,
+                "actor": actor or rec.actor,
+                "original_payload_hash": (
+                    rec.original_payload_hash or rec.payload_hash
+                    if edited
+                    else rec.original_payload_hash
+                ),
+            }
         )
         return True
 
     async def get(self, approval_id: str) -> ApprovalRecord | None:
         return self.records.get(approval_id)
 
-    async def pending_for_run(self, run_id: str) -> list[ApprovalRecord]:
-        return [r for r in self.records.values() if r.run_id == run_id and r.state == "PENDING"]
+    async def get_by_idempotency_key(self, key: str) -> ApprovalRecord | None:
+        return next((r for r in self.records.values() if r.idempotency_key == key), None)
 
-    async def expire_stale(self) -> int:
-        count = 0
-        now_iso = datetime.now().isoformat()
-        for aid, rec in list(self.records.items()):
-            if (
-                rec.state in ("PENDING", "APPROVED", "APPROVED_EDITED")
-                and rec.expires_at
-                and rec.expires_at < now_iso
-            ):
-                await self.transition(
-                    aid,
-                    from_states=frozenset({"PENDING", "APPROVED", "APPROVED_EDITED"}),
-                    to_state="EXPIRED",
-                )
-                count += 1
-        return count
+    async def expire_stale(self) -> list[ApprovalRecord]:
+        stale = [
+            r
+            for r in self.records.values()
+            if r.state in ("PENDING", "APPROVED", "APPROVED_EDITED") and self._expired(r)
+        ]
+        for rec in stale:
+            await self.transition(rec.id, from_states=frozenset({rec.state}), to_state="EXPIRED")
+        return [self.records[r.id] for r in stale]
 
-    async def find_started_executions(self) -> list[tuple[str, str, str | None]]:
-        return list(self.started_executions)
+    async def abandon_consumed(self) -> list[ApprovalRecord]:
+        stuck = [r for r in self.records.values() if r.state == "CONSUMED"]
+        for rec in stuck:
+            await self.transition(
+                rec.id,
+                from_states=frozenset({"CONSUMED"}),
+                to_state="EXEC_FAILED",
+                actor="RECONCILER",
+            )
+        return [self.records[r.id] for r in stuck]
+
+    async def undelivered(self) -> list[ApprovalRecord]:
+        return [r for r in self.records.values() if not r.delivered and r.thread_id]
+
+    async def mark_delivered(self, approval_id: str) -> None:
+        rec = self.records.get(approval_id)
+        if rec is not None:
+            self.records[approval_id] = rec.model_copy(update={"delivered": True})
+
+
+class MemoryExecutionLog:
+    """In-memory `ExecutionLog` with the same unique-key rule as `tool_executions`."""
+
+    def __init__(self) -> None:
+        self.rows: dict[str, dict[str, Any]] = {}
+
+    async def start(
+        self,
+        *,
+        execution_id: str,
+        run_id: str | None,
+        tool: str,
+        agent: str,
+        principal: Principal,
+        risk: RiskClass,
+        idempotency_key: str,
+        args_hash: str,
+    ) -> bool:
+        if any(r["key"] == idempotency_key for r in self.rows.values()):
+            return False
+        self.rows[execution_id] = {
+            "tool": tool,
+            "run_id": run_id,
+            "key": idempotency_key,
+            "state": "STARTED",
+        }
+        return True
+
+    async def finish(self, execution_id: str, *, ok: bool) -> None:
+        row = self.rows.get(execution_id)
+        if row is not None and row["state"] == "STARTED":
+            row["state"] = "FINISHED" if ok else "FAILED"
+
+    async def abandon_started(self) -> list[tuple[str, str, str | None]]:
+        out = []
+        for eid, row in self.rows.items():
+            if row["state"] == "STARTED":
+                row["state"] = "UNKNOWN"
+                out.append((eid, row["tool"], row["run_id"]))
+        return out

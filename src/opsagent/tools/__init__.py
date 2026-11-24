@@ -4,7 +4,14 @@ from opsagent.tools.calendar import calendar_specs
 from opsagent.tools.core import WRITE_TODOS, read_artifact_spec
 from opsagent.tools.engine import ToolExecutionEngine
 from opsagent.tools.normalize import preview
-from opsagent.tools.policy import PolicyConfig, PolicyEngine, ReadOnlyPolicy, ToolPolicy
+from opsagent.tools.policy import (
+    PolicyConfig,
+    PolicyEngine,
+    PolicyError,
+    ToolPolicy,
+    load_policy,
+    save_policy,
+)
 from opsagent.tools.schema import model_schema
 from opsagent.tools.spec import (
     CORE_NAMESPACE,
@@ -20,7 +27,7 @@ __all__ = [
     "WRITE_TODOS",
     "PolicyConfig",
     "PolicyEngine",
-    "ReadOnlyPolicy",
+    "PolicyError",
     "ToolContext",
     "ToolError",
     "ToolExecutionEngine",
@@ -29,7 +36,9 @@ __all__ = [
     "ToolSpec",
     "TransientToolError",
     "calendar_specs",
+    "load_policy",
     "model_schema",
     "preview",
     "read_artifact_spec",
+    "save_policy",
 ]

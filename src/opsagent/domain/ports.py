@@ -11,9 +11,14 @@ from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict
 
-from opsagent.domain.approvals import ApprovalRecord
+from opsagent.domain.approvals import (
+    ApprovalRecord,
+    ApprovalTicket,
+    EditVerdict,
+    Resolution,
+)
 from opsagent.domain.commands import Decide
-from opsagent.domain.events import AppEvent, ApprovalView
+from opsagent.domain.events import AppEvent
 from opsagent.domain.llm import LLMRequest, LLMResult, ModelCapabilities, ModelRole, Usage
 from opsagent.domain.reasoning import ReasoningEffort
 from opsagent.domain.risk import PolicyDecision, Principal, RiskClass
@@ -147,7 +152,12 @@ class ApprovalRepository(Protocol):
         tainted: bool,
         expires_at: datetime,
         run_id: str | None,
-    ) -> None: ...
+        thread_id: str | None,
+        conversation_id: str | None,
+        tool_call_id: str | None,
+    ) -> bool:
+        """Insert a PENDING row. False if the idempotency key already exists (a replay)."""
+        ...
 
     async def transition(
         self,
@@ -158,25 +168,73 @@ class ApprovalRepository(Protocol):
         actor: str | None = None,
         payload_hash: str | None = None,
         args_json: str | None = None,
+        require_unexpired: bool = False,
     ) -> bool:
-        """Atomically transition state. Returns True if exactly one row was updated."""
+        """Atomically transition state. Returns True if exactly one row was updated.
+
+        `require_unexpired` adds `expires_at > now()` to the same statement. Granting and
+        consuming an approval must set it, so an expired row can never be used.
+        """
         ...
 
     async def get(self, approval_id: str) -> ApprovalRecord | None: ...
 
-    async def pending_for_run(self, run_id: str) -> list[ApprovalRecord]: ...
+    async def get_by_idempotency_key(self, key: str) -> ApprovalRecord | None: ...
 
-    async def expire_stale(self) -> int:
-        """Set PENDING+APPROVED+APPROVED_EDITED rows past expires_at to EXPIRED. Returns count."""
+    async def expire_stale(self) -> list[ApprovalRecord]:
+        """Set PENDING+APPROVED+APPROVED_EDITED rows past expires_at to EXPIRED; return them."""
         ...
 
-    async def find_started_executions(self) -> list[tuple[str, str, str | None]]:
-        """Find tool_executions left in STARTED state across restarts."""
+    async def abandon_consumed(self) -> list[ApprovalRecord]:
+        """CONSUMED -> EXEC_FAILED for rows whose execution was cut off. Startup only."""
         ...
+
+    async def undelivered(self) -> list[ApprovalRecord]:
+        """Approvals whose paused run has not yet received the outcome (reconciliation worklist)."""
+        ...
+
+    async def mark_delivered(self, approval_id: str) -> None: ...
+
+
+class ExecutionLog(Protocol):
+    """`tool_executions`: durable evidence that a side effect started (ARCHITECTURE 4.2 step 8)."""
+
+    async def start(
+        self,
+        *,
+        execution_id: str,
+        run_id: str | None,
+        tool: str,
+        agent: str,
+        principal: Principal,
+        risk: RiskClass,
+        idempotency_key: str,
+        args_hash: str,
+    ) -> bool:
+        """Record STARTED before the call. False if this idempotency key already ran."""
+        ...
+
+    async def finish(self, execution_id: str, *, ok: bool) -> None: ...
+
+    async def abandon_started(self) -> list[tuple[str, str, str | None]]:
+        """Mark every STARTED row UNKNOWN; return (id, tool, run_id). Startup only."""
+        ...
+
+
+class EditValidator(Protocol):
+    """Re-validates and re-classifies edited arguments (implemented by the tool engine)."""
+
+    async def revalidate(
+        self, *, tool: str, principal: Principal, args: dict[str, Any]
+    ) -> EditVerdict: ...
 
 
 class ApprovalBrokerPort(Protocol):
-    """Creates, tracks, and resolves approval requests. Used by the tool engine."""
+    """Creates, tracks, and resolves approval requests. Used by the engine and the facade."""
+
+    def bind_validator(self, validator: EditValidator) -> None:
+        """Attach the engine's edit validator. It is built after the broker, so it binds late."""
+        ...
 
     async def request(
         self,
@@ -189,30 +247,47 @@ class ApprovalBrokerPort(Protocol):
         run_id: str | None,
         tool_call_id: str,
         tainted: bool,
-    ) -> ApprovalView: ...
+    ) -> ApprovalTicket: ...
 
     async def get(self, approval_id: str) -> ApprovalRecord | None: ...
 
-    async def approve(self, approval_id: str, *, actor: str = "USER") -> bool: ...
-
-    async def approve_edited(
+    async def existing(
         self,
-        approval_id: str,
         *,
-        new_args: dict[str, Any],
         tool: str,
         tool_version: str,
         principal: Principal,
-        risk: RiskClass,
-        actor: str = "USER",
-    ) -> str | None: ...
+        args: dict[str, Any],
+        run_id: str | None,
+        tool_call_id: str,
+    ) -> ApprovalRecord | None:
+        """The approval an earlier pass of this exact call already created, if any."""
+        ...
 
-    async def reject(
-        self, approval_id: str, *, reason: str | None = None, actor: str = "USER"
-    ) -> bool: ...
+    async def resolve(
+        self,
+        approval_id: str,
+        *,
+        decision: str,
+        edited_args: dict[str, Any] | None = None,
+        comment: str | None = None,
+        actor: str = "USER",
+    ) -> Resolution:
+        """Apply a user decision (`approve`, `edit`, `reject`) and say what actually happened."""
+        ...
 
     async def consume(self, approval_id: str) -> bool: ...
 
     async def mark_executed(self, approval_id: str, *, success: bool) -> None: ...
 
-    async def invalidate(self, approval_id: str) -> None: ...
+    async def invalidate(self, approval_id: str, *, reason: str) -> None: ...
+
+    async def cancel_for_run(self, run_id: str) -> int: ...
+
+    async def mark_delivered(self, approval_id: str) -> None: ...
+
+    async def expire_stale(self) -> list[ApprovalRecord]: ...
+
+    async def abandon_consumed(self) -> list[ApprovalRecord]: ...
+
+    async def undelivered(self) -> list[ApprovalRecord]: ...

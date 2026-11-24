@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -10,9 +12,15 @@ from rich.console import Console
 from opsagent import __version__
 from opsagent.bootstrap import StartupError, has_failure, run_doctor, run_tui
 from opsagent.domain import PolicyDecision
-from opsagent.infra import ConfigError, configure_logging, load_settings
-from opsagent.persistence import current_revision, head_revision, upgrade
-from opsagent.tools import PolicyConfig, ToolPolicy
+from opsagent.infra import ConfigError, Settings, configure_logging, load_settings
+from opsagent.persistence import (
+    AuditRepository,
+    current_revision,
+    head_revision,
+    open_pool,
+    upgrade,
+)
+from opsagent.tools import PolicyConfig, PolicyError, load_policy, save_policy
 
 app = typer.Typer(
     help="Terminal-native personal operations agent.",
@@ -90,14 +98,15 @@ def db_status() -> None:
 
 @app.command()
 def resume(
-    session_id: Annotated[
-        str | None, typer.Argument(help="Session/thread ID to resume.")
-    ] = None,
     demo: Annotated[
         bool, typer.Option("--demo", help="Replay scripted scenarios instead of calling a model.")
     ] = False,
 ) -> None:
-    """Resume an existing session or pick from resumable sessions."""
+    """Open the TUI and pick up runs left waiting on an approval.
+
+    Approvals still pending reappear as dialogs; decisions made before the app closed are
+    delivered to their paused runs; approvals that expired in the meantime are reported.
+    """
     try:
         run_tui(load_settings(), demo=demo)
     except StartupError as exc:
@@ -105,22 +114,56 @@ def resume(
         raise typer.Exit(1) from exc
 
 
+def _policy_file() -> tuple[Settings, Path]:
+    settings = load_settings()
+    return settings, settings.config_dir / "policy.toml"
+
+
+def _read_policy(policy_file: Path) -> PolicyConfig:
+    try:
+        return load_policy(policy_file)
+    except PolicyError as exc:
+        console.print(f"[red]{policy_file} is not valid:[/] {exc}")
+        raise typer.Exit(2) from exc
+
+
+def _record_policy_change(settings: Settings, tool: str, change: str, detail: str) -> None:
+    """Policy changes are audited (ARCHITECTURE 5.2). If the audit cannot be written, stop."""
+
+    async def write() -> None:
+        pool = await open_pool(settings.database_url, max_size=1)
+        try:
+            await AuditRepository(pool).append(
+                event_type="policy.changed",
+                actor="USER",
+                subject_type="policy",
+                subject_id=tool,
+                data={"change": change, "detail": detail},
+            )
+        finally:
+            await pool.close()
+
+    try:
+        asyncio.run(write())
+    except Exception as exc:
+        console.print(f"[red]not changed:[/] the change could not be audited ({exc}).")
+        console.print("Start the database with `docker compose up -d db` and try again.")
+        raise typer.Exit(1) from exc
+
+
 @policy_app.command("show")
 def policy_show() -> None:
     """Show active approval policy configuration."""
-    settings = load_settings()
-    policy_file = settings.config_dir / "policy.toml"
+    _, policy_file = _policy_file()
+    cfg = _read_policy(policy_file)
     if policy_file.is_file():
-        cfg = PolicyConfig.from_toml(policy_file.read_text("utf-8"))
         console.print(f"Policy loaded from {policy_file}")
     else:
-        cfg = PolicyConfig()
         console.print("Using compiled default policy (no policy.toml)")
     console.print(f"  R0 auto-allow: {cfg.r0_auto}")
     console.print(f"  R1 auto-allow: {cfg.r1_auto}")
     console.print(f"  R2 require approval: {cfg.r2_requires_approval}")
-    console.print(f"  R3 require approval: {cfg.r3_requires_approval}")
-    console.print(f"  R4 require approval: {cfg.r4_requires_approval}")
+    console.print("  R3, R4: always require approval")
     if cfg.overrides:
         console.print("\nTool overrides (tightened):")
         for o in cfg.overrides:
@@ -137,20 +180,16 @@ def policy_tighten(
         typer.Option("--deny", help="Deny tool completely instead of requiring approval."),
     ] = False,
 ) -> None:
-    """Tighten policy for a tool (require approval or deny)."""
-    settings = load_settings()
-    policy_file = settings.config_dir / "policy.toml"
-    cfg = (
-        PolicyConfig.from_toml(policy_file.read_text("utf-8"))
-        if policy_file.is_file()
-        else PolicyConfig()
-    )
+    """Tighten policy for a tool (require approval or deny). Takes effect on next start."""
+    settings, policy_file = _policy_file()
     decision = PolicyDecision.DENY if deny else PolicyDecision.REQUIRE_APPROVAL
-    new_overrides = [o for o in cfg.overrides if o.tool != tool]
-    new_overrides.append(ToolPolicy(tool=tool, decision=decision))
-    cfg.overrides = new_overrides
-    settings.config_dir.mkdir(parents=True, exist_ok=True)
-    policy_file.write_text(cfg.to_toml(), encoding="utf-8")
+    try:
+        updated = _read_policy(policy_file).with_override(tool, decision)
+    except PolicyError as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(2) from exc
+    _record_policy_change(settings, tool, "tighten", decision.value)
+    save_policy(policy_file, updated)
     console.print(f"Updated policy for '{tool}' -> {decision.value} in {policy_file}")
 
 
@@ -158,13 +197,12 @@ def policy_tighten(
 def policy_reset(
     tool: Annotated[str, typer.Argument(help="Tool name to reset override for.")],
 ) -> None:
-    """Reset policy override for a tool to defaults."""
-    settings = load_settings()
-    policy_file = settings.config_dir / "policy.toml"
-    if not policy_file.is_file():
+    """Remove a tool's policy override. Takes effect on next start."""
+    settings, policy_file = _policy_file()
+    cfg = _read_policy(policy_file)
+    if all(o.tool != tool for o in cfg.overrides):
         console.print(f"No override found for '{tool}'.")
         return
-    cfg = PolicyConfig.from_toml(policy_file.read_text("utf-8"))
-    cfg.overrides = [o for o in cfg.overrides if o.tool != tool]
-    policy_file.write_text(cfg.to_toml(), encoding="utf-8")
+    _record_policy_change(settings, tool, "reset", "removed override")
+    save_policy(policy_file, cfg.without_override(tool))
     console.print(f"Reset policy for '{tool}' in {policy_file}")

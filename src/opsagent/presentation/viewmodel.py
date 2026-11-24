@@ -289,6 +289,8 @@ def reduce(state: ViewState, event: AppEvent) -> ViewState:  # noqa: PLR0911, PL
             )
             return replace(state, rows=_upsert(state.rows, row))
         case events.ApprovalRequested():
+            if any(a.view.approval_id == event.approval.approval_id for a in state.approvals):
+                return state  # a replay or a recovery must not stack a second dialog
             pending = PendingApproval(run_id=event.run_id, view=event.approval)
             return replace(state, approvals=(*state.approvals, pending))
         case events.ApprovalResolved():

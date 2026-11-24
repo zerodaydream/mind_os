@@ -9,13 +9,13 @@ import pytest
 
 from opsagent.domain import CalendarEvent, ToolInvocation
 from opsagent.tools import (
-    ReadOnlyPolicy,
     ToolExecutionEngine,
     ToolRegistry,
     calendar_specs,
 )
 from opsagent.tools.calendar import parse_when
 from tests.support.fakes import MemoryArtifacts, MemoryAudit, MemoryCalendar
+from tests.support.policies import ReadOnlyPolicy
 
 IST = ZoneInfo("Asia/Kolkata")
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from opsagent.cli import app
@@ -25,7 +26,18 @@ def test_cli_policy_show_default(monkeypatch, tmp_path: Path) -> None:
     assert "R0 auto-allow: True" in result.stdout
 
 
-def test_cli_policy_tighten_and_reset(monkeypatch, tmp_path: Path) -> None:
+@pytest.fixture
+def audited(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str, str]]:
+    """Replace the database write with a recorder, so unit tests need no services."""
+    calls: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(
+        "opsagent.cli._record_policy_change",
+        lambda _s, tool, change, detail: calls.append((tool, change, detail)),
+    )
+    return calls
+
+
+def test_cli_policy_tighten_and_reset(monkeypatch, tmp_path: Path, audited: list) -> None:  # type: ignore[no-untyped-def,type-arg]
     monkeypatch.setenv("OPS_CONFIG_DIR", str(tmp_path))
     policy_file = tmp_path / "policy.toml"
     assert not policy_file.exists()
@@ -54,3 +66,54 @@ def test_cli_policy_tighten_and_reset(monkeypatch, tmp_path: Path) -> None:
     result = runner.invoke(app, ["policy", "show"])
     assert "mail.send" not in result.stdout
     assert "dangerous.drop: DENY" in result.stdout
+
+    assert audited == [
+        ("mail.send", "tighten", "REQUIRE_APPROVAL"),
+        ("dangerous.drop", "tighten", "DENY"),
+        ("mail.send", "reset", "removed override"),
+    ]
+
+
+def test_a_policy_change_that_cannot_be_audited_is_not_made(monkeypatch, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("OPS_CONFIG_DIR", str(tmp_path))
+
+    async def database_down(*_a: object, **_k: object) -> None:
+        raise ConnectionError("database is down")
+
+    monkeypatch.setattr("opsagent.cli.open_pool", database_down)
+    result = runner.invoke(app, ["policy", "tighten", "mail.send_message"])
+    assert result.exit_code == 1
+    assert "could not be audited" in result.stdout
+    assert not (tmp_path / "policy.toml").exists()
+
+
+def test_an_invalid_policy_file_is_an_error_not_a_silent_default(
+    monkeypatch, tmp_path: Path
+) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("OPS_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "policy.toml").write_text('[policy]\nr0_auto = "yes"\n')
+    for args in (["policy", "show"], ["policy", "tighten", "mail.send_message"]):
+        result = runner.invoke(app, args)
+        assert result.exit_code == 2 and "not valid" in result.stdout
+
+
+def test_tighten_rejects_a_tool_name_that_would_corrupt_the_file(
+    monkeypatch,
+    tmp_path: Path,
+    audited: list,  # type: ignore[no-untyped-def,type-arg]
+) -> None:
+    monkeypatch.setenv("OPS_CONFIG_DIR", str(tmp_path))
+    result = runner.invoke(app, ["policy", "tighten", 'x"]\n[policy]\nr0_auto=false'])
+    assert result.exit_code == 2
+    assert audited == [] and not (tmp_path / "policy.toml").exists()
+
+
+def test_resetting_an_override_that_does_not_exist_changes_and_audits_nothing(
+    monkeypatch,
+    tmp_path: Path,
+    audited: list,  # type: ignore[no-untyped-def,type-arg]
+) -> None:
+    monkeypatch.setenv("OPS_CONFIG_DIR", str(tmp_path))
+    result = runner.invoke(app, ["policy", "reset", "mail.send_message"])
+    assert result.exit_code == 0 and "No override found" in result.stdout
+    assert audited == []

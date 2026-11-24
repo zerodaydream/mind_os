@@ -12,8 +12,8 @@ from opsagent.bootstrap import build_container
 from opsagent.domain import ModelRole, RunSpec, events
 from opsagent.infra import SystemClock, load_settings, new_id, resolve_timezone
 from opsagent.integrations.calendar import FixtureCalendar, sample_events
-from opsagent.tools import ReadOnlyPolicy
 from tests.support.fakes import MemoryArtifacts, MemoryAudit, MemoryUsage
+from tests.support.policies import ReadOnlyPolicy
 
 pytestmark = [
     pytest.mark.live,

@@ -5,9 +5,26 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from opsagent.domain import Principal, RiskClass
-from opsagent.domain.approvals import ApprovalRecord
+from opsagent.domain import ApprovalRecord, Principal, RiskClass
 from opsagent.persistence.db import Pool
+
+# Every transition stamps `resolved_at`; `actor` keeps who last made a human decision, so the
+# engine's own transitions (CONSUMED, EXECUTED) never erase who approved.
+_TRANSITION = """
+    UPDATE approvals
+    SET state = %(to_state)s,
+        resolved_at = now(),
+        actor = COALESCE(%(actor)s, actor),
+        original_payload_hash = CASE
+            WHEN %(payload_hash)s::text IS NOT NULL AND original_payload_hash IS NULL
+            THEN payload_hash ELSE original_payload_hash END,
+        payload_hash = COALESCE(%(payload_hash)s, payload_hash),
+        args_json = COALESCE(%(args_json)s, args_json)
+    WHERE id = %(id)s
+      AND state = ANY(%(from_states)s)
+      AND (NOT %(require_unexpired)s OR expires_at IS NULL OR expires_at > now())
+    RETURNING id
+"""
 
 
 class ApprovalRepository:
@@ -30,15 +47,20 @@ class ApprovalRepository:
         tainted: bool,
         expires_at: datetime,
         run_id: str | None,
-    ) -> None:
+        thread_id: str | None = None,
+        conversation_id: str | None = None,
+        tool_call_id: str | None = None,
+    ) -> bool:
         async with self._pool.connection() as conn:
-            await conn.execute(
+            cur = await conn.execute(
                 """
                 INSERT INTO approvals
                   (id, run_id, tool, tool_version, principal, risk, state,
                    payload_hash, idempotency_key, args_json, summary, payload_preview,
-                   tainted, expires_at)
-                VALUES (%s,%s,%s,%s,%s,%s,'PENDING',%s,%s,%s,%s,%s,%s,%s)
+                   tainted, expires_at, thread_id, conversation_id, tool_call_id)
+                VALUES (%s,%s,%s,%s,%s,%s,'PENDING',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                ON CONFLICT (idempotency_key) DO NOTHING
+                RETURNING id
                 """,
                 (
                     approval_id,
@@ -54,8 +76,12 @@ class ApprovalRepository:
                     payload_preview,
                     tainted,
                     expires_at,
+                    thread_id,
+                    conversation_id,
+                    tool_call_id,
                 ),
             )
+            return await cur.fetchone() is not None
 
     async def transition(
         self,
@@ -66,65 +92,90 @@ class ApprovalRepository:
         actor: str | None = None,
         payload_hash: str | None = None,
         args_json: str | None = None,
+        require_unexpired: bool = False,
     ) -> bool:
-        """Atomically transition state. Returns True if exactly one row was updated."""
-        from_list = list(from_states)
         async with self._pool.connection() as conn:
             cur = await conn.execute(
-                """
-                UPDATE approvals
-                SET state = %s, resolved_at = now(), actor = %s,
-                    payload_hash = COALESCE(%s, payload_hash),
-                    args_json = COALESCE(%s, args_json)
-                WHERE id = %s AND state = ANY(%s)
-                RETURNING id
-                """,
-                (to_state, actor, payload_hash, args_json, approval_id, from_list),
+                _TRANSITION,
+                {
+                    "to_state": to_state,
+                    "actor": actor,
+                    "payload_hash": payload_hash,
+                    "args_json": args_json,
+                    "id": approval_id,
+                    "from_states": sorted(from_states),
+                    "require_unexpired": require_unexpired,
+                },
             )
-            row = await cur.fetchone()
-        return row is not None
+            return await cur.fetchone() is not None
 
     async def get(self, approval_id: str) -> ApprovalRecord | None:
-        async with self._pool.connection() as conn:
-            cur = await conn.execute(
-                "SELECT * FROM approvals WHERE id = %s", (approval_id,)
-            )
-            row = await cur.fetchone()
-        if row is None:
-            return None
-        return _row_to_record(dict(row))
+        return await self._one("SELECT * FROM approvals WHERE id = %s", (approval_id,))
 
-    async def pending_for_run(self, run_id: str) -> list[ApprovalRecord]:
-        async with self._pool.connection() as conn:
-            cur = await conn.execute(
-                "SELECT * FROM approvals WHERE run_id = %s AND state = 'PENDING'", (run_id,)
-            )
-            rows = await cur.fetchall()
-        return [_row_to_record(dict(r)) for r in rows]
+    async def get_by_idempotency_key(self, key: str) -> ApprovalRecord | None:
+        return await self._one("SELECT * FROM approvals WHERE idempotency_key = %s", (key,))
 
-    async def expire_stale(self) -> int:
-        """Set PENDING+APPROVED+APPROVED_EDITED rows past expires_at to EXPIRED. Returns count."""
+    async def expire_stale(self) -> list[ApprovalRecord]:
         async with self._pool.connection() as conn:
             cur = await conn.execute(
                 """
                 UPDATE approvals
                 SET state = 'EXPIRED', resolved_at = now()
                 WHERE state IN ('PENDING','APPROVED','APPROVED_EDITED')
-                  AND expires_at < now()
-                RETURNING id
+                  AND expires_at IS NOT NULL AND expires_at <= now()
+                RETURNING *
                 """
             )
             rows = await cur.fetchall()
-        return len(rows)
+        return [_row_to_record(dict(r)) for r in rows]
 
-    async def find_started_executions(self) -> list[tuple[str, str, str | None]]:
-        """Find tool_executions left in STARTED state across restarts."""
+    async def abandon_consumed(self) -> list[ApprovalRecord]:
         async with self._pool.connection() as conn:
             cur = await conn.execute(
-                "SELECT id, tool, run_id FROM tool_executions WHERE state = 'STARTED'"
+                """
+                UPDATE approvals
+                SET state = 'EXEC_FAILED', resolved_at = now(), actor = 'RECONCILER'
+                WHERE state = 'CONSUMED'
+                RETURNING *
+                """
             )
             rows = await cur.fetchall()
-        return [(str(r["id"]), str(r["tool"]), r.get("run_id")) for r in rows]
+        return [_row_to_record(dict(r)) for r in rows]
+
+    async def undelivered(self) -> list[ApprovalRecord]:
+        """Rows whose paused graph may still be waiting for the outcome, in any state.
+
+        Whether a graph is really still paused is the checkpoint's answer, not the table's: a
+        crash after the effect but before the checkpoint leaves an EXECUTED row whose graph is
+        still waiting. The runtime treats re-delivery to a graph that is not paused as a no-op.
+        """
+        return await self._many(
+            """
+            SELECT * FROM approvals
+            WHERE delivered_at IS NULL AND thread_id IS NOT NULL
+            ORDER BY created_at
+            """,
+            (),
+        )
+
+    async def mark_delivered(self, approval_id: str) -> None:
+        async with self._pool.connection() as conn:
+            await conn.execute(
+                "UPDATE approvals SET delivered_at = now() WHERE id = %s AND delivered_at IS NULL",
+                (approval_id,),
+            )
+
+    async def _one(self, sql: str, params: tuple[Any, ...]) -> ApprovalRecord | None:
+        async with self._pool.connection() as conn:
+            cur = await conn.execute(sql, params)
+            row = await cur.fetchone()
+        return None if row is None else _row_to_record(dict(row))
+
+    async def _many(self, sql: str, params: tuple[Any, ...]) -> list[ApprovalRecord]:
+        async with self._pool.connection() as conn:
+            cur = await conn.execute(sql, params)
+            rows = await cur.fetchall()
+        return [_row_to_record(dict(r)) for r in rows]
 
 
 def _row_to_record(row: dict[str, Any]) -> ApprovalRecord:
@@ -144,4 +195,9 @@ def _row_to_record(row: dict[str, Any]) -> ApprovalRecord:
         tainted=bool(row.get("tainted", False)),
         expires_at=row["expires_at"].isoformat() if row.get("expires_at") else None,
         actor=row.get("actor"),
+        thread_id=row.get("thread_id"),
+        conversation_id=row.get("conversation_id"),
+        tool_call_id=row.get("tool_call_id"),
+        original_payload_hash=row.get("original_payload_hash"),
+        delivered=row.get("delivered_at") is not None,
     )

@@ -10,6 +10,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
+from opsagent.domain.events import ApprovalView
 from opsagent.domain.risk import Principal, RiskClass
 
 ApprovalState = Literal[
@@ -85,11 +86,61 @@ class ApprovalRecord(BaseModel):
     # expires_at and actor as strings (UTC ISO) to stay pure
     expires_at: str | None = None
     actor: str | None = None
+    # Where the run is paused, so a decision can be re-delivered after a restart.
+    thread_id: str | None = None
+    conversation_id: str | None = None
+    tool_call_id: str | None = None
+    original_payload_hash: str | None = None  # set when the user edited the payload
+    delivered: bool = False  # the paused graph has received the decision
 
 
-def canonical_payload(
-    tool: str, tool_version: str, principal: str, args: dict[str, Any]
-) -> str:
+class ApprovalTicket(BaseModel):
+    """Result of asking for an approval. `created` is False when the request was a replay.
+
+    LangGraph re-runs a tool node from the top on resume, so asking again must return the same
+    approval instead of creating a second one, and must not announce it to the user again.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    view: ApprovalView
+    created: bool
+
+
+ResolutionOutcome = Literal["approved", "edited", "rejected", "expired", "unavailable", "refused"]
+
+
+class Resolution(BaseModel):
+    """What happened to a user's decision.
+
+    `approved`/`edited`/`rejected` are recorded and the run may be resumed. `expired` means the
+    TTL passed first. `unavailable` means the approval was already resolved (a double click or a
+    stale dialog). `refused` means an edit was rejected by re-validation; the approval stays
+    pending so the user can try again or reject.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    outcome: ResolutionOutcome
+    detail: str | None = None
+
+    @property
+    def recorded(self) -> bool:
+        return self.outcome in ("approved", "edited", "rejected")
+
+
+class EditVerdict(BaseModel):
+    """The engine's answer to "may these edited arguments replace the approved ones?"."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    ok: bool
+    reason: str | None = None
+    risk: RiskClass | None = None
+    normalized_args: dict[str, Any] = {}
+
+
+def canonical_payload(tool: str, tool_version: str, principal: str, args: dict[str, Any]) -> str:
     """Canonical JSON for hashing: sorted keys, no whitespace."""
     obj = {"tool": tool, "tool_version": tool_version, "principal": principal, "args": args}
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), default=str)

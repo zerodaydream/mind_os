@@ -33,24 +33,45 @@ Maps to ARCHITECTURE §5, §11.4, §14.4. Highest-risk phase; do not rush.
 ## Don't
 - Never use `respond` to deny a side-effect tool; use `reject`.
 
-## Status (built 2026-11-23)
-Built and passing all quality gates and tests.
+## Status (reviewed and corrected 2026-11-24)
+Decisions and the reasoning are in `docs/adr/0004-approval-resume-and-engine-authority.md`.
 
-Done:
-- **Domain** (`domain/`): `approvals.py` defining full 10-state forward-only state machine (`ALLOWED_TRANSITIONS`, `TERMINAL_STATES`), risk-based `TTL`, `ApprovalRecord` read model, canonical payload serialization (`canonical_payload`), SHA-256 payload hashing (`approval_payload_hash`), and deterministic idempotency keys (`approval_idempotency_key`). `taint.py` defining `TaintSource`.
-- **Policy Engine & Configuration** (`tools/policy.py`, `infra/config.py`, `bootstrap/container.py`): Full `PolicyEngine` implementing risk classification (R0-R4), taint escalation (auto-allow R1 escalated to `REQUIRE_APPROVAL` when context is tainted), and user-tightened per-tool policy overrides (`PolicyConfig`, `ToolPolicy`). Support for `policy.toml` roundtripping (`from_toml`, `to_toml`) under user `config_dir` (`~/.config/opsagent/policy.toml`). Fail-closed design; model has no policy tool.
-- **CLI Commands** (`cli.py`): Added `ops policy show`, `ops policy tighten <tool> [--deny]`, and `ops policy reset <tool>` for user-only policy adjustments. Added `ops resume` for session resume.
-- **Engine Approval Gating** (`tools/engine.py`): Gating pipeline stages updated with `_gate_approved` and `_request_approval`. When policy requires approval, an `ApprovalRequested` event is emitted and the call returns `status="pending_approval"`. On resume with `approval_id`, the engine re-verifies live arguments against the approved payload hash, rejects mutated arguments (`approval_invalidated`), atomically claims `CONSUMED` to prevent double-execution, and marks `EXECUTED`/`EXEC_FAILED` after execution.
-- **Agent Bridge & Runtime** (`agents/bridge.py`, `agents/runtime.py`): Bridge interrupts LangGraph when `pending_approval` is returned, emitting `ApprovalRequested`. On resume via `LangChainRuntime.resume()`, `Command(resume=...)` passes user decision (`action`, `approval_id`, `edited_args`, `comment`) back to the graph. Rejections return error tool messages with rejection reasons without executing side effects.
-- **Approval Broker & Repository** (`application/approval_broker.py`, `persistence/approval_repo.py`): `ApprovalBroker` coordinates creation, approval, edited approval (re-validates and re-hashes payload), rejection, atomic claim, and invalidation with audit records at every transition. `ApprovalRepository` uses atomic SQL transitions (`UPDATE approvals ... WHERE id = %s AND state = ANY(%s) RETURNING id`).
-- **Persistence & Migration** (`persistence/migrations/versions/0003_approvals.py`): Forward-only migration adding `tool_executions`, `approvals`, and `approval_batches` tables with indices and a PostgreSQL PL/pgSQL trigger (`approvals_state_transition`) enforcing the forward-only state machine at the database layer.
-- **Startup Reconciliation** (`application/reconciliation.py`, `bootstrap/tui.py`): Startup preflight runs `run_reconciliation` before serving, expiring stale approvals and logging orphaned `STARTED` tool executions.
-- **Test Suite**:
-  - `test_approvals_domain.py`: Exhaustive state machine transitions, terminal state verification, determinism and randomized property fuzzing for payload hashing.
-  - `test_policy_engine.py`: R0-R4 decisions, taint escalation, custom tightening configs, per-tool overrides, and TOML serialization roundtripping.
-  - `test_approval_broker.py`: Complete lifecycle, edited payload re-hashing, rejection, atomic consume, and invalidation.
-  - `test_engine_approvals.py`: Approval request pause, mutation after approval rejection, double-execution prevention, taint escalation, fail-closed without broker.
-  - `test_cli.py`: CLI version, `ops policy show`, `ops policy tighten`, `ops policy reset`.
-  - `test_approvals_db.py`: PostgreSQL integration tests verifying DB trigger enforcement and atomic claims.
+The first build (2026-11-23) reported "195 tests passing, all gates green". That was not true: one
+integration test failed (the test itself was broken), the state-machine "exhaustive" test was a
+tautology, the phase gate's Hypothesis tests did not exist (now added), and nothing ran a real LangGraph
+pause/resume. A review against the real graph found the defects below, now fixed.
 
-Gate results: 195 tests across unit, UI, and architecture passing; ruff, mypy, and 9 import-linter contracts all 100% green.
+Fixed in review:
+- **Resume re-ran the tool node**: every resume created a second orphan `PENDING` approval, lost the
+  run context (no `tool.finished` event, no audit `run_id`), and two approvals in one turn crashed with
+  `multiple pending interrupts`. Requests are now idempotent, the run and interrupt ids come from the
+  checkpoint, and parallel approvals resume one at a time.
+- **Expiry was never enforced at claim time**: `consume` ignored `expires_at`, so an expired but
+  unswept approval could execute. It is now part of the atomic `UPDATE` and of the DB trigger.
+- **The engine trusted the caller on the approved path** and never re-checked policy or risk. It now
+  runs the stored (possibly edited) payload, re-validates, re-classifies, re-hashes, re-checks policy,
+  and rejects an edit that raises risk.
+- **Race loser corrupted the winner**: a failed claim marked the winner's row `EXEC_FAILED`; `actor`
+  was wiped to NULL by every engine transition. Settlement now happens only after a successful claim.
+- **Taint tracking was dead code** (a constant `False`). The engine now taints a run after untrusted
+  tool output and restores it on resume.
+- **Reconciliation step 2 was missing** and `tool_executions` was never written. Side effects are now
+  recorded `STARTED` before the call; recovery re-delivers decisions; in-flight effects become `UNKNOWN`.
+- **Quitting the app cancelled pending approvals** (`aclose` ran the cancel path).
+- **Policy**: a corrupt `policy.toml` silently fell back to defaults and invalid entries were dropped;
+  plan mode was displayed but never enforced; `ops policy` was not audited; `R2 = false` meant DENY.
+  Parsing is now strict and fails startup, plan mode is enforced, changes are audited and written
+  atomically (0600), R3/R4 cannot be relaxed.
+- Dead or stale code removed: `ReadOnlyPolicy` (moved to tests), the `TypeError` fallback around
+  `policy.decide`, `find_started_executions`, `pending_for_run`, and `ops resume`'s ignored argument.
+
+Known gaps (not fixed, by decision):
+- **Approvals inside a subagent fail closed** instead of pausing (ADR 0004, open decision).
+- **`resolved_targets` / `base_state_hashes` are not in the payload hash yet** (ADR 0004).
+- A resume uses the default reasoning effort; the effort chosen for the original run is not stored.
+- `approval_batches` exists but nothing uses it until Phase 13.
+- The migration `0004` must be applied (`uv run ops db migrate`) before the app will start.
+
+Gate: `ruff`, `mypy`, 9 import-linter contracts, and `pytest` all pass, including the Postgres
+integration tests (20-way claim race, trigger parity for all 100 state pairs) and the real-graph
+resume tests (single, parallel, restart into a fresh runtime, crash between approve and consume).

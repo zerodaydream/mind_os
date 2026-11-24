@@ -20,8 +20,8 @@ from opsagent.domain import (
     RunSpec,
 )
 from opsagent.infra import new_id
-from opsagent.tools import ReadOnlyPolicy
 from tests.support.fakes import MemoryArtifacts, MemoryAudit, MemoryCalendar, MemoryUsage
+from tests.support.policies import ReadOnlyPolicy
 from tests.support.scripted_model import ScriptedChatModel
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -95,6 +95,9 @@ def make_kit(
     audit: Any = None,
     artifacts: Any = None,
     usage: Any = None,
+    policy: Any = None,
+    broker: Any = None,
+    executions: Any = None,
 ) -> Kit:
     models = FakeModels(orchestrator, subagent or ScriptedChatModel(script=[]))
     audit, artifacts, usage = (
@@ -112,7 +115,7 @@ def make_kit(
         artifacts=artifacts,
         usage=usage,
         pricing=pricing,
-        policy=ReadOnlyPolicy(),
+        policy=policy or ReadOnlyPolicy(),
         checkpointer=saver,
         limits=limits or RunLimits(),
         clock=FixedClock(),
@@ -121,5 +124,7 @@ def make_kit(
             ModelRole.ORCHESTRATOR: ReasoningEffort.HIGH,
             ModelRole.SUBAGENT: ReasoningEffort.LOW,
         },
+        broker=broker,
+        executions=executions,
     )
     return Kit(runtime, models, audit, artifacts, usage, calendar, saver)

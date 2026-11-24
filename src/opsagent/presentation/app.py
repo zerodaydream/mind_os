@@ -86,6 +86,8 @@ class OpsApp(App[None]):
         self._subscription_cm = self._application.bus.subscribe()
         subscription = self._subscription_cm.__enter__()
         self.run_worker(self._consume(subscription), name="events", exit_on_error=False)
+        # After subscribing, so approvals left pending by an earlier session appear as dialogs.
+        self.run_worker(self._application.recover(), name="recover", exit_on_error=False)
         self.set_interval(self._flush_interval, self._drain_events)
         self.set_interval(0.1, self._tick_ui)
 

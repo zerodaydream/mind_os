@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
 from dataclasses import dataclass
 from typing import Any
 
@@ -10,7 +9,16 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from opsagent.agents import RunLimits, UnavailableRuntime, build_runtime
 from opsagent.application import Application, ApprovalBroker, EventBus
-from opsagent.domain import AgentRuntime, CredentialProvider, LLMProvider, ModelRole
+from opsagent.domain import (
+    AgentRuntime,
+    ApprovalBrokerPort,
+    AuditSink,
+    CredentialProvider,
+    ExecutionLog,
+    LLMProvider,
+    ModelRole,
+    SessionMode,
+)
 from opsagent.infra import (
     Settings,
     SettingsCredentialProvider,
@@ -24,10 +32,11 @@ from opsagent.persistence import (
     ApprovalRepository,
     ArtifactRepository,
     AuditRepository,
+    ExecutionRepository,
     UsageRepository,
 )
 from opsagent.persistence.db import Pool
-from opsagent.tools import PolicyConfig, PolicyEngine
+from opsagent.tools import PolicyEngine, load_policy
 
 
 @dataclass(frozen=True)
@@ -37,6 +46,10 @@ class Container:
     llm: LLMProvider
     bus: EventBus
     app: Application
+    # Present only when the real runtime is wired; startup reconciliation needs them.
+    broker: ApprovalBrokerPort | None = None
+    executions: ExecutionLog | None = None
+    audit: AuditSink | None = None
 
 
 def build_container(
@@ -59,28 +72,28 @@ def build_container(
         include_thoughts=settings.include_thoughts,
         thinking_budget=settings.thinking_budget,
     )
-    broker = None
-    if pool is not None:
-        audit_repo = AuditRepository(pool)
-        approval_repo = ApprovalRepository(pool)
-        broker = ApprovalBroker(repo=approval_repo, audit=audit_repo, new_id=new_id)
-
+    broker: ApprovalBrokerPort | None = None
+    executions: ExecutionLog | None = None
+    audit: AuditSink | None = None
+    mode = SessionMode()  # shared: the UI sets it, the policy engine enforces it
     if runtime is None and pool is not None and checkpointer is not None:
         tz = resolve_timezone(settings.timezone)
-        policy_config: PolicyConfig | None = None
-        policy_file = settings.config_dir / "policy.toml"
-        if policy_file.is_file():
-            with contextlib.suppress(Exception):
-                policy_config = PolicyConfig.from_toml(policy_file.read_text(encoding="utf-8"))
+        audit = AuditRepository(pool)
+        executions = ExecutionRepository(pool)
+        broker = ApprovalBroker(
+            repo=ApprovalRepository(pool), audit=audit, new_id=new_id, clock=clock
+        )
+        # An unreadable policy.toml raises. It must never fall back to the compiled defaults.
+        policy = PolicyEngine(load_policy(settings.config_dir / "policy.toml"), mode)
         runtime = build_runtime(
             models=llm,
             calendar=FixtureCalendar(sample_events(clock.now(), tz)),  # Google: Phase 06
             tz=tz,
-            audit=AuditRepository(pool),
+            audit=audit,
             artifacts=ArtifactRepository(pool, new_id),
             usage=UsageRepository(pool),
             pricing=settings.pricing(),
-            policy=PolicyEngine(policy_config),
+            policy=policy,
             checkpointer=checkpointer,
             limits=RunLimits(
                 max_steps=settings.max_agent_steps,
@@ -93,9 +106,23 @@ def build_container(
             new_id=new_id,
             efforts={role: settings.reasoning_for(role) for role in ModelRole},
             broker=broker,
+            executions=executions,
         )
     bus = EventBus(clock)
     app = Application(
-        runtime=runtime or UnavailableRuntime(), bus=bus, new_id=new_id, broker=broker
+        runtime=runtime or UnavailableRuntime(),
+        bus=bus,
+        new_id=new_id,
+        broker=broker,
+        mode=mode,
     )
-    return Container(settings=settings, credentials=credentials, llm=llm, bus=bus, app=app)
+    return Container(
+        settings=settings,
+        credentials=credentials,
+        llm=llm,
+        bus=bus,
+        app=app,
+        broker=broker,
+        executions=executions,
+        audit=audit,
+    )

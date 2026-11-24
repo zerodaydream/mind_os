@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import random
-import string
+import json
 from typing import Any
 
 import pytest
+from hypothesis import assume, given
+from hypothesis import strategies as st
 
 from opsagent.domain import (
     ALLOWED_TRANSITIONS,
@@ -46,19 +47,28 @@ def test_terminal_states_have_no_transitions() -> None:
         assert ALLOWED_TRANSITIONS[state] == frozenset(), f"{state} should have no transitions"
 
 
-def test_exhaustive_state_machine_transitions() -> None:
-    """Exhaustively verify all valid and invalid transitions."""
-    for from_state in ALL_STATES:
-        allowed = ALLOWED_TRANSITIONS[from_state]
-        for to_state in ALL_STATES:
-            is_valid = to_state in allowed
-            if from_state == to_state:
-                # No self-transitions defined in state machine
-                assert not is_valid
-            if is_valid:
-                assert to_state in allowed
-            else:
-                assert to_state not in allowed
+def test_the_state_machine_only_moves_forward() -> None:
+    """No self-loops, PENDING is never re-entered, and every path ends in a terminal state."""
+    for state, nexts in ALLOWED_TRANSITIONS.items():
+        assert state not in nexts, f"{state} loops on itself"
+        assert "PENDING" not in nexts, f"{state} can return to PENDING"
+
+    def reaches_terminal(state: ApprovalState, seen: frozenset[str] = frozenset()) -> bool:
+        if state in TERMINAL_STATES:
+            return True
+        assert state not in seen, f"cycle through {state}"
+        return all(reaches_terminal(n, seen | {state}) for n in ALLOWED_TRANSITIONS[state])
+
+    assert all(reaches_terminal(state) for state in ALL_STATES)
+
+
+def test_only_an_unclaimed_approval_can_be_consumed_and_only_a_consumed_one_executes() -> None:
+    sources = {s for s, nexts in ALLOWED_TRANSITIONS.items() if "CONSUMED" in nexts}
+    assert sources == {"APPROVED", "APPROVED_EDITED"}
+    assert {s for s, nexts in ALLOWED_TRANSITIONS.items() if "EXECUTED" in nexts} == {"CONSUMED"}
+    assert {s for s, nexts in ALLOWED_TRANSITIONS.items() if "APPROVED_EDITED" in nexts} == {
+        "PENDING"
+    }
 
 
 def test_ttl_defined_for_all_risk_classes() -> None:
@@ -103,27 +113,76 @@ def test_idempotency_key_is_deterministic() -> None:
     assert approval_idempotency_key("run_1", "call_1", "hash_xyz") != k1
 
 
-def test_canonical_payload_random_fuzzing() -> None:
-    """Property test: randomized nested dictionaries with shuffled keys produce identical hashes."""
-    rng = random.Random(42)
+JSON_LEAF = st.one_of(
+    st.none(),
+    st.booleans(),
+    st.integers(min_value=-(10**9), max_value=10**9),
+    st.floats(allow_nan=False, allow_infinity=False, width=64),
+    st.text(),
+)
+JSON = st.recursive(
+    JSON_LEAF,
+    lambda inner: st.one_of(
+        st.lists(inner, max_size=4), st.dictionaries(st.text(max_size=6), inner, max_size=4)
+    ),
+    max_leaves=12,
+)
+ARGS = st.dictionaries(st.text(max_size=6), JSON, min_size=1, max_size=4)
 
-    def random_dict(depth: int = 0) -> dict[str, Any]:
-        keys = rng.sample(string.ascii_lowercase, rng.randint(3, 8))
-        d = {}
-        for k in keys:
-            if depth < 2 and rng.random() > 0.5:
-                d[k] = random_dict(depth + 1)
-            else:
-                d[k] = rng.choice([rng.randint(0, 100), rng.random(), "str_" + k, True, None])
-        return d
 
-    for _ in range(200):
-        original = random_dict()
-        # Shuffle keys
-        shuffled = {k: original[k] for k in rng.sample(list(original.keys()), len(original))}
-        h1 = approval_payload_hash("tool.test", "1.0", "AGENT", original)
-        h2 = approval_payload_hash("tool.test", "1.0", "AGENT", shuffled)
-        assert h1 == h2, "Payload hash must be independent of dict key insertion order"
+def _hash(args: Any) -> str:
+    return approval_payload_hash("t.x", "1", "AGENT", args)
+
+
+def _reordered(value: Any, draw: st.DrawFn) -> Any:
+    if isinstance(value, dict):
+        keys = draw(st.permutations(list(value)))
+        return {k: _reordered(value[k], draw) for k in keys}
+    if isinstance(value, list):
+        return [_reordered(v, draw) for v in value]
+    return value
+
+
+@st.composite
+def args_and_reordering(draw: st.DrawFn) -> tuple[dict[str, Any], dict[str, Any]]:
+    args = draw(ARGS)
+    return args, _reordered(args, draw)
+
+
+@given(args_and_reordering())
+def test_hash_is_independent_of_key_order_at_every_depth(
+    pair: tuple[dict[str, Any], dict[str, Any]],
+) -> None:
+    original, reordered = pair
+    assert _hash(original) == _hash(reordered)
+
+
+@given(ARGS, ARGS)
+def test_different_arguments_never_share_a_hash(a: dict[str, Any], b: dict[str, Any]) -> None:
+    # compare by canonical JSON so values JSON cannot tell apart (none exist here) don't count
+    canon = lambda v: json.dumps(v, sort_keys=True, separators=(",", ":"))  # noqa: E731
+    assume(canon(a) != canon(b))
+    assert _hash(a) != _hash(b)
+
+
+@given(ARGS)
+def test_the_hash_survives_the_database_round_trip(args: dict[str, Any]) -> None:
+    """The engine stores args as JSON and re-hashes what it reads back: they must agree."""
+    stored = json.dumps(args, sort_keys=True, separators=(",", ":"))
+    assert _hash(json.loads(stored)) == _hash(args)
+
+
+@given(ARGS, st.sampled_from(["tool", "version", "principal"]))
+def test_tool_version_and_principal_are_part_of_the_hash(args: dict[str, Any], field: str) -> None:
+    base = ["t.x", "1", "AGENT"]
+    other = list(base)
+    other[["tool", "version", "principal"].index(field)] += "!"
+    assert approval_payload_hash(*base, args) != approval_payload_hash(*other, args)
+
+
+def test_json_types_are_not_interchangeable_in_the_hash() -> None:
+    distinct = [1, "1", True, 1.5, None, [1], {"a": 1}, [], {}, "", 0, False]
+    assert len({_hash({"v": v}) for v in distinct}) == len(distinct)
 
 
 def test_approval_record_immutability() -> None:
